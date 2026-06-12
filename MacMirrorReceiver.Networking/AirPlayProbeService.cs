@@ -29,6 +29,12 @@ public sealed class AirPlayProbeService : IDisposable
 	private const int TimingPort = 7102;
 	private const int MaxH264PrefixProbeBytes = 64;
 	private const int MaxH264NalUnitLength = 8 * 1024 * 1024;
+	private const int StableDisplayWidth = 1920;
+	private const int StableDisplayHeight = 1080;
+	private const int QualityMpvDisplayWidth = 2560;
+	private const int QualityMpvDisplayHeight = 1440;
+	private const int QualityWpfDisplayWidth = 2304;
+	private const int QualityWpfDisplayHeight = 1296;
 	private const string LegacyAirTunesVersion = "220.68";
 	private const string LegacyAirPlayModel = "AppleTV2,1";
 	private const string LegacyAirPlayFeatures = "0x5A7FFEE6";
@@ -36,6 +42,8 @@ public sealed class AirPlayProbeService : IDisposable
 
 	private static readonly IPAddress MulticastAddress = IPAddress.Parse("224.0.0.251");
 	private static readonly IPEndPoint MulticastEndpoint = new IPEndPoint(MulticastAddress, MdnsPort);
+	private static readonly bool QualityRenderMode = string.Equals(Environment.GetEnvironmentVariable("IMIRROR_RENDER_MODE"), "quality", StringComparison.OrdinalIgnoreCase);
+	private static readonly bool QualityMpvAvailable = FindMpvExecutable() != null;
 
 	private readonly CancellationTokenSource _cts = new CancellationTokenSource();
 	private readonly string _displayName;
@@ -1565,9 +1573,17 @@ public sealed class AirPlayProbeService : IDisposable
 
 	private byte[] BuildInfoBinaryPlist()
 	{
-			ulong features = ((ulong)0x1E << 32) | 0x5A7FFFF7UL;
+		ulong features = ((ulong)0x1E << 32) | 0x5A7FFFF7UL;
 		byte[] publicKey = Convert.FromHexString(_pairing.PublicKeyHex);
 		byte[] txtAirPlay = BuildTxtData(BuildAirPlayTxt());
+		int displayWidth = StableDisplayWidth;
+		int displayHeight = StableDisplayHeight;
+		if (QualityRenderMode)
+		{
+			displayWidth = QualityMpvAvailable ? QualityMpvDisplayWidth : QualityWpfDisplayWidth;
+			displayHeight = QualityMpvAvailable ? QualityMpvDisplayHeight : QualityWpfDisplayHeight;
+			AppLog.Write($"AirPlay /info quality display advertise: {displayWidth}x{displayHeight} (mpvAvailable={QualityMpvAvailable}).");
+		}
 
 		Dictionary<string, object> info = new Dictionary<string, object>
 		{
@@ -1578,11 +1594,11 @@ public sealed class AirPlayProbeService : IDisposable
 			["vv"] = 2,
 			["statusFlags"] = 68,
 			["keepAliveLowPower"] = true,
-				["sourceVersion"] = LegacyAirTunesVersion,
+			["sourceVersion"] = LegacyAirTunesVersion,
 			["pk"] = publicKey,
 			["keepAliveSendStatsAsBody"] = true,
 			["deviceID"] = _deviceId,
-				["model"] = LegacyAirPlayModel,
+			["model"] = LegacyAirPlayModel,
 			["macAddress"] = _deviceId,
 			["audioFormats"] = new List<object>
 			{
@@ -1623,10 +1639,10 @@ public sealed class AirPlayProbeService : IDisposable
 					["uuid"] = "e0ff8a27-6738-3d56-8a16-cc53aacee925",
 					["widthPhysical"] = 0,
 					["heightPhysical"] = 0,
-					["width"] = 1920,
-					["height"] = 1080,
-					["widthPixels"] = 1920,
-					["heightPixels"] = 1080,
+					["width"] = displayWidth,
+					["height"] = displayHeight,
+					["widthPixels"] = displayWidth,
+					["heightPixels"] = displayHeight,
 					["rotation"] = false,
 					["refreshRate"] = 1.0 / 60.0,
 					["overscanned"] = false,
@@ -1636,6 +1652,42 @@ public sealed class AirPlayProbeService : IDisposable
 		};
 
 		return AirPlayBinaryPlist.Write(info);
+	}
+
+	private static string? FindMpvExecutable()
+	{
+		string bundled = Path.Combine(AppContext.BaseDirectory, "tools", "mpv", "mpv.exe");
+		if (File.Exists(bundled))
+		{
+			return bundled;
+		}
+
+		string devBundled = Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "tools", "mpv", "mpv.exe");
+		if (File.Exists(devBundled))
+		{
+			return Path.GetFullPath(devBundled);
+		}
+
+		string programFiles = Path.Combine(
+			Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
+			"MPV Player",
+			"mpv.exe");
+		if (File.Exists(programFiles))
+		{
+			return programFiles;
+		}
+
+		string[] paths = (Environment.GetEnvironmentVariable("PATH") ?? string.Empty).Split(Path.PathSeparator);
+		foreach (string path in paths.Where(path => !string.IsNullOrWhiteSpace(path)))
+		{
+			string candidate = Path.Combine(path.Trim(), "mpv.exe");
+			if (File.Exists(candidate))
+			{
+				return candidate;
+			}
+		}
+
+		return null;
 	}
 
 	private static string BuildSetupPlist()

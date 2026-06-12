@@ -151,6 +151,13 @@ Decoder order is software first, then d3d11va, then dxva2. Overrides:
 - `IMIRROR_FORCE_SOFTWARE=1`
 - `IMIRROR_PREFER_HARDWARE=1`
 
+Render quality is stable-first by default:
+
+- default / unset `IMIRROR_RENDER_MODE`: advertise a 1920x1080 non-overscanned AirPlay display.
+- `IMIRROR_RENDER_MODE=quality`: prefer a sharper AirPlay display. If `mpv.exe` is available, iMirror advertises 2560x1440 and tries the mpv GPU presenter at 60 fps. Without mpv, it advertises 2304x1296 and uses the WPF/FFmpeg fallback capped at 30 fps.
+
+The render mode is read at process startup because AirPlay display capabilities are advertised before the sender starts the mirror session.
+
 ### Fallback Restart Garbage
 
 When FFmpeg fallback restarts the process, pending input is now cleared before the new process starts. `FfmpegDecoder.DecoderRestarted` also makes `MainWindow` call `H264AnnexBStreamGate.RequireKeyframe()`, so the restarted decoder receives SPS/PPS on the next keyframe instead of stale mid-stream P-frames.
@@ -222,12 +229,15 @@ it re-armed the keyframe gate while the Mac was not sending a fresh IDR.
   WPF UI thread presents slower than the decode rate. Latency does not accumulate; this is
   frame skipping, not a stall.
 - `received:decoded` is ~1:1 in healthy sessions. The previously observed ~2:1 was decode
-  failures during the freeze, **not** the 30 fps output cap; the cap (`ResolveOutputFps`)
-  only fires at source width >= 3000 px, and the Mac session is 1804 px wide. The Mac sends
-  ~30 payloads/s (the declared 60 fps in the stream config is nominal); the payload-shape log
-  line confirms this (`AirPlay mirror video payload shape (10.0s): payloads=..., idr=...,
-  slice=..., paramSetOnly=..., multiNal=..., avgSize=...`, composition counts only, no screen
-  content or key material).
+  failures during the freeze. With the default 1920x1080 non-overscanned advertisement,
+  Mac sessions should report `source=1920x1080`. The optional quality mode advertises
+  2560x1440 only when mpv is available; otherwise it uses a 2304x1296 WPF fallback capped
+  at 30 fps. A direct 2560x1440 WPF fallback proved too heavy: FFmpeg still had to consume
+  the sender's high-resolution stream and accumulated stdin stalls plus receive-to-render
+  latency. The payload-shape log line confirms sender cadence and composition
+  (`AirPlay mirror video payload shape (10.0s): payloads=..., idr=..., slice=...,
+  paramSetOnly=..., multiNal=..., avgSize=...`, composition counts only, no screen content
+  or key material).
 
 Verification target for a Mac session (3+ minutes): screen stays live, `/feedback`
 continues, no control close / data EOF / fallback / timeout, `h264 dropped=0`,

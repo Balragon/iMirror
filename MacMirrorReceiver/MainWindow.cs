@@ -29,7 +29,8 @@ public partial class MainWindow : Window
 	{
 		Auto = 0,
 		Responsive = 1,
-		Native4K = 2
+		Native4K = 2,
+		Quality = 3
 	}
 
 	private const int RealtimeMaxRenderWidth = 3840;
@@ -37,6 +38,8 @@ public partial class MainWindow : Window
 	private const int AutoMaxRenderWidth = 2560;
 
 	private const int ResponsiveMaxRenderWidth = 1920;
+
+	private const int QualityMaxRenderWidth = 2560;
 
 	private const int RealtimeMaxRenderFps = 60;
 
@@ -55,6 +58,8 @@ public partial class MainWindow : Window
 	private static readonly TimeSpan AutoReconnectDelay = TimeSpan.FromSeconds(2.0);
 
 	private static readonly bool SyntheticCursorOverlayEnabled = false;
+
+	private static readonly bool QualityRenderModeEnabled = string.Equals(Environment.GetEnvironmentVariable("IMIRROR_RENDER_MODE"), "quality", StringComparison.OrdinalIgnoreCase);
 
 	private readonly ObservableCollection<MirrorDevice> _devices = new ObservableCollection<MirrorDevice>();
 
@@ -807,7 +812,7 @@ public partial class MainWindow : Window
 	{
 		get
 		{
-			return RenderMode.Auto;
+			return QualityRenderModeEnabled ? RenderMode.Quality : RenderMode.Auto;
 		}
 	}
 
@@ -818,6 +823,8 @@ public partial class MainWindow : Window
 		{
 		case RenderMode.Responsive:
 			return Math.Min(sourceWidth, ResponsiveMaxRenderWidth);
+		case RenderMode.Quality:
+			return Math.Min(sourceWidth, QualityMaxRenderWidth);
 		case RenderMode.Native4K:
 			return Math.Min(sourceWidth, RealtimeMaxRenderWidth);
 		default:
@@ -833,7 +840,12 @@ public partial class MainWindow : Window
 	private int ResolveOutputFps(StreamConfig config, int maxRenderWidth)
 	{
 		int sourceFps = Math.Clamp(config.Fps, 1, RealtimeMaxRenderFps);
-		if (config.Width >= 3000 || maxRenderWidth >= 3000)
+		if (CurrentRenderMode == RenderMode.Quality)
+		{
+			return Math.Min(sourceFps, HighResolutionMaxRenderFps);
+		}
+
+		if (config.Width >= QualityMaxRenderWidth || maxRenderWidth >= QualityMaxRenderWidth)
 		{
 			return Math.Min(sourceFps, HighResolutionMaxRenderFps);
 		}
@@ -861,6 +873,7 @@ public partial class MainWindow : Window
 		RenderModeDetailTextBlock.Text = CurrentRenderMode switch
 		{
 			RenderMode.Responsive => "Caps viewer output at 1080p for faster pointer motion.",
+			RenderMode.Quality => "Advertises a sharper AirPlay display; uses 1440p with mpv, otherwise 1296p WPF at 30 fps.",
 			RenderMode.Native4K => "Uses the mpv GPU path for native 4K when available.",
 			_ => "Automatically selects the best renderer for the incoming stream."
 		};
@@ -874,7 +887,7 @@ public partial class MainWindow : Window
 		}
 		RenderOptions.SetBitmapScalingMode(
 			VideoImage,
-			CurrentRenderMode == RenderMode.Auto ? BitmapScalingMode.HighQuality : BitmapScalingMode.LowQuality);
+			(CurrentRenderMode == RenderMode.Auto || CurrentRenderMode == RenderMode.Quality) ? BitmapScalingMode.HighQuality : BitmapScalingMode.LowQuality);
 	}
 
 	private void RestartDecoderIfRenderWidthChanged(string reason)
@@ -924,15 +937,17 @@ public partial class MainWindow : Window
 		DisposeMpvPresenter();
 		ReleasePendingFrame();
 		bool useMpvPresenter = ShouldUseMpvPresenter(config);
-		_decoderMaxRenderWidth = useMpvPresenter ? Math.Min(config.Width, RealtimeMaxRenderWidth) : ResolveMaxRenderWidth(config);
-		_decoderOutputFps = useMpvPresenter ? Math.Clamp(config.Fps, 1, RealtimeMaxRenderFps) : ResolveOutputFps(config, _decoderMaxRenderWidth);
 		if (useMpvPresenter && TryStartMpvPresenter(config, reason))
 		{
+			_decoderMaxRenderWidth = Math.Min(config.Width, RealtimeMaxRenderWidth);
+			_decoderOutputFps = Math.Clamp(config.Fps, 1, RealtimeMaxRenderFps);
 			FlushPendingVideoToSink();
 			AppLog.Write("mpv presenter started for " + reason + ".");
 			StartVideoWatchdog(config, _connectionGeneration);
 			return;
 		}
+		_decoderMaxRenderWidth = ResolveMaxRenderWidth(config);
+		_decoderOutputFps = ResolveOutputFps(config, _decoderMaxRenderWidth);
 		_decoder = new FfmpegDecoder(config.Width, config.Height, config.Fps, _decoderMaxRenderWidth, _decoderOutputFps);
 		_decoder.StatusChanged += delegate(string message)
 		{
@@ -1682,6 +1697,7 @@ public partial class MainWindow : Window
 		{
 			RenderMode.Responsive => "responsive",
 			RenderMode.Native4K => "native 4K",
+			RenderMode.Quality => "quality",
 			_ => "auto"
 		};
 		string value2 = ((_decoderOutputFps > 0) ? $"<= {_decoderMaxRenderWidth}px @ {_decoderOutputFps} fps ({renderMode})" : $"<= {RealtimeMaxRenderWidth}px @ up to {RealtimeMaxRenderFps} fps ({renderMode})");
