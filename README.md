@@ -12,11 +12,10 @@ Windows AirPlay screen-mirroring receiver prototype.
 - Live in-app FFmpeg decode and on-screen render are confirmed.
 - Session persistence is confirmed past the previous ~12 second failure point; render stats continued for 1+ minute with no H.264 input drops.
 - iPhone sender: stable (1+ minute clean session, `h264 dropped=0`, no stalls).
-- Mac sender: basic connection/decode/render has been observed, but long-session
-  stability is still under validation. FFmpeg can log `sps_id out of range` /
-  `mb_width/height overflow`; current evidence suggests these spare-parameter-set
-  warnings are non-fatal and should not trigger decoder restart, but more 3+ minute
-  tests across Mac resolutions and activity levels are still needed.
+- Mac sender: stable. A multi-minute freeze was root-caused to an AVCC-length-prefix /
+  Annex B-start-code confusion in the H.264 normalizer and fixed; a Mac session now decodes
+  9,000+ frames at `received:decoded:rendered ~ 1:1:1` with no `sps_id`/`mb_width`/stall
+  warnings (see "Mac Sender Stabilization" below).
 
 ## Important Files
 
@@ -181,48 +180,54 @@ Expected healthy logs:
 - `Render stats` received/decoded/rendered counters keep increasing.
 - `h264 accepted/written/dropped` keeps dropped at `0` during normal operation.
 
-## Mac Sender Stabilization (Ongoing)
+## Mac Sender Stabilization (Resolved)
 
-### `sps_id out of range` / `mb_width/height overflow` Are Benign
+### Root Cause: AVCC Length Prefix Misread As An Annex B Start Code
 
-The Mac sender carries **two H.264 parameter sets** in one stream:
+The Mac sender, after a few minutes, would freeze the decoder: `received` kept rising while
+`decoded`/`rendered` stuck, with repeated `sps_id 6 out of range`, `mb_width/height overflow`,
+`non-intra slice in an IDR NAL unit`, and `Invalid data found` warnings.
 
-- Set A: SPS id=0 / PPS id=0 - used by every real slice.
-- Set B: SPS id=6 / PPS id=3 - an unused spare set.
+All of those were **symptoms of one bug** in `TryNormalizeClearH264Payload`
+(`AirPlayProbeService`). Mac mirror video is AVCC (4-byte big-endian length prefix per NAL),
+but the normalizer probed Annex B framing **first**. `TryUseAnnexBPayloadAtOffset` only
+checks for a start code at offset 0 and then copies the payload verbatim. When an AVCC length
+prefix coincides with a start code - NAL size 1 -> `00 00 00 01`, or size 256..511 ->
+`00 00 01 xx` - the payload was treated as Annex B and copied raw, leaving the length prefix
+inline. Every NAL was then shifted by a byte, corrupting slice headers (decoder reads
+`first_mb_in_slice != 0`, a "non-intra slice in an IDR NAL unit", or garbage parsed as
+`sps_id 6`). A corrupt IDR cannot be decoded, and following P-slices reference the broken
+frame, so the stream stalls until a clean IDR (which the Mac emits only rarely).
 
-FFmpeg warns (`sps_id 6 out of range`) while parsing the spare set, but all coded slices
-reference sps_id 0, so decoding continues. This was confirmed by offline-decoding the
-in-app `submitted.h264` dump (the exact post-gate stream, before any backpressure drop):
-the dump contains the same warnings yet decodes 272 frames cleanly, and
-`-bsf:v trace_headers` shows all 269 slices use `pic_parameter_set_id = 0`.
+This was proven by counting start codes in the in-app `submitted.h264` dump (post-gate, the
+exact decoder input). The normalizer's AVCC path always writes 4-byte start codes, yet the
+dump contained **219 three-byte start codes** (`XX 00 00 01`) - the fingerprint of raw AVCC
+length prefixes leaking through the Annex B path.
 
-Therefore the decoder must **not** be restarted on these warnings. An earlier attempt to
-restart on `sps_id out of range` / `mb_width/height overflow` caused a freeze: restarting
-re-arms the keyframe gate (`RequireKeyframe`), but the Mac does not emit a fresh IDR on
-demand, so the gate gets stuck dropping P-slices (`saw NAL 1`) until the next natural IDR
-(which can be tens of seconds away), and the repeated restarts triggered hwaccel-fallback
-cascades. `MainWindow.IsDecoderResyncError` now classifies these as resync warnings
-(suppressed from the UI, no restart); ffmpeg keeps its state and resyncs at the next IDR.
+**Fix:** probe AVCC first (it requires the whole payload to resolve exactly, `cursor ==
+length`, so it is the strict, safe check) and fall back to Annex B only if AVCC fails. After
+the fix the dump has **0 three-byte start codes**, and a Mac session decodes 9,000+ frames
+with `received:decoded:rendered ~ 1:1:1` and zero `sps_id`/`mb_width`/`non-intra`/stall
+warnings, well past the previous ~7,300-frame freeze point.
+
+Note: `sps_id 6` was never a real parameter set the Mac sent - with the normalize fix it does
+not appear at all, even with parameter-set filtering disabled. Earlier symptom-oriented
+attempts (filtering non-zero SPS/PPS ids in the gate, restarting the decoder on these
+warnings) were unnecessary and were reverted; restarting in particular caused freezes because
+it re-armed the keyframe gate while the Mac was not sending a fresh IDR.
 
 ### Render And Rate Notes
 
 - The render path is latest-frame-wins (single pending slot): `renderDropped` means the
   WPF UI thread presents slower than the decode rate. Latency does not accumulate; this is
-  frame skipping, not a stall. Lower priority.
+  frame skipping, not a stall.
 - `received:decoded` is ~1:1 in healthy sessions. The previously observed ~2:1 was decode
   failures during the freeze, **not** the 30 fps output cap; the cap (`ResolveOutputFps`)
-  only fires at source width >= 3000 px, and the Mac session is 1804 px wide. The Mac
-  actually sends ~30 payloads/s (the declared 60 fps in the stream config is nominal); the
-  payload-shape log line confirms this (`AirPlay mirror video payload shape (10.0s):
-  payloads=..., idr=..., slice=..., paramSetOnly=..., multiNal=..., avgSize=...`,
-  composition counts only, no screen content or key material).
-- The Mac emits IDRs rarely (payload-shape windows often show `idr=0` over 10 s), so a real
-  mid-stream corruption recovers only at the next keyframe. Requesting a keyframe from the
-  Mac on corruption is possible future work (AirPlay mechanism TBD).
-- Queue overflow recovers in GOP units: on overflow the whole pending queue is flushed; if
-  the incoming payload is an IDR, feeding resumes from it immediately, otherwise the gate
-  holds input until the next keyframe (`InputQueueOverflowed ->
-  H264AnnexBStreamGate.RequireKeyframe()`). Dropping individual P-frames corrupts the GOP.
+  only fires at source width >= 3000 px, and the Mac session is 1804 px wide. The Mac sends
+  ~30 payloads/s (the declared 60 fps in the stream config is nominal); the payload-shape log
+  line confirms this (`AirPlay mirror video payload shape (10.0s): payloads=..., idr=...,
+  slice=..., paramSetOnly=..., multiNal=..., avgSize=...`, composition counts only, no screen
+  content or key material).
 
 Verification target for a Mac session (3+ minutes): screen stays live, `/feedback`
 continues, no control close / data EOF / fallback / timeout, `h264 dropped=0`,

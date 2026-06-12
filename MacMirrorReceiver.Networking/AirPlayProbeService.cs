@@ -734,12 +734,14 @@ public sealed class AirPlayProbeService : IDisposable
 			return false;
 		}
 
-		if (TryUseAnnexBPayloadAtOffset(payload, 0, out annexB))
-		{
-			format = "annexb";
-			return true;
-		}
-
+		// Try AVCC (length-prefixed) FIRST. Mac mirror video is AVCC, and probing Annex B
+		// first mis-fires when an AVCC big-endian length prefix coincides with a start code
+		// (NAL size 1 -> 00 00 00 01, size 256..511 -> 00 00 01 xx). That made
+		// TryUseAnnexBPayloadAtOffset copy the raw AVCC bytes verbatim, leaving the 4-byte
+		// length prefix in the stream and shifting every NAL by a byte, which corrupts slice
+		// headers ("non-intra slice in an IDR NAL unit", first_mb_in_slice != 0). AVCC parsing
+		// requires the whole payload to resolve exactly (cursor == length), so it is the
+		// stricter, safer check and must run before the lenient Annex B probe.
 		int maxOffset = Math.Min(MaxH264PrefixProbeBytes, Math.Max(0, payload.Length - 5));
 		for (int offset = 0; offset <= maxOffset; offset++)
 		{
@@ -748,6 +750,13 @@ public sealed class AirPlayProbeService : IDisposable
 				format = (offset == 0 ? "avcc-be" : "avcc-be@" + offset.ToString(CultureInfo.InvariantCulture)) + "/nal=" + nalCount.ToString(CultureInfo.InvariantCulture);
 				return true;
 			}
+		}
+
+		// Fallback: a genuine Annex B payload (no AVCC length framing resolved above).
+		if (TryUseAnnexBPayloadAtOffset(payload, 0, out annexB))
+		{
+			format = "annexb";
+			return true;
 		}
 
 		return false;
