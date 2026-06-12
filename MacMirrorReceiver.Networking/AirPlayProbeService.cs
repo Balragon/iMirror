@@ -1629,7 +1629,7 @@ public sealed class AirPlayProbeService : IDisposable
 					["heightPixels"] = 1080,
 					["rotation"] = false,
 					["refreshRate"] = 1.0 / 60.0,
-					["overscanned"] = true,
+					["overscanned"] = false,
 					["features"] = 14
 				}
 			}
