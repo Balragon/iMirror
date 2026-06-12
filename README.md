@@ -12,10 +12,11 @@ Windows AirPlay screen-mirroring receiver prototype.
 - Live in-app FFmpeg decode and on-screen render are confirmed.
 - Session persistence is confirmed past the previous ~12 second failure point; render stats continued for 1+ minute with no H.264 input drops.
 - iPhone sender: stable (1+ minute clean session, `h264 dropped=0`, no stalls).
-- Mac sender: connection/decode/render works; sessions stay alive (no control close, data
-  EOF, fallback, or timeout). FFmpeg logs occasional `sps_id out of range` /
-  `mb_width/height overflow` warnings, but these are benign (see below) and decoding
-  continues through them.
+- Mac sender: basic connection/decode/render has been observed, but long-session
+  stability is still under validation. FFmpeg can log `sps_id out of range` /
+  `mb_width/height overflow`; current evidence suggests these spare-parameter-set
+  warnings are non-fatal and should not trigger decoder restart, but more 3+ minute
+  tests across Mac resolutions and activity levels are still needed.
 
 ## Important Files
 
@@ -180,14 +181,14 @@ Expected healthy logs:
 - `Render stats` received/decoded/rendered counters keep increasing.
 - `h264 accepted/written/dropped` keeps dropped at `0` during normal operation.
 
-## Mac Sender Stabilization
+## Mac Sender Stabilization (Ongoing)
 
 ### `sps_id out of range` / `mb_width/height overflow` Are Benign
 
 The Mac sender carries **two H.264 parameter sets** in one stream:
 
-- Set A: SPS id=0 / PPS id=0 — used by every real slice.
-- Set B: SPS id=6 / PPS id=3 — an unused spare set.
+- Set A: SPS id=0 / PPS id=0 - used by every real slice.
+- Set B: SPS id=6 / PPS id=3 - an unused spare set.
 
 FFmpeg warns (`sps_id 6 out of range`) while parsing the spare set, but all coded slices
 reference sps_id 0, so decoding continues. This was confirmed by offline-decoding the
@@ -209,7 +210,7 @@ cascades. `MainWindow.IsDecoderResyncError` now classifies these as resync warni
   WPF UI thread presents slower than the decode rate. Latency does not accumulate; this is
   frame skipping, not a stall. Lower priority.
 - `received:decoded` is ~1:1 in healthy sessions. The previously observed ~2:1 was decode
-  failures during the freeze, **not** the 30 fps output cap — the cap (`ResolveOutputFps`)
+  failures during the freeze, **not** the 30 fps output cap; the cap (`ResolveOutputFps`)
   only fires at source width >= 3000 px, and the Mac session is 1804 px wide. The Mac
   actually sends ~30 payloads/s (the declared 60 fps in the stream config is nominal); the
   payload-shape log line confirms this (`AirPlay mirror video payload shape (10.0s):
@@ -226,3 +227,7 @@ cascades. `MainWindow.IsDecoderResyncError` now classifies these as resync warni
 Verification target for a Mac session (3+ minutes): screen stays live, `/feedback`
 continues, no control close / data EOF / fallback / timeout, `h264 dropped=0`,
 decoded/rendered keep increasing, and `sps_id`/`mb_width` warnings do not stop decoding.
+
+Current Mac status: promising but not final. Continue collecting 3+ minute sessions and
+watch for fallback cascades, long keyframe waits after real corruption, and high
+`renderDropped` under motion-heavy desktop activity.

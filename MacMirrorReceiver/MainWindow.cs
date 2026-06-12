@@ -114,6 +114,14 @@ public partial class MainWindow : Window
 
 	private long _lastRenderLogTick;
 
+	private long _lastVideoHealthLogTick;
+
+	private long _lastVideoHealthPackets;
+
+	private long _lastVideoHealthDecodedFrames;
+
+	private long _lastVideoHealthRenderedFrames;
+
 	private long _pendingVideoBytesBeforeSink;
 
 	private long _pendingVideoDroppedBeforeSink;
@@ -410,6 +418,10 @@ public partial class MainWindow : Window
 		_latestReceiveToRenderMs = 0L;
 		_latestDecodeToRenderMs = 0L;
 			_lastRenderLogTick = 0L;
+			_lastVideoHealthLogTick = 0L;
+			_lastVideoHealthPackets = 0L;
+			_lastVideoHealthDecodedFrames = 0L;
+			_lastVideoHealthRenderedFrames = 0L;
 			_decoderRestarts = 0L;
 			_lastGateLogTick = 0L;
 			_pendingVideoDroppedBeforeSink = 0L;
@@ -491,6 +503,10 @@ public partial class MainWindow : Window
 		{
 			_decoderStatus = _h264Gate.LastDecision;
 			LogGateDecisionThrottled();
+		}
+		if (countReceived)
+		{
+			LogVideoHealthThrottled();
 		}
 		QueueDiagnosticsUpdate();
 	}
@@ -1414,6 +1430,36 @@ public partial class MainWindow : Window
 			$"decoderQueue={_decoder?.QueuedInputPackets ?? 0} packets/{(double)(_decoder?.QueuedInputBytes ?? 0L) / 1024.0:N1}KB, " +
 			$"h264 accepted/written/dropped={_decoder?.AcceptedInputPackets ?? 0:N0}/{_decoder?.WrittenInputPackets ?? 0:N0}/{_decoder?.DroppedInputPackets ?? 0:N0}, " +
 			$"stdinWrite={_decoder?.LatestWriteMilliseconds ?? 0}ms max={_decoder?.MaxWriteMilliseconds ?? 0}ms stalls={_decoder?.WriteStalls ?? 0:N0}");
+	}
+
+	private void LogVideoHealthThrottled()
+	{
+		long tickCount = Environment.TickCount64;
+		long previous = Interlocked.Read(ref _lastVideoHealthLogTick);
+		if (tickCount - previous < 10000)
+		{
+			return;
+		}
+		if (Interlocked.CompareExchange(ref _lastVideoHealthLogTick, tickCount, previous) != previous)
+		{
+			return;
+		}
+
+		long received = Interlocked.Read(ref _videoPackets);
+		long decoded = Interlocked.Read(ref _decodedFrames);
+		long rendered = Interlocked.Read(ref _renderedFrames);
+		long previousReceived = Interlocked.Exchange(ref _lastVideoHealthPackets, received);
+		long previousDecoded = Interlocked.Exchange(ref _lastVideoHealthDecodedFrames, decoded);
+		long previousRendered = Interlocked.Exchange(ref _lastVideoHealthRenderedFrames, rendered);
+		long receivedDelta = Math.Max(0L, received - previousReceived);
+		long decodedDelta = Math.Max(0L, decoded - previousDecoded);
+		long renderedDelta = Math.Max(0L, rendered - previousRendered);
+
+		AppLog.Write(
+			$"Video health: received={received:N0} (+{receivedDelta:N0}), decoded={decoded:N0} (+{decodedDelta:N0}), rendered={rendered:N0} (+{renderedDelta:N0}), " +
+			$"decoderQueue={_decoder?.QueuedInputPackets ?? 0} packets/{(double)(_decoder?.QueuedInputBytes ?? 0L) / 1024.0:N1}KB, " +
+			$"h264 accepted/written/dropped={_decoder?.AcceptedInputPackets ?? 0:N0}/{_decoder?.WrittenInputPackets ?? 0:N0}/{_decoder?.DroppedInputPackets ?? 0:N0}, " +
+			$"gate={_h264Gate.LastDecision}");
 	}
 
 	private async Task DisconnectAsync(string? finalStatus = "Disconnected.", bool userRequested = false, bool revealPanel = true)
