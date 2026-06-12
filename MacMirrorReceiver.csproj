@@ -1,0 +1,35 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <AssemblyName>iMirror</AssemblyName>
+    <GenerateAssemblyInfo>False</GenerateAssemblyInfo>
+    <OutputType>WinExe</OutputType>
+    <UseWPF>True</UseWPF>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <PlatformTarget>x64</PlatformTarget>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+  <PropertyGroup>
+    <LangVersion>11.0</LangVersion>
+    <AllowUnsafeBlocks>True</AllowUnsafeBlocks>
+  </PropertyGroup>
+  <PropertyGroup>
+    <RootNamespace>MacMirrorReceiver</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="BouncyCastle.Cryptography" Version="2.5.1" />
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Remove="tools\**\*.cs" />
+  </ItemGroup>
+  <ItemGroup>
+    <Content Include="ThirdParty\playfair\LICENSE.md" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="ThirdParty\playfair\hand_garble.c" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="ThirdParty\playfair\modified_md5.c" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="ThirdParty\playfair\omg_hax.c" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="ThirdParty\playfair\omg_hax.h" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="ThirdParty\playfair\sap_hash.c" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(DirectXProbe)' == 'true'">
+    <PackageReference Include="SharpDX.Direct3D9" Version="4.2.0" />
+  </ItemGroup>
+</Project>
