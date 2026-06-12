@@ -12,9 +12,10 @@ Windows AirPlay screen-mirroring receiver prototype.
 - Live in-app FFmpeg decode and on-screen render are confirmed.
 - Session persistence is confirmed past the previous ~12 second failure point; render stats continued for 1+ minute with no H.264 input drops.
 - iPhone sender: stable (1+ minute clean session, `h264 dropped=0`, no stalls).
-- Mac sender: basic connection/decode/render works, stabilization in progress. Sessions
-  stay alive (no control close, data EOF, fallback, or timeout), but FFmpeg logs repeated
-  `Invalid data found` warnings and render drops are higher than with iPhone.
+- Mac sender: connection/decode/render works; sessions stay alive (no control close, data
+  EOF, fallback, or timeout). FFmpeg logs occasional `sps_id out of range` /
+  `mb_width/height overflow` warnings, but these are benign (see below) and decoding
+  continues through them.
 
 ## Important Files
 
@@ -179,33 +180,49 @@ Expected healthy logs:
 - `Render stats` received/decoded/rendered counters keep increasing.
 - `h264 accepted/written/dropped` keeps dropped at `0` during normal operation.
 
-## Mac Sender Stabilization (in progress)
+## Mac Sender Stabilization
 
-Observed Mac baseline (vs a clean iPhone session): `received=4,601 decoded=2,282
-rendered=1,485 renderDropped=796`, `h264 dropped=0`, `decoderQueue=0`, `stalls=2`,
-repeated FFmpeg `Invalid data found` warnings, session alive throughout.
+### `sps_id out of range` / `mb_width/height overflow` Are Benign
 
-Analysis so far:
+The Mac sender carries **two H.264 parameter sets** in one stream:
 
-- The render path is already latest-frame-wins (single pending slot): `renderDropped`
-  means the WPF UI thread presents slower than the decode rate. Latency does not
-  accumulate; this is frame skipping, not a stall. Lower priority.
-- `received:decoded ~ 2:1` has two candidate explanations that the new telemetry
-  separates: (a) the intentional 30 fps output cap (`ResolveOutputFps`) when the source
-  width is >= 3000 px (Mac Retina native), or (b) the Mac splitting each access unit
-  across multiple payloads / payloads failing to decode. The payload-shape log line
-  (`AirPlay mirror video payload shape (10.0s): payloads=..., idr=..., slice=...,
-  paramSetOnly=..., multiNal=..., avgSize=...`) reports composition counts only (no
-  screen content or key material) every ~10 s, so the next Mac run answers this without
-  an H.264 dump: compare payloads-per-second against the configured stream fps and the
-  decoded-frame rate.
-- Queue overflow now recovers in GOP units: on overflow the whole pending queue is
-  flushed; if the incoming payload is an IDR, feeding resumes from it immediately,
-  otherwise the gate holds input until the next keyframe
-  (`InputQueueOverflowed -> H264AnnexBStreamGate.RequireKeyframe()`). Dropping individual
-  P-frames corrupted the GOP and caused decoder `Invalid data` bursts.
+- Set A: SPS id=0 / PPS id=0 — used by every real slice.
+- Set B: SPS id=6 / PPS id=3 — an unused spare set.
+
+FFmpeg warns (`sps_id 6 out of range`) while parsing the spare set, but all coded slices
+reference sps_id 0, so decoding continues. This was confirmed by offline-decoding the
+in-app `submitted.h264` dump (the exact post-gate stream, before any backpressure drop):
+the dump contains the same warnings yet decodes 272 frames cleanly, and
+`-bsf:v trace_headers` shows all 269 slices use `pic_parameter_set_id = 0`.
+
+Therefore the decoder must **not** be restarted on these warnings. An earlier attempt to
+restart on `sps_id out of range` / `mb_width/height overflow` caused a freeze: restarting
+re-arms the keyframe gate (`RequireKeyframe`), but the Mac does not emit a fresh IDR on
+demand, so the gate gets stuck dropping P-slices (`saw NAL 1`) until the next natural IDR
+(which can be tens of seconds away), and the repeated restarts triggered hwaccel-fallback
+cascades. `MainWindow.IsDecoderResyncError` now classifies these as resync warnings
+(suppressed from the UI, no restart); ffmpeg keeps its state and resyncs at the next IDR.
+
+### Render And Rate Notes
+
+- The render path is latest-frame-wins (single pending slot): `renderDropped` means the
+  WPF UI thread presents slower than the decode rate. Latency does not accumulate; this is
+  frame skipping, not a stall. Lower priority.
+- `received:decoded` is ~1:1 in healthy sessions. The previously observed ~2:1 was decode
+  failures during the freeze, **not** the 30 fps output cap — the cap (`ResolveOutputFps`)
+  only fires at source width >= 3000 px, and the Mac session is 1804 px wide. The Mac
+  actually sends ~30 payloads/s (the declared 60 fps in the stream config is nominal); the
+  payload-shape log line confirms this (`AirPlay mirror video payload shape (10.0s):
+  payloads=..., idr=..., slice=..., paramSetOnly=..., multiNal=..., avgSize=...`,
+  composition counts only, no screen content or key material).
+- The Mac emits IDRs rarely (payload-shape windows often show `idr=0` over 10 s), so a real
+  mid-stream corruption recovers only at the next keyframe. Requesting a keyframe from the
+  Mac on corruption is possible future work (AirPlay mechanism TBD).
+- Queue overflow recovers in GOP units: on overflow the whole pending queue is flushed; if
+  the incoming payload is an IDR, feeding resumes from it immediately, otherwise the gate
+  holds input until the next keyframe (`InputQueueOverflowed ->
+  H264AnnexBStreamGate.RequireKeyframe()`). Dropping individual P-frames corrupts the GOP.
 
 Verification target for a Mac session (3+ minutes): screen stays live, `/feedback`
 continues, no control close / data EOF / fallback / timeout, `h264 dropped=0`,
-decoded/rendered keep increasing, no runaway `Invalid data` bursts, and perceived motion
-stays smooth.
+decoded/rendered keep increasing, and `sps_id`/`mb_width` warnings do not stop decoding.

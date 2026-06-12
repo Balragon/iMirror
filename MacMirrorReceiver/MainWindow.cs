@@ -933,6 +933,12 @@ public partial class MainWindow : Window
 				{
 					SetStatus(message2);
 				}
+				// NOTE: Do NOT restart the decoder on mb_width/height overflow or
+				// sps_id-out-of-range. Those are symptoms of mid-stream bitstream corruption,
+				// not a genuine SPS change (no SPS NAL actually arrives). Restarting only
+				// re-arms the keyframe gate, and the Mac sender does not emit a fresh IDR on
+				// demand, so the gate gets stuck dropping P-slices ("saw NAL 1") and the
+				// decoder never recovers. Let ffmpeg keep its state and resync on the next IDR.
 				UpdateDiagnostics();
 			});
 		};
@@ -1062,7 +1068,11 @@ public partial class MainWindow : Window
 
 	private static bool IsDecoderResyncError(string message)
 	{
-		if (!message.Contains("non-existing PPS", StringComparison.OrdinalIgnoreCase) && !message.Contains("Invalid data found", StringComparison.OrdinalIgnoreCase))
+		if (!message.Contains("non-existing PPS", StringComparison.OrdinalIgnoreCase)
+			&& !message.Contains("Invalid data found", StringComparison.OrdinalIgnoreCase)
+			&& !message.Contains("mb_width/height overflow", StringComparison.OrdinalIgnoreCase)
+			&& !message.Contains("reference count overflow", StringComparison.OrdinalIgnoreCase)
+			&& !(message.Contains("sps_id", StringComparison.OrdinalIgnoreCase) && message.Contains("out of range", StringComparison.OrdinalIgnoreCase)))
 		{
 			return message.Contains("no frame", StringComparison.OrdinalIgnoreCase);
 		}
