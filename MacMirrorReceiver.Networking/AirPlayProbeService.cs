@@ -330,17 +330,20 @@ public sealed class AirPlayProbeService : IDisposable
 
 					if (TryNormalizeClearH264Payload(videoPayload, out byte[] annexB, out string clearFormat))
 					{
+						RecordVideoPayloadShape(annexB);
 						VideoPayloadReceived?.Invoke(annexB, 0, Stopwatch.GetTimestamp());
 						emitted++;
 					}
 						else if (TryProbeMirrorDecryptors(payloadType, header, payload, out annexB, out string selectedName, out string selectedFormat))
 						{
+							RecordVideoPayloadShape(annexB);
 							VideoPayloadReceived?.Invoke(annexB, 0, Stopwatch.GetTimestamp());
 							AppLog.Write($"AirPlay mirror video type={payloadType} decrypted with stateful candidate '{selectedName}' ({selectedFormat}).");
 							emitted++;
 						}
 						else if (TrySelectMirrorDecryptor(payloadType, header, payload, out annexB, out selectedName, out selectedFormat))
 						{
+							RecordVideoPayloadShape(annexB);
 							VideoPayloadReceived?.Invoke(annexB, 0, Stopwatch.GetTimestamp());
 							AppLog.Write($"AirPlay mirror video type={payloadType} decrypted with candidate '{selectedName}' ({selectedFormat}).");
 						emitted++;
@@ -814,6 +817,131 @@ public sealed class AirPlayProbeService : IDisposable
 		annexB = new byte[payload.Length - offset];
 		Buffer.BlockCopy(payload, offset, annexB, 0, annexB.Length);
 		return true;
+	}
+
+	// Lightweight access-unit shape telemetry for the type=0 video path. Logs one summary
+	// line every ~10s with NAL composition counts only (no payload bytes, no key material,
+	// no screen content). Used to compare sender behaviour (e.g. Mac vs iPhone): whether a
+	// sender splits access units across payloads, how often IDR/parameter sets arrive, and
+	// whether the received-payload rate matches the decoded-frame rate.
+	private readonly object _payloadShapeGate = new object();
+
+	private long _shapeWindowStartTick;
+
+	private int _shapePayloads;
+
+	private int _shapeIdr;
+
+	private int _shapeSlice;
+
+	private int _shapeParamSetOnly;
+
+	private int _shapeSeiOnly;
+
+	private int _shapeOther;
+
+	private int _shapeMultiNal;
+
+	private long _shapeBytes;
+
+	private void RecordVideoPayloadShape(byte[] annexB)
+	{
+		bool hasIdr = false;
+		bool hasSlice = false;
+		bool hasParamSet = false;
+		bool hasSei = false;
+		int nalCount = 0;
+		int offset = 0;
+		while (true)
+		{
+			int start = FindStartCode(annexB, offset, annexB.Length - 3);
+			if (start < 0)
+			{
+				break;
+			}
+			int nalOffset = start + StartCodeLengthAt(annexB, start);
+			if (nalOffset >= annexB.Length)
+			{
+				break;
+			}
+			nalCount++;
+			switch (annexB[nalOffset] & 0x1F)
+			{
+				case 5:
+					hasIdr = true;
+					break;
+				case 1:
+					hasSlice = true;
+					break;
+				case 7:
+				case 8:
+					hasParamSet = true;
+					break;
+				case 6:
+					hasSei = true;
+					break;
+			}
+			offset = nalOffset + 1;
+		}
+
+		string? summary = null;
+		lock (_payloadShapeGate)
+		{
+			long now = Stopwatch.GetTimestamp();
+			if (_shapeWindowStartTick == 0)
+			{
+				_shapeWindowStartTick = now;
+			}
+
+			_shapePayloads++;
+			_shapeBytes += annexB.Length;
+			if (hasIdr)
+			{
+				_shapeIdr++;
+			}
+			else if (hasSlice)
+			{
+				_shapeSlice++;
+			}
+			else if (hasParamSet)
+			{
+				_shapeParamSetOnly++;
+			}
+			else if (hasSei)
+			{
+				_shapeSeiOnly++;
+			}
+			else
+			{
+				_shapeOther++;
+			}
+			if (nalCount > 1)
+			{
+				_shapeMultiNal++;
+			}
+
+			double seconds = (now - _shapeWindowStartTick) / (double)Stopwatch.Frequency;
+			if (seconds >= 10.0)
+			{
+				summary = $"AirPlay mirror video payload shape ({seconds:N1}s): payloads={_shapePayloads} ({_shapePayloads / seconds:N1}/s), " +
+					$"idr={_shapeIdr}, slice={_shapeSlice}, paramSetOnly={_shapeParamSetOnly}, seiOnly={_shapeSeiOnly}, other={_shapeOther}, " +
+					$"multiNal={_shapeMultiNal}, avgSize={(_shapePayloads > 0 ? _shapeBytes / _shapePayloads : 0):N0}.";
+				_shapeWindowStartTick = now;
+				_shapePayloads = 0;
+				_shapeIdr = 0;
+				_shapeSlice = 0;
+				_shapeParamSetOnly = 0;
+				_shapeSeiOnly = 0;
+				_shapeOther = 0;
+				_shapeMultiNal = 0;
+				_shapeBytes = 0;
+			}
+		}
+
+		if (summary != null)
+		{
+			AppLog.Write(summary);
+		}
 	}
 
 	private static string DescribeH264Probe(byte[] payload)

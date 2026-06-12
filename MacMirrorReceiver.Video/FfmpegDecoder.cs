@@ -176,6 +176,11 @@ public sealed class FfmpegDecoder : IDisposable
 	// the upstream Annex B gate must re-establish SPS/PPS and wait for the next keyframe.
 	public event Action? DecoderRestarted;
 
+	// Raised when the input queue overflowed and was flushed without an IDR to resume from.
+	// The upstream gate should call H264AnnexBStreamGate.RequireKeyframe() so feeding resumes
+	// cleanly at the next keyframe instead of with mid-GOP P-frames.
+	public event Action? InputQueueOverflowed;
+
 	public FfmpegDecoder(int width, int height, int inputFps, int maxOutputWidth, int targetOutputFps)
 	{
 		_inputWidth = width;
@@ -432,29 +437,83 @@ public sealed class FfmpegDecoder : IDisposable
 		{
 			this.StatusChanged?.Invoke($"H264 submitted dump reached {MaxDumpBytes / (1024 * 1024)}MB cap; further packets are not captured.");
 		}
-		bool shouldSignal;
+		bool shouldSignal = false;
+		int flushed = 0;
+		bool droppedIncoming = false;
 		lock (_inputGate)
 		{
-			while (_inputQueue.Count >= MaxQueuedInputPackets || _queuedInputBytes + payload.Length > MaxQueuedInputBytes)
+			if (_inputQueue.Count >= MaxQueuedInputPackets || _queuedInputBytes + payload.Length > MaxQueuedInputBytes)
 			{
-				if (_inputQueue.Count == 0)
+				// Dropping individual H.264 packets corrupts the GOP until the next IDR (every
+				// later P-frame references the dropped one), which shows up as decoder
+				// "Invalid data" bursts. Recover in GOP units instead: flush the whole queue,
+				// then either resume from the incoming payload if it is itself an IDR sync
+				// point, or drop it too and let the upstream gate hold input until the next
+				// keyframe (InputQueueOverflowed -> H264AnnexBStreamGate.RequireKeyframe).
+				flushed = _inputQueue.Count;
+				_inputQueue.Clear();
+				_queuedInputBytes = 0L;
+				DroppedInputPackets += flushed;
+				if (!ContainsIdrNal(payload))
 				{
-					break;
+					droppedIncoming = true;
+					DroppedInputPackets++;
 				}
-				H264InputPacket dropped = _inputQueue.Dequeue();
-				_queuedInputBytes = Math.Max(0L, _queuedInputBytes - dropped.Payload.Length);
-				DroppedInputPackets++;
 			}
-			shouldSignal = _inputQueue.Count == 0;
-			_inputQueue.Enqueue(new H264InputPacket(payload, sourceTimestampNanos, receivedTick));
-			_queuedInputBytes += payload.Length;
-			Interlocked.Increment(ref _acceptedInputPackets);
+
+			if (!droppedIncoming)
+			{
+				shouldSignal = _inputQueue.Count == 0;
+				_inputQueue.Enqueue(new H264InputPacket(payload, sourceTimestampNanos, receivedTick));
+				_queuedInputBytes += payload.Length;
+				Interlocked.Increment(ref _acceptedInputPackets);
+			}
+		}
+		if (flushed > 0)
+		{
+			this.StatusChanged?.Invoke(droppedIncoming
+				? $"Decoder input overflow: flushed {flushed} queued packet(s); waiting for next keyframe."
+				: $"Decoder input overflow: flushed {flushed} queued packet(s); resuming from incoming keyframe.");
+			if (droppedIncoming)
+			{
+				this.InputQueueOverflowed?.Invoke();
+			}
 		}
 		if (shouldSignal)
 		{
 			_inputSignal.Release();
 		}
 		return true;
+	}
+
+	private static bool ContainsIdrNal(byte[] payload)
+	{
+		for (int i = 0; i + 3 < payload.Length; i++)
+		{
+			if (payload[i] != 0 || payload[i + 1] != 0)
+			{
+				continue;
+			}
+			int nalOffset;
+			if (payload[i + 2] == 1)
+			{
+				nalOffset = i + 3;
+			}
+			else if (payload[i + 2] == 0 && i + 4 < payload.Length && payload[i + 3] == 1)
+			{
+				nalOffset = i + 4;
+			}
+			else
+			{
+				continue;
+			}
+			if (nalOffset < payload.Length && (payload[nalOffset] & 0x1F) == 5)
+			{
+				return true;
+			}
+			i = nalOffset - 1;
+		}
+		return false;
 	}
 
 	public int ClearPendingInput()

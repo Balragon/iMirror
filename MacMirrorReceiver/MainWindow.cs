@@ -947,6 +947,15 @@ public partial class MainWindow : Window
 				UpdateDiagnostics();
 			});
 		};
+		_decoder.InputQueueOverflowed += delegate
+		{
+			base.Dispatcher.BeginInvoke(new Action(delegate
+			{
+				_h264Gate.RequireKeyframe();
+				AppLog.Write("Decoder input queue overflowed; holding video until next keyframe.");
+				UpdateDiagnostics();
+			}));
+		};
 		_decoder.Start();
 		_decoderStatus = "started";
 		FlushPendingVideoToSink();
