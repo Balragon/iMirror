@@ -251,6 +251,48 @@ Fourth attempt judgment:
 - H.264 accepted/written/dropped remained `.../0`; render stats showed no sustained `decoderQueue` accumulation.
 - Later unbounded logging after the accepted window showed intermittent latency spikes. Those spikes are tracked as follow-up observation only because they occurred outside the accepted bounded window and did not coincide with drops, sustained queue accumulation, corruption, or HRD3D/MF leakage.
 
+## Spike Distribution and Evidence Contiguity (added in review)
+
+`LatencyAcceptanceReport` previously reported only `worstP95`/`worstMax` and a pass/fail. That
+let a hand-selected clean slice PASS while removed sections hid spikes. The tool now also prints
+`p95BreachWindows`, `severeMaxWindows`, `maxWindowGap`, and `contiguousEvidence`, and emits a
+`WARN` when the fed evidence is not time-contiguous. Re-running over the existing logs:
+
+Bounded stable slice `imirror-stable-20260614-194754-195214.log` (target 3min):
+
+```text
+PASS: iMirror acceptance report
+windows=27, evidenceDuration=00:04:30, targetDuration=3min
+p95BreachWindows=0 of 27 (>= 150ms), severeMaxWindows=0 (>= 300ms)
+maxWindowGap=00:00:10, largeGaps=0 (> 30s), contiguousEvidence=True
+```
+
+Full session `iMirror.log` (default 30min target):
+
+```text
+FAIL: iMirror acceptance report
+windows=1,226, evidenceDuration=09:12:38
+worstP95=12602ms, worstMax=12744ms
+p95BreachWindows=139 of 1,226 (>= 150ms), severeMaxWindows=129 (>= 300ms)
+maxWindowGap=01:03:30, largeGaps=48 (> 30s), contiguousEvidence=False
+WARN: evidence is not time-contiguous ...
+```
+
+Interpretation:
+
+- The documented stable PASS is a real but short (4:30) clean continuous window
+  (`contiguousEvidence=True`, zero breaches), not a 10-30 minute product-release run.
+- Across the full multi-session capture, 139 of 1,226 windows breached the 150ms p95 target and
+  the worst window reached 12.6s receive->present. The large worst-case values are honestly
+  reported by the HRD3D/MF path, where each output frame is stamped with the actual source
+  packet's `ReceivedTick`; the stable FFmpeg path stamps frames with the most-recently-written
+  packet tick, so its windows understate backlog. The metric also does not isolate
+  reconnect/warmup windows from steady state, so some breaches coincide with session boundaries.
+- Net: the spikes are real and not fully characterized by the bounded windows. They are not
+  accompanied by H.264 drops, sustained queue accumulation, corruption, or HRD3D fault markers
+  inside the clean windows, but a single continuous 10-30 minute active-motion capture (no
+  splicing) is required before claiming product-release latency quality.
+
 ## Final Judgment
 
 Completed evidence:
@@ -264,11 +306,13 @@ Completed evidence:
 
 Remaining caveats:
 
-- HRD3D strict latency report did not fully pass because p95/max trend gates failed on isolated spikes.
-- Stable 1080 later unbounded logging showed intermittent latency spikes after the accepted bounded window. Track only if user-visible stutter is reported; it is not treated as an acceptance blocker because the bounded 3-5 minute regression passed and there were no drops, sustained queue accumulation, corruption, or HRD3D/MF leakage.
-- Product replay probe needs follow-up because direct MF/D3D11 probe succeeded but `HighResolutionD3DReplayProbe` did not.
+- HRD3D strict latency report did not fully pass because p95/max trend gates failed on spikes; the full-session distribution is 139/1,226 windows over the 150ms p95 target, worst 12.6s.
+- Stable 1080 later unbounded logging showed intermittent latency spikes after the accepted bounded window. The accepted evidence is a short (4:30) continuous clean window, not a 10-30 minute product-release run; product-release latency quality is therefore not yet established.
+- The latency metric does not isolate reconnect/warmup windows from steady state, and the stable FFmpeg path understates backlog (frames stamped with the latest-written packet tick). Treat absolute stable numbers as optimistic.
+- Product replay probe needs follow-up because direct MF/D3D11 probe succeeded but `HighResolutionD3DReplayProbe` did not. (`0xC00D6D61` = `MF_E_TRANSFORM_STREAM_CHANGE`, which the live `DrainOutput` handles by reconfiguring output; the replay probe does not, confirming a tool-side gap rather than a live-product fault.)
 
 Current acceptance state:
 
 - HRD3D display/decode/reconnect correctness: supported by real-device evidence.
-- Stable 1080 no-regression: closed by the bounded 4 minute 30 second stable active-motion pass.
+- Stable 1080 no-regression vs. earlier builds: supported by the bounded 4 minute 30 second clean active-motion pass.
+- Product-release latency quality (stable and HRD3D): NOT yet established. Requires a single continuous, unspliced 10-30 minute active-motion capture with `contiguousEvidence=True` and zero p95 breach windows in steady state.

@@ -40,12 +40,29 @@ if (windows.Count == 0)
 	return 1;
 }
 
+const double largeGapThresholdSeconds = 30.0;
+
 double totalWindowSeconds = windows.Sum(window => window.Seconds);
 double timestampSpanSeconds = CalculateTimestampSpanSeconds(windows);
 double evidenceSeconds = Math.Max(totalWindowSeconds, timestampSpanSeconds);
 LatencyWindow worstP95 = windows.OrderByDescending(window => window.P95Milliseconds).First();
 LatencyWindow worstMax = windows.OrderByDescending(window => window.MaxMilliseconds).First();
 int longestNonDecreasingMaxStreak = CalculateLongestNonDecreasingMaxStreak(windows);
+
+// Spike distribution: worst-window numbers alone hide how pervasive spikes are. Surface how
+// many windows actually breached the p95 target and how many had a severe max spike, so a
+// reviewer can tell an isolated blip from a recurring stutter without re-reading the raw log.
+long severeMaxTargetMs = p95TargetMs * 2;
+int p95BreachWindows = windows.Count(window => window.P95Milliseconds >= p95TargetMs);
+int severeMaxWindows = windows.Count(window => window.MaxMilliseconds >= severeMaxTargetMs);
+
+// Contiguity: the duration gate is satisfied by either summed window seconds or the
+// first->last timestamp span, so a hand-selected or spliced clean slice can pass while the
+// removed sections hid spikes. Detect large gaps between consecutive window timestamps so a
+// non-contiguous capture is flagged instead of silently accepted. (Reported, not gated:
+// a kept-alive process across reconnects legitimately produces warmup gaps.)
+(double maxGapSeconds, int largeGapCount) = CalculateTimestampGaps(windows, largeGapThresholdSeconds);
+bool contiguousEvidence = largeGapCount == 0;
 
 bool durationPass = evidenceSeconds >= minimumMinutes * 60.0;
 bool p95Pass = windows.All(window => window.P95Milliseconds < p95TargetMs);
@@ -64,12 +81,18 @@ Console.WriteLine((pass ? "PASS" : "FAIL") + ": iMirror acceptance report");
 Console.WriteLine($"windows={windows.Count:N0}, evidenceDuration={FormatDuration(evidenceSeconds)}, targetDuration={minimumMinutes.ToString("0.###", CultureInfo.InvariantCulture)}min");
 Console.WriteLine($"p95Target={p95TargetMs}ms, worstP95={worstP95.P95Milliseconds}ms at {FormatTimestamp(worstP95.Timestamp)}");
 Console.WriteLine($"worstMax={worstMax.MaxMilliseconds}ms at {FormatTimestamp(worstMax.Timestamp)}");
+Console.WriteLine($"p95BreachWindows={p95BreachWindows:N0} of {windows.Count:N0} (>= {p95TargetMs}ms), severeMaxWindows={severeMaxWindows:N0} (>= {severeMaxTargetMs}ms)");
+Console.WriteLine($"maxWindowGap={FormatDuration(maxGapSeconds)}, largeGaps={largeGapCount:N0} (> {largeGapThresholdSeconds:0}s), contiguousEvidence={contiguousEvidence}");
 Console.WriteLine($"longestNonDecreasingMaxStreak={longestNonDecreasingMaxStreak:N0} window(s)");
 Console.WriteLine($"reconnectAttempts={signals.ReconnectAttempts:N0}, requiredReconnects={requiredReconnects:N0}");
 Console.WriteLine($"stableAdvertiseLines={signals.StableAdvertiseLines:N0}, experimentalAdvertiseLines={signals.ExperimentalAdvertiseLines:N0}");
 Console.WriteLine($"highResolutionD3DPathActiveLines={signals.HighResolutionD3DPathActiveLines:N0}, d3d11MultithreadProtectedLines={signals.HighResolutionD3DMultithreadProtectedLines:N0}, highResolutionD3DFirstTextureLines={signals.HighResolutionD3DFirstTextureLines:N0}, highResolutionD3DFailureLines={signals.HighResolutionD3DFailureLines.Count:N0}, required={requireHighResolutionD3D}");
 Console.WriteLine($"corruptionLines={signals.CorruptionLines.Count:N0}");
 Console.WriteLine($"duration={(durationPass ? "pass" : "fail")}, p95={(p95Pass ? "pass" : "fail")}, maxTrend={(maxTrendPass ? "pass" : "fail")}, corruption={(corruptionPass ? "pass" : "fail")}, reconnect={(reconnectPass ? "pass" : "fail")}, stableAdvertise={(stableAdvertisePass ? "pass" : "fail")}, highResolutionD3D={(highResolutionD3DPass ? "pass" : "fail")}");
+if (!contiguousEvidence)
+{
+	Console.WriteLine($"WARN: evidence is not time-contiguous ({largeGapCount:N0} gap(s) over {largeGapThresholdSeconds:0}s, largest {FormatDuration(maxGapSeconds)}). A hand-selected or spliced clean slice can mask spikes; prefer a single continuous capture for product-release acceptance.");
+}
 foreach (string corruptionLine in signals.CorruptionLines.Take(5))
 {
 	Console.WriteLine("corruption: " + corruptionLine);
@@ -213,6 +236,33 @@ static double CalculateTimestampSpanSeconds(IReadOnlyList<LatencyWindow> windows
 	}
 
 	return (last - first).TotalSeconds;
+}
+
+static (double MaxGapSeconds, int LargeGapCount) CalculateTimestampGaps(IReadOnlyList<LatencyWindow> windows, double largeGapThresholdSeconds)
+{
+	double maxGap = 0.0;
+	int largeGaps = 0;
+	for (int i = 1; i < windows.Count; i++)
+	{
+		DateTimeOffset previous = windows[i - 1].Timestamp;
+		DateTimeOffset current = windows[i].Timestamp;
+		if (previous == DateTimeOffset.MinValue || current == DateTimeOffset.MinValue || current <= previous)
+		{
+			continue;
+		}
+
+		double gap = (current - previous).TotalSeconds;
+		if (gap > maxGap)
+		{
+			maxGap = gap;
+		}
+		if (gap > largeGapThresholdSeconds)
+		{
+			largeGaps++;
+		}
+	}
+
+	return (maxGap, largeGaps);
 }
 
 static int CalculateLongestNonDecreasingMaxStreak(IReadOnlyList<LatencyWindow> windows)
