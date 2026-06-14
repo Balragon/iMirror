@@ -1,9 +1,13 @@
 using System;
 using System.CodeDom.Compiler;
 using System.Diagnostics;
+using System.IO;
+using System.Reflection;
+using System.Runtime.Loader;
 using System.Windows;
 using System.Windows.Interop;
 using System.Windows.Threading;
+using MacMirrorReceiver.Video;
 
 namespace MacMirrorReceiver;
 
@@ -11,6 +15,7 @@ public class App : Application
 {
 	public App()
 	{
+		InstallSharpDxAssemblyResolver();
 		AppLog.Write("App constructed.");
 		base.DispatcherUnhandledException += OnDispatcherUnhandledException;
 		AppDomain.CurrentDomain.UnhandledException += delegate(object _, UnhandledExceptionEventArgs args)
@@ -19,9 +24,33 @@ public class App : Application
 		};
 	}
 
+	private static void InstallSharpDxAssemblyResolver()
+	{
+#if HIGH_RESOLUTION_D3D || DIRECTX_PROBE
+		AssemblyLoadContext.Default.Resolving += delegate(AssemblyLoadContext context, AssemblyName assemblyName)
+		{
+			if (assemblyName.Name?.StartsWith("SharpDX", StringComparison.OrdinalIgnoreCase) != true)
+			{
+				return null;
+			}
+
+			string assemblyPath = Path.Combine(AppContext.BaseDirectory, assemblyName.Name + ".dll");
+			if (!File.Exists(assemblyPath))
+			{
+				AppLog.Write("SharpDX assembly resolve failed; file not found: " + assemblyPath);
+				return null;
+			}
+
+			AppLog.Write("SharpDX assembly resolve loading: " + assemblyPath);
+			return context.LoadFromAssemblyPath(assemblyPath);
+		};
+#endif
+	}
+
 	protected override void OnStartup(StartupEventArgs e)
 	{
 		AppLog.Write("OnStartup entered.");
+		HighResolutionPipelineProbe.RunIfEnabled();
 		base.OnStartup(e);
 		MainWindow mainWindow = (MainWindow)(base.MainWindow = new MainWindow());
 		mainWindow.ShowInTaskbar = true;

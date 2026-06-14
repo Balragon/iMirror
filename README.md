@@ -105,10 +105,15 @@ $env:IMIRROR_DUMP_H264 = "C:\temp\imirror-capture.h264"
 
 The decoder writes per-decoder-instance files so restarts do not truncate earlier captures:
 
+- `*.d01.received.h264`
+  - Media Foundation/D3D11 only: complete post-gate Annex B stream delivered to the decoder object.
 - `*.d01.submitted.h264`
-  - Complete post-gate Annex B stream submitted to the decoder before backpressure drops.
+  - FFmpeg path: complete post-gate Annex B stream submitted to the decoder before backpressure drops.
+  - Media Foundation/D3D11 path: bytes accepted by the Microsoft H.264 MFT after successful `ProcessInput`.
 - `*.d01.written.h264`
   - Bytes successfully written to FFmpeg stdin after any drops.
+
+The Media Foundation/D3D11 high-resolution path writes `received=<path>` and `submitted=<path> bytes=<n>` close lines. The real-device acceptance bundle checks that the supplied `*.submitted.h264` path and byte count match the log. It does not write `*.written.h264` because there is no FFmpeg stdin pipe in that path.
 
 These files do not contain key material, but they do contain screen content. Keep them private.
 
@@ -117,6 +122,26 @@ Validate locally:
 ```powershell
 .\tools\ffmpeg\bin\ffmpeg.exe -f h264 -i C:\temp\imirror-capture.d01.submitted.h264 -f null -
 .\tools\ffmpeg\bin\ffmpeg.exe -f h264 -i C:\temp\imirror-capture.d01.written.h264   -f null -
+```
+
+For the high-resolution v2 Media Foundation/GPU investigation, run the combined probe report on the submitted dump:
+
+```powershell
+dotnet run --project .\tools\HighResolutionProbeReport\HighResolutionProbeReport.csproj -c Release -- C:\temp\imirror-capture.d01.submitted.h264 600
+```
+
+The report only passes when the offline Media Foundation decoder produces frames, the D3D11-manager path exposes decoded `ID3D11Texture2D` output with `NV12` texture descriptions matching the dump's `probeGeometry`, the render-side bridge can run NV12-to-BGRA `VideoProcessorBlt` into a shared D3D11 target that WPF `D3DImage` accepts through D3D9Ex at that same geometry, and the product MF/D3D11 classes can replay the dump through the same D3DImage path. Passing this report is still not product readiness; the real Mac latency/reconnect acceptance run is separate.
+
+To replay the same dump through the product MF/D3D11 classes, use `tools\HighResolutionD3DReplayProbe` with the known capture geometry.
+
+For high-resolution latency acceptance, `tools\LatencyAcceptanceReport` can also require MF/D3D11 path-start and first-NV12-texture evidence; see `docs\high-resolution-pipeline-v2.md`.
+
+The Media Foundation probe reads SPS geometry from the dump and uses that size for the decoder input type. Check for `probeGeometry=... source=sps`; `source=fallback` means the dump did not contain a parseable SPS and the probe used its 2048x1152 fallback.
+
+If the dump geometry is known but SPS parsing fails, pass an explicit override:
+
+```powershell
+dotnet run --project .\tools\HighResolutionProbeReport\HighResolutionProbeReport.csproj -c Release -- C:\temp\imirror-capture.d01.submitted.h264 600 2048x1152@30
 ```
 
 ## Resolved Root Causes
@@ -153,10 +178,78 @@ Decoder order is software first, then d3d11va, then dxva2. Overrides:
 
 Render quality is stable-first by default:
 
-- default / unset `IMIRROR_RENDER_MODE`: advertise a 1920x1080 non-overscanned AirPlay display.
-- `IMIRROR_RENDER_MODE=quality`: prefer a sharper AirPlay display. If `mpv.exe` is available, iMirror advertises 2560x1440 and tries the mpv GPU presenter at 60 fps. Without mpv, it advertises 2304x1296 and uses the WPF/FFmpeg fallback capped at 30 fps.
+- Stable mode: advertise a 1920x1080 non-overscanned AirPlay display.
+- Quality mode without experimental flags still advertises the stable 1920x1080 display. Real Mac testing showed that the high-resolution paths are not reliable enough for normal use on this receiver pipeline.
 
-The render mode is read at process startup because AirPlay display capabilities are advertised before the sender starts the mirror session.
+The render mode is read at process startup because AirPlay display capabilities are advertised before the sender starts the mirror session. The in-app high-quality selector is disabled unless an experimental quality flag is present. The saved setting lives at `%APPDATA%\iMirror\settings.json`.
+
+`IMIRROR_RENDER_MODE=quality` remains a debug override and takes priority over the saved setting. `IMIRROR_RENDER_MODE=stable` or `default` forces stable mode for the process.
+
+The experimental quality flags are for local validation only and may change or be removed without compatibility guarantees. Product-facing Quality mode UX is intentionally on hold until a redesigned high-resolution pipeline can stay stable under real Mac motion.
+
+The product high-resolution redesign is tracked in `docs/high-resolution-pipeline-v2.md`.
+
+### Experimental 2048 Quality Path
+
+The legacy 2048x1152 WPF/FFmpeg path is retired for Quality advertising. It avoided visible corruption from dropping compressed P-frames, but real Mac motion testing still accumulated decoder/render latency, including with hardware decode enabled.
+
+`IMIRROR_EXPERIMENTAL_QUALITY=1` only opens 2048x1152 in `HighResolutionD3D` builds, where it selects the Media Foundation/D3D11 GPU path. If that path fails after advertising high resolution, iMirror does not fall back to the legacy WPF path.
+
+To test the 2048 MF/D3D11 path, build and launch with:
+
+```powershell
+$env:IMIRROR_RENDER_MODE = "quality"
+$env:IMIRROR_EXPERIMENTAL_QUALITY = "1"
+dotnet run --project .\MacMirrorReceiver.csproj -c Debug -p:HighResolutionD3D=true
+```
+
+If this path starts lagging behind the Mac, return to stable mode.
+
+### Experimental mpv Quality Path
+
+The Windows mpv binary is intentionally not committed or bundled. mpv builds are GPL-licensed and large enough that users should bring their own copy, the same way FFmpeg is handled here.
+
+The 2560x1440 mpv path is experimental. It is not the default Quality mode because real Mac mirroring can keep sending roughly 60 H.264 payloads per second even when a lower refresh rate is advertised; if the receiver drops compressed P-frames to stay low-latency, moving content can become visibly corrupted.
+
+To test the experimental 2560x1440 mpv path, install mpv from the Windows links on <https://mpv.io/installation/> or from the shinchiro Windows builds, then place it at:
+
+```text
+tools\mpv\mpv.exe
+```
+
+Putting `mpv.exe` on `PATH` is also supported. Then launch with:
+
+```powershell
+$env:IMIRROR_RENDER_MODE = "quality"
+$env:IMIRROR_EXPERIMENTAL_MPV = "1"
+```
+
+At process startup, iMirror runs `mpv --version`; if that check fails, quality mode advertises stable 1920x1080 unless a `HighResolutionD3D` build also has `IMIRROR_EXPERIMENTAL_QUALITY=1` set. If the experimental path stutters or corrupts moving content, return to Stable mode.
+
+### mpv Quality Diagnostics
+
+mpv quality diagnostics are opt-in:
+
+```powershell
+$env:IMIRROR_RENDER_MODE = "quality"
+$env:IMIRROR_EXPERIMENTAL_MPV = "1"
+$env:IMIRROR_DIAG = "1"
+dotnet run -c Release
+```
+
+With diagnostics enabled, iMirror logs a 10-second `mpv diag interval` line with post-gate `accepted_to_mpv` rate, `stdin_write` rate, `dropped_total (+delta)`, stdin stall count/max, `receive->stdin_write_complete` latency p50/p95/max, and queue depth. This latency ends at successful write to mpv stdin; it is not mpv's internal render latency.
+
+The mpv path keeps compressed H.264 packets in order. Random packet drops can corrupt moving content, so the queue is allowed to absorb short startup stalls and only forces a keyframe resync if it overflows.
+
+Use this motion test before changing the quality target:
+
+1. Static baseline: mirror a mostly static Mac desktop for 2 minutes and record the `accepted_to_mpv` / `stdin_write` rates.
+2. Motion run: open a 60 fps source full-screen on the Mac, such as TestUFO or a known 60 fps video, for 2 minutes.
+3. Pass: source rate matches the advertised fps, `stdin_write` stays at 97%+ of accepted rate, `dropped_total` does not increase during steady state, and p95 `receive->stdin_write_complete` stays below 100 ms.
+4. Sender-limited: source rate stays below the advertised fps while latency/drop remain healthy. The sender is not producing a full-motion scene for that interval.
+5. Receiver-limited: source rate reaches the advertised fps but stdin write rate, drop count, stalls, or p95 latency break the pass criteria. Lower the quality target or return to stable mode.
+
+Run the 30-minute stability test only after the 2-minute motion run passes.
 
 ### Fallback Restart Garbage
 
@@ -230,11 +323,12 @@ it re-armed the keyframe gate while the Mac was not sending a fresh IDR.
   frame skipping, not a stall.
 - `received:decoded` is ~1:1 in healthy sessions. The previously observed ~2:1 was decode
   failures during the freeze. With the default 1920x1080 non-overscanned advertisement,
-  Mac sessions should report `source=1920x1080`. The optional quality mode advertises
-  2560x1440 only when mpv is available; otherwise it uses a 2304x1296 WPF fallback capped
-  at 30 fps. A direct 2560x1440 WPF fallback proved too heavy: FFmpeg still had to consume
-  the sender's high-resolution stream and accumulated stdin stalls plus receive-to-render
-  latency. The payload-shape log line confirms sender cadence and composition
+  Mac sessions should report `source=1920x1080`. Higher-resolution quality targets are
+  experimental only: 2048x1152 via `IMIRROR_EXPERIMENTAL_QUALITY=1` in a
+  `HighResolutionD3D` build, and 2560x1440 via `IMIRROR_EXPERIMENTAL_MPV=1`.
+  Direct high-resolution WPF fallback proved too heavy:
+  FFmpeg still had to consume the sender's high-resolution stream and accumulated stdin
+  stalls plus receive-to-render latency. The payload-shape log line confirms sender cadence and composition
   (`AirPlay mirror video payload shape (10.0s): payloads=..., idr=..., slice=...,
   paramSetOnly=..., multiNal=..., avgSize=...`, composition counts only, no screen content
   or key material).

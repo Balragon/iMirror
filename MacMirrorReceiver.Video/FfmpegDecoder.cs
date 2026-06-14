@@ -11,9 +11,9 @@ namespace MacMirrorReceiver.Video;
 
 public sealed class FfmpegDecoder : IDisposable
 {
-	private const int MaxQueuedInputPackets = 256;
+	private const int MaxQueuedInputPackets = 1024;
 
-	private const long MaxQueuedInputBytes = 24L * 1024L * 1024L;
+	private const long MaxQueuedInputBytes = 64L * 1024L * 1024L;
 
 	private const long WriteStallThresholdMs = 35;
 

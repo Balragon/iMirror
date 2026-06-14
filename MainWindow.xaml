@@ -277,6 +277,100 @@
                             </StackPanel>
                         </Border>
 
+                        <Border Background="#F6F6F8"
+                                BorderBrush="#E5E5EA"
+                                BorderThickness="1"
+                                CornerRadius="8"
+                                Padding="12"
+                                Margin="0,0,0,16">
+                            <StackPanel>
+                                <TextBlock Text="Quality mode"
+                                           FontWeight="SemiBold"
+                                           FontSize="14" />
+                                <TextBlock x:Name="RenderModeSettingDetailTextBlock"
+                                           Text="1080p AirPlay display for smooth mirroring."
+                                           Foreground="{StaticResource MutedTextBrush}"
+                                           TextWrapping="Wrap"
+                                           Margin="0,5,0,0"
+                                           LineHeight="18" />
+
+                                <RadioButton x:Name="StableRenderModeRadioButton"
+                                             GroupName="ReceiverRenderMode"
+                                             Checked="RenderModeSettingRadioButton_Checked"
+                                             Margin="0,12,0,0">
+                                    <StackPanel Margin="6,0,0,0">
+                                        <TextBlock Text="Stable (recommended)"
+                                                   FontWeight="SemiBold" />
+                                        <TextBlock Text="1080p, smoother on more PCs."
+                                                   Foreground="{StaticResource MutedTextBrush}"
+                                                   FontSize="12"
+                                                   TextWrapping="Wrap"
+                                                   Margin="0,2,0,0" />
+                                    </StackPanel>
+                                </RadioButton>
+
+                                <RadioButton x:Name="QualityRenderModeRadioButton"
+                                             GroupName="ReceiverRenderMode"
+                                             Checked="RenderModeSettingRadioButton_Checked"
+                                             Margin="0,10,0,0">
+                                    <StackPanel Margin="6,0,0,0">
+                                        <TextBlock Text="High quality"
+                                                   FontWeight="SemiBold" />
+                                        <TextBlock Text="Experimental high-res testing only."
+                                                   Foreground="{StaticResource MutedTextBrush}"
+                                                   FontSize="12"
+                                                   TextWrapping="Wrap"
+                                                   Margin="0,2,0,0" />
+                                    </StackPanel>
+                                </RadioButton>
+
+                                <TextBlock x:Name="RenderModeMpvNoteTextBlock"
+                                           Text="Experimental mpv quality is enabled but mpv was not found."
+                                           Foreground="{StaticResource MutedTextBrush}"
+                                           FontSize="12"
+                                           TextWrapping="Wrap"
+                                           Visibility="Collapsed"
+                                           Margin="0,10,0,0"
+                                           LineHeight="17" />
+
+                                <TextBlock x:Name="RenderModeOverrideTextBlock"
+                                           Text="IMIRROR_RENDER_MODE is overriding this setting."
+                                           Foreground="{StaticResource MutedTextBrush}"
+                                           FontSize="12"
+                                           TextWrapping="Wrap"
+                                           Visibility="Collapsed"
+                                           Margin="0,10,0,0"
+                                           LineHeight="17" />
+
+                                <Border x:Name="RenderModeRestartPanel"
+                                        Background="#FFF8E8"
+                                        BorderBrush="#FFE0A8"
+                                        BorderThickness="1"
+                                        CornerRadius="8"
+                                        Padding="10"
+                                        Margin="0,12,0,0"
+                                        Visibility="Collapsed">
+                                    <Grid>
+                                        <Grid.RowDefinitions>
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                        </Grid.RowDefinitions>
+                                        <TextBlock Text="Restart required. AirPlay connections will disconnect."
+                                                   Foreground="#6B4A00"
+                                                   FontSize="12"
+                                                   TextWrapping="Wrap"
+                                                   LineHeight="17" />
+                                        <Button x:Name="RestartForRenderModeButton"
+                                                Grid.Row="1"
+                                                Content="Restart now"
+                                                Click="RestartForRenderModeButton_Click"
+                                                Style="{StaticResource PrimaryButtonStyle}"
+                                                Margin="0,9,0,0" />
+                                    </Grid>
+                                </Border>
+                            </StackPanel>
+                        </Border>
+
                         <Expander Header="Legacy sender (optional)"
                                   IsExpanded="False"
                                   Margin="0,0,0,0"

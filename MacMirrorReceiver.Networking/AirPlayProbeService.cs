@@ -13,7 +13,9 @@ using System.Text;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
+using MacMirrorReceiver;
 using MacMirrorReceiver.Protocol;
+using MacMirrorReceiver.Video;
 
 namespace MacMirrorReceiver.Networking;
 
@@ -33,8 +35,11 @@ public sealed class AirPlayProbeService : IDisposable
 	private const int StableDisplayHeight = 1080;
 	private const int QualityMpvDisplayWidth = 2560;
 	private const int QualityMpvDisplayHeight = 1440;
-	private const int QualityWpfDisplayWidth = 2304;
-	private const int QualityWpfDisplayHeight = 1296;
+	private const int QualityWpfDisplayWidth = 2048;
+	private const int QualityWpfDisplayHeight = 1152;
+	private const int StableDisplayFps = 60;
+	private const int QualityMpvDisplayFps = 30;
+	private const int QualityWpfDisplayFps = 30;
 	private const string LegacyAirTunesVersion = "220.68";
 	private const string LegacyAirPlayModel = "AppleTV2,1";
 	private const string LegacyAirPlayFeatures = "0x5A7FFEE6";
@@ -42,8 +47,16 @@ public sealed class AirPlayProbeService : IDisposable
 
 	private static readonly IPAddress MulticastAddress = IPAddress.Parse("224.0.0.251");
 	private static readonly IPEndPoint MulticastEndpoint = new IPEndPoint(MulticastAddress, MdnsPort);
-	private static readonly bool QualityRenderMode = string.Equals(Environment.GetEnvironmentVariable("IMIRROR_RENDER_MODE"), "quality", StringComparison.OrdinalIgnoreCase);
-	private static readonly bool QualityMpvAvailable = FindMpvExecutable() != null;
+	private static readonly bool QualityRenderMode = RenderModeSettings.Load().EffectiveMode == ReceiverRenderModeSetting.Quality;
+	private static readonly bool QualityMpvAvailable = QualityRenderMode
+		&& RenderModeSettings.ExperimentalMpvQualityEnabled
+		&& MpvLocator.StartupRunnableMpvAvailable;
+#if HIGH_RESOLUTION_D3D
+	private static readonly bool QualityWpfAvailable = QualityRenderMode
+		&& RenderModeSettings.ExperimentalWpfQualityEnabled;
+#else
+	private static readonly bool QualityWpfAvailable = false;
+#endif
 
 	private readonly CancellationTokenSource _cts = new CancellationTokenSource();
 	private readonly string _displayName;
@@ -86,6 +99,7 @@ public sealed class AirPlayProbeService : IDisposable
 	private readonly HashSet<int> _loggedSkippedPacketTypes = new HashSet<int>();
 	private bool _loggedDecryptorInUse;
 	private bool _mirrorDiagnosticWritten;
+	private long _lastVideoDataStatusTick;
 
 	public AirPlayProbeService(string displayName)
 	{
@@ -272,7 +286,7 @@ public sealed class AirPlayProbeService : IDisposable
 			int emitted = EmitMirrorPackets(pending);
 			if (emitted > 0)
 			{
-				SetStatus($"AirPlay stream data received ({emitted} H.264 payloads).");
+				ReportVideoDataReceived(emitted);
 			}
 			else if (!loggedUnknown && pending.Count >= 32)
 			{
@@ -672,7 +686,7 @@ public sealed class AirPlayProbeService : IDisposable
 		{
 			Width = 1920,
 			Height = 1080,
-			Fps = 60,
+			Fps = StableDisplayFps,
 			Codec = "h264-annexb"
 		};
 
@@ -712,15 +726,34 @@ public sealed class AirPlayProbeService : IDisposable
 		spsPps[6 + spsSize] = 0;
 		spsPps[7 + spsSize] = 1;
 		Buffer.BlockCopy(payload, ppsOffset, spsPps, 8 + spsSize, ppsSize);
+		int streamWidth = RoundPositiveDimension(sourceWidth, RoundPositiveDimension(width, StableDisplayWidth));
+		int streamHeight = RoundPositiveDimension(sourceHeight, RoundPositiveDimension(height, StableDisplayHeight));
 		streamConfig = new StreamConfig
 		{
-			Width = RoundPositiveDimension(sourceWidth, RoundPositiveDimension(width, 1920)),
-			Height = RoundPositiveDimension(sourceHeight, RoundPositiveDimension(height, 1080)),
-			Fps = 60,
+			Width = streamWidth,
+			Height = streamHeight,
+			Fps = ResolveAdvertisedFps(streamWidth, streamHeight),
 			Codec = "h264-annexb"
 		};
 		AppLog.Write($"AirPlay mirror SPS/PPS received: source={sourceWidth}x{sourceHeight}, display={width}x{height}, sps={spsSize}, pps={ppsSize}.");
 		return true;
+	}
+
+	private static int ResolveAdvertisedFps(int width, int height)
+	{
+		if (!QualityRenderMode || (!QualityMpvAvailable && !QualityWpfAvailable))
+		{
+			return StableDisplayFps;
+		}
+		if (QualityMpvAvailable && width >= QualityMpvDisplayWidth && height >= QualityMpvDisplayHeight)
+		{
+			return QualityMpvDisplayFps;
+		}
+		if (QualityWpfAvailable && width >= QualityWpfDisplayWidth && height >= QualityWpfDisplayHeight)
+		{
+			return QualityWpfDisplayFps;
+		}
+		return StableDisplayFps;
 	}
 
 	private static int RoundPositiveDimension(float value, int fallback)
@@ -1578,11 +1611,17 @@ public sealed class AirPlayProbeService : IDisposable
 		byte[] txtAirPlay = BuildTxtData(BuildAirPlayTxt());
 		int displayWidth = StableDisplayWidth;
 		int displayHeight = StableDisplayHeight;
-		if (QualityRenderMode)
+		int displayFps = StableDisplayFps;
+		if (QualityRenderMode && (QualityMpvAvailable || QualityWpfAvailable))
 		{
 			displayWidth = QualityMpvAvailable ? QualityMpvDisplayWidth : QualityWpfDisplayWidth;
 			displayHeight = QualityMpvAvailable ? QualityMpvDisplayHeight : QualityWpfDisplayHeight;
-			AppLog.Write($"AirPlay /info quality display advertise: {displayWidth}x{displayHeight} (mpvAvailable={QualityMpvAvailable}).");
+			displayFps = QualityMpvAvailable ? QualityMpvDisplayFps : QualityWpfDisplayFps;
+			AppLog.Write($"AirPlay /info experimental quality display advertise: {displayWidth}x{displayHeight} @ {displayFps} (mpvAvailable={QualityMpvAvailable}, wpfAvailable={QualityWpfAvailable}).");
+		}
+		else if (QualityRenderMode)
+		{
+			AppLog.Write("AirPlay /info quality requested but experimental quality is disabled or unavailable; advertising stable 1920x1080.");
 		}
 
 		Dictionary<string, object> info = new Dictionary<string, object>
@@ -1644,7 +1683,7 @@ public sealed class AirPlayProbeService : IDisposable
 					["widthPixels"] = displayWidth,
 					["heightPixels"] = displayHeight,
 					["rotation"] = false,
-					["refreshRate"] = 1.0 / 60.0,
+					["refreshRate"] = 1.0 / displayFps,
 					["overscanned"] = false,
 					["features"] = 14
 				}
@@ -1652,42 +1691,6 @@ public sealed class AirPlayProbeService : IDisposable
 		};
 
 		return AirPlayBinaryPlist.Write(info);
-	}
-
-	private static string? FindMpvExecutable()
-	{
-		string bundled = Path.Combine(AppContext.BaseDirectory, "tools", "mpv", "mpv.exe");
-		if (File.Exists(bundled))
-		{
-			return bundled;
-		}
-
-		string devBundled = Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "tools", "mpv", "mpv.exe");
-		if (File.Exists(devBundled))
-		{
-			return Path.GetFullPath(devBundled);
-		}
-
-		string programFiles = Path.Combine(
-			Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
-			"MPV Player",
-			"mpv.exe");
-		if (File.Exists(programFiles))
-		{
-			return programFiles;
-		}
-
-		string[] paths = (Environment.GetEnvironmentVariable("PATH") ?? string.Empty).Split(Path.PathSeparator);
-		foreach (string path in paths.Where(path => !string.IsNullOrWhiteSpace(path)))
-		{
-			string candidate = Path.Combine(path.Trim(), "mpv.exe");
-			if (File.Exists(candidate))
-			{
-				return candidate;
-			}
-		}
-
-		return null;
 	}
 
 	private static string BuildSetupPlist()
@@ -2053,6 +2056,19 @@ public sealed class AirPlayProbeService : IDisposable
 		StatusText = message;
 		AppLog.Write(message);
 		StatusChanged?.Invoke(message);
+	}
+
+	private void ReportVideoDataReceived(int emitted)
+	{
+		long now = Stopwatch.GetTimestamp();
+		long previous = Interlocked.Read(ref _lastVideoDataStatusTick);
+		if (previous != 0 && (now - previous) < Stopwatch.Frequency)
+		{
+			return;
+		}
+
+		Interlocked.Exchange(ref _lastVideoDataStatusTick, now);
+		SetStatus($"AirPlay stream data received ({emitted} H.264 payloads).");
 	}
 
 	public void Dispose()

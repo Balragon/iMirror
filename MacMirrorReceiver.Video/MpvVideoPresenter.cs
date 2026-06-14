@@ -1,8 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
-using System.IO;
-using System.Linq;
+using System.Globalization;
 using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
@@ -13,11 +12,13 @@ namespace MacMirrorReceiver.Video;
 
 public sealed class MpvVideoPresenter : HwndHost
 {
-	private const int MaxQueuedInputPackets = 2;
+	private const int MaxQueuedInputPackets = 240;
 
-	private const long MaxQueuedInputBytes = 4L * 1024L * 1024L;
+	private const long MaxQueuedInputBytes = 32L * 1024L * 1024L;
 
 	private const long WriteStallThresholdMs = 35;
+
+	private const long DiagnosticsIntervalMs = 10_000;
 
 	private const int WS_CHILD = 0x40000000;
 
@@ -41,6 +42,12 @@ public sealed class MpvVideoPresenter : HwndHost
 
 	private readonly Queue<H264InputPacket> _inputQueue = new Queue<H264InputPacket>();
 
+	private readonly object _diagnosticsGate = new object();
+
+	private readonly List<long> _diagnosticsIntervalReceiveToWriteMilliseconds = new List<long>();
+
+	private readonly List<long> _diagnosticsAllReceiveToWriteMilliseconds = new List<long>();
+
 	private long _queuedInputBytes;
 
 	private Process? _process;
@@ -63,6 +70,31 @@ public sealed class MpvVideoPresenter : HwndHost
 
 	private long _lastWriteStallStatusTick;
 
+	private long _lastWriteStallDroppedInputPackets;
+
+	private long _droppedInputPackets;
+
+	private long _diagnosticsStartTick;
+
+	private long _diagnosticsIntervalStartTick;
+
+	private long _diagnosticsLastAcceptedInputPackets;
+
+	private long _diagnosticsLastWrittenInputPackets;
+
+	private long _diagnosticsLastDroppedInputPackets;
+
+	private long _diagnosticsIntervalWriteStalls;
+
+	private long _diagnosticsIntervalMaxWriteStallMilliseconds;
+
+	private bool _diagnosticsSummaryWritten;
+
+	private static readonly bool DiagnosticsEnabled = string.Equals(
+		Environment.GetEnvironmentVariable("IMIRROR_DIAG"),
+		"1",
+		StringComparison.OrdinalIgnoreCase);
+
 	public MpvVideoPresenter(int width, int height, int fps)
 	{
 		_width = width;
@@ -70,7 +102,7 @@ public sealed class MpvVideoPresenter : HwndHost
 		_fps = Math.Max(1, fps);
 	}
 
-	public long DroppedInputPackets { get; private set; }
+	public long DroppedInputPackets => Interlocked.Read(ref _droppedInputPackets);
 
 	public long AcceptedInputPackets => Interlocked.Read(ref _acceptedInputPackets);
 
@@ -106,6 +138,8 @@ public sealed class MpvVideoPresenter : HwndHost
 
 	public event Action<string>? StatusChanged;
 
+	public event Action? InputQueueOverflowed;
+
 	public bool CanAcceptInput
 	{
 		get
@@ -122,10 +156,10 @@ public sealed class MpvVideoPresenter : HwndHost
 			throw new InvalidOperationException("mpv host window is not ready.");
 		}
 
-		string? mpvPath = FindMpv();
+		string? mpvPath = MpvLocator.StartupRunnableMpvExecutable;
 		if (mpvPath == null)
 		{
-			throw new InvalidOperationException("mpv.exe was not found. Put it on PATH or at tools\\mpv\\mpv.exe.");
+			throw new InvalidOperationException("mpv.exe was not found or could not be started. Put it on PATH or at tools\\mpv\\mpv.exe.");
 		}
 
 		string[] arguments = BuildArguments(_childWindow, _fps);
@@ -151,6 +185,7 @@ public sealed class MpvVideoPresenter : HwndHost
 		TrySetAboveNormalPriority(process);
 		StatusChanged?.Invoke($"mpv started [renderer:mpv/d3d11]: {mpvPath} ({_width}x{_height} @ {_fps}fps)");
 		StatusChanged?.Invoke("mpv cmd: " + mpvPath + " " + string.Join(" ", arguments));
+		StartDiagnosticsIfEnabled();
 		_writeTask = Task.Run(WriteInputLoopAsync);
 		_errorTask = Task.Run(() => ReadErrorLinesAsync(process));
 	}
@@ -163,22 +198,38 @@ public sealed class MpvVideoPresenter : HwndHost
 		}
 
 		bool shouldSignal;
+		bool overflowed = false;
+		long droppedOnOverflow = 0L;
 		lock (_inputGate)
 		{
-			while (_inputQueue.Count >= MaxQueuedInputPackets || _queuedInputBytes + payload.Length > MaxQueuedInputBytes)
+			if (_inputQueue.Count >= MaxQueuedInputPackets || _queuedInputBytes + payload.Length > MaxQueuedInputBytes)
 			{
-				if (_inputQueue.Count == 0)
-				{
-					break;
-				}
-				H264InputPacket dropped = _inputQueue.Dequeue();
-				_queuedInputBytes = Math.Max(0L, _queuedInputBytes - dropped.Payload.Length);
-				DroppedInputPackets++;
+				droppedOnOverflow = _inputQueue.Count + 1L;
+				_inputQueue.Clear();
+				_queuedInputBytes = 0L;
+				Interlocked.Add(ref _droppedInputPackets, droppedOnOverflow);
+				overflowed = true;
 			}
-			shouldSignal = _inputQueue.Count == 0;
-			_inputQueue.Enqueue(new H264InputPacket(payload, sourceTimestampNanos, receivedTick));
-			_queuedInputBytes += payload.Length;
-			Interlocked.Increment(ref _acceptedInputPackets);
+			if (!overflowed)
+			{
+				shouldSignal = _inputQueue.Count == 0;
+				_inputQueue.Enqueue(new H264InputPacket(payload, sourceTimestampNanos, receivedTick));
+				_queuedInputBytes += payload.Length;
+				Interlocked.Increment(ref _acceptedInputPackets);
+			}
+			else
+			{
+				while (_inputSignal.Wait(0))
+				{
+				}
+				shouldSignal = false;
+			}
+		}
+		if (overflowed)
+		{
+			StatusChanged?.Invoke($"mpv input queue overflowed; dropped {droppedOnOverflow:N0} compressed packets and waiting for next keyframe.");
+			InputQueueOverflowed?.Invoke();
+			return false;
 		}
 		if (shouldSignal)
 		{
@@ -308,7 +359,8 @@ public sealed class MpvVideoPresenter : HwndHost
 					}
 					long startTick = Stopwatch.GetTimestamp();
 					await process.StandardInput.BaseStream.WriteAsync(packet.Payload, _cts.Token);
-					RecordWriteMetrics(ElapsedMilliseconds(startTick, Stopwatch.GetTimestamp()));
+					long endTick = Stopwatch.GetTimestamp();
+					RecordWriteMetrics(packet, ElapsedMilliseconds(startTick, endTick), endTick);
 				}
 			}
 		}
@@ -343,7 +395,7 @@ public sealed class MpvVideoPresenter : HwndHost
 		}
 	}
 
-	private void RecordWriteMetrics(long writeMs)
+	private void RecordWriteMetrics(H264InputPacket packet, long writeMs, long writeDoneTick)
 	{
 		Interlocked.Increment(ref _writtenInputPackets);
 		Interlocked.Exchange(ref _latestWriteMilliseconds, writeMs);
@@ -358,6 +410,8 @@ public sealed class MpvVideoPresenter : HwndHost
 		}
 		while (Interlocked.CompareExchange(ref _maxWriteMilliseconds, writeMs, previousMax) != previousMax);
 
+		RecordDiagnostics(packet, writeMs, writeDoneTick);
+
 		if (writeMs < WriteStallThresholdMs)
 		{
 			return;
@@ -369,13 +423,21 @@ public sealed class MpvVideoPresenter : HwndHost
 		if (now - previous >= 1000)
 		{
 			Interlocked.Exchange(ref _lastWriteStallStatusTick, now);
-			StatusChanged?.Invoke($"mpv stdin write stall: {writeMs}ms, queued={QueuedInputPackets}, dropped={DroppedInputPackets:N0}");
+			long droppedTotal = DroppedInputPackets;
+			long previousDropped = Interlocked.Exchange(ref _lastWriteStallDroppedInputPackets, droppedTotal);
+			long droppedDelta = Math.Max(0L, droppedTotal - previousDropped);
+			StatusChanged?.Invoke($"mpv stdin write stall: {writeMs}ms, queued={QueuedInputPackets}, dropped_total={droppedTotal:N0} (+{droppedDelta:N0} since last)");
 		}
 	}
 
 	private void StopProcess()
 	{
 		_cts.Cancel();
+		string? diagnosticsSummary = BuildDiagnosticsSummary();
+		if (diagnosticsSummary != null)
+		{
+			StatusChanged?.Invoke(diagnosticsSummary);
+		}
 		Process? process = _process;
 		_process = null;
 		try
@@ -412,36 +474,167 @@ public sealed class MpvVideoPresenter : HwndHost
 		}
 	}
 
-	private static string? FindMpv()
+	private void StartDiagnosticsIfEnabled()
 	{
-		string bundled = Path.Combine(AppContext.BaseDirectory, "tools", "mpv", "mpv.exe");
-		if (File.Exists(bundled))
+		if (!DiagnosticsEnabled)
 		{
-			return bundled;
+			return;
 		}
-		string devBundled = Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "tools", "mpv", "mpv.exe");
-		if (File.Exists(devBundled))
+
+		long now = Stopwatch.GetTimestamp();
+		lock (_diagnosticsGate)
 		{
-			return Path.GetFullPath(devBundled);
+			_diagnosticsStartTick = now;
+			_diagnosticsIntervalStartTick = now;
+			_diagnosticsLastAcceptedInputPackets = AcceptedInputPackets;
+			_diagnosticsLastWrittenInputPackets = WrittenInputPackets;
+			_diagnosticsLastDroppedInputPackets = DroppedInputPackets;
 		}
-		string programFiles = Path.Combine(
-			Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
-			"MPV Player",
-			"mpv.exe");
-		if (File.Exists(programFiles))
+		StatusChanged?.Invoke("mpv diag enabled: interval=10s, latency=receive->stdin-write-complete.");
+	}
+
+	private void RecordDiagnostics(H264InputPacket packet, long writeMs, long writeDoneTick)
+	{
+		if (!DiagnosticsEnabled)
 		{
-			return programFiles;
+			return;
 		}
-		string[] paths = (Environment.GetEnvironmentVariable("PATH") ?? string.Empty).Split(Path.PathSeparator);
-		foreach (string path in paths.Where(path => !string.IsNullOrWhiteSpace(path)))
+
+		string? intervalStatus = null;
+		long receiveToWriteMs = ElapsedMilliseconds(packet.ReceivedTick, writeDoneTick);
+		lock (_diagnosticsGate)
 		{
-			string candidate = Path.Combine(path.Trim(), "mpv.exe");
-			if (File.Exists(candidate))
+			if (_diagnosticsStartTick == 0)
 			{
-				return candidate;
+				_diagnosticsStartTick = writeDoneTick;
+				_diagnosticsIntervalStartTick = writeDoneTick;
+			}
+
+			_diagnosticsIntervalReceiveToWriteMilliseconds.Add(receiveToWriteMs);
+			_diagnosticsAllReceiveToWriteMilliseconds.Add(receiveToWriteMs);
+			if (writeMs >= WriteStallThresholdMs)
+			{
+				_diagnosticsIntervalWriteStalls++;
+				_diagnosticsIntervalMaxWriteStallMilliseconds = Math.Max(_diagnosticsIntervalMaxWriteStallMilliseconds, writeMs);
+			}
+
+			long intervalMs = ElapsedMilliseconds(_diagnosticsIntervalStartTick, writeDoneTick);
+			if (intervalMs >= DiagnosticsIntervalMs)
+			{
+				intervalStatus = BuildDiagnosticsIntervalStatusLocked(intervalMs, writeDoneTick);
 			}
 		}
-		return null;
+
+		if (intervalStatus != null)
+		{
+			StatusChanged?.Invoke(intervalStatus);
+		}
+	}
+
+	private string BuildDiagnosticsIntervalStatusLocked(long intervalMs, long nowTick)
+	{
+		long acceptedTotal = AcceptedInputPackets;
+		long writtenTotal = WrittenInputPackets;
+		long droppedTotal = DroppedInputPackets;
+		long acceptedDelta = Math.Max(0L, acceptedTotal - _diagnosticsLastAcceptedInputPackets);
+		long writtenDelta = Math.Max(0L, writtenTotal - _diagnosticsLastWrittenInputPackets);
+		long droppedDelta = Math.Max(0L, droppedTotal - _diagnosticsLastDroppedInputPackets);
+		long intervalStalls = _diagnosticsIntervalWriteStalls;
+		long intervalMaxStallMs = _diagnosticsIntervalMaxWriteStallMilliseconds;
+		long latencyP50 = Percentile(_diagnosticsIntervalReceiveToWriteMilliseconds, 50.0);
+		long latencyP95 = Percentile(_diagnosticsIntervalReceiveToWriteMilliseconds, 95.0);
+		long latencyMax = MaxOrZero(_diagnosticsIntervalReceiveToWriteMilliseconds);
+		double seconds = Math.Max(0.001, intervalMs / 1000.0);
+
+		_diagnosticsLastAcceptedInputPackets = acceptedTotal;
+		_diagnosticsLastWrittenInputPackets = writtenTotal;
+		_diagnosticsLastDroppedInputPackets = droppedTotal;
+		_diagnosticsIntervalStartTick = nowTick;
+		_diagnosticsIntervalWriteStalls = 0L;
+		_diagnosticsIntervalMaxWriteStallMilliseconds = 0L;
+		_diagnosticsIntervalReceiveToWriteMilliseconds.Clear();
+
+		return "mpv diag interval: " +
+			$"accepted_to_mpv={FormatRate(acceptedDelta, seconds)}/s, " +
+			$"stdin_write={FormatRate(writtenDelta, seconds)}/s, " +
+			$"dropped_total={droppedTotal:N0} (+{droppedDelta:N0}), " +
+			$"stdin_stalls={intervalStalls:N0} max={intervalMaxStallMs}ms, " +
+			$"receive->stdin_write_complete p50={latencyP50}ms p95={latencyP95}ms max={latencyMax}ms, " +
+			$"queue={QueuedInputPackets:N0} packets/{(double)QueuedInputBytes / 1024.0:N1}KB";
+	}
+
+	private string? BuildDiagnosticsSummary()
+	{
+		if (!DiagnosticsEnabled)
+		{
+			return null;
+		}
+
+		lock (_diagnosticsGate)
+		{
+			if (_diagnosticsSummaryWritten || _diagnosticsStartTick == 0)
+			{
+				return null;
+			}
+
+			_diagnosticsSummaryWritten = true;
+			long now = Stopwatch.GetTimestamp();
+			long durationMs = ElapsedMilliseconds(_diagnosticsStartTick, now);
+			long acceptedTotal = AcceptedInputPackets;
+			long writtenTotal = WrittenInputPackets;
+			long droppedTotal = DroppedInputPackets;
+			long stallsTotal = WriteStalls;
+			long latencyP95 = Percentile(_diagnosticsAllReceiveToWriteMilliseconds, 95.0);
+			long latencyMax = MaxOrZero(_diagnosticsAllReceiveToWriteMilliseconds);
+			double dropRate = acceptedTotal == 0 ? 0.0 : (double)droppedTotal * 100.0 / acceptedTotal;
+
+			return "mpv diag summary: " +
+				$"duration={FormatDuration(durationMs)}, " +
+				$"accepted_to_mpv={acceptedTotal:N0}, stdin_written={writtenTotal:N0}, " +
+				$"dropped_total={droppedTotal:N0} ({dropRate.ToString("0.###", CultureInfo.InvariantCulture)}%), " +
+				$"stdin_stalls={stallsTotal:N0}, " +
+				$"receive->stdin_write_complete p95={latencyP95}ms max={latencyMax}ms";
+		}
+	}
+
+	private static long Percentile(List<long> values, double percentile)
+	{
+		if (values.Count == 0)
+		{
+			return 0L;
+		}
+
+		List<long> sorted = new List<long>(values);
+		sorted.Sort();
+		int index = (int)Math.Ceiling(percentile / 100.0 * sorted.Count) - 1;
+		index = Math.Clamp(index, 0, sorted.Count - 1);
+		return sorted[index];
+	}
+
+	private static long MaxOrZero(List<long> values)
+	{
+		long max = 0L;
+		foreach (long value in values)
+		{
+			if (value > max)
+			{
+				max = value;
+			}
+		}
+		return max;
+	}
+
+	private static string FormatRate(long count, double seconds)
+	{
+		return (count / seconds).ToString("0.0", CultureInfo.InvariantCulture);
+	}
+
+	private static string FormatDuration(long milliseconds)
+	{
+		TimeSpan duration = TimeSpan.FromMilliseconds(milliseconds);
+		return duration.TotalHours >= 1.0
+			? duration.ToString(@"h\:mm\:ss", CultureInfo.InvariantCulture)
+			: duration.ToString(@"m\:ss", CultureInfo.InvariantCulture);
 	}
 
 	private static long ElapsedMilliseconds(long startTick, long endTick)

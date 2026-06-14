@@ -15,6 +15,9 @@
   <PropertyGroup>
     <RootNamespace>MacMirrorReceiver</RootNamespace>
   </PropertyGroup>
+  <PropertyGroup Condition="'$(HighResolutionD3D)' == 'true'">
+    <DefineConstants>$(DefineConstants);HIGH_RESOLUTION_D3D</DefineConstants>
+  </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="BouncyCastle.Cryptography" Version="2.5.1" />
   </ItemGroup>
@@ -31,5 +34,10 @@
   </ItemGroup>
   <ItemGroup Condition="'$(DirectXProbe)' == 'true'">
     <PackageReference Include="SharpDX.Direct3D9" Version="4.2.0" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(HighResolutionD3D)' == 'true'">
+    <PackageReference Include="SharpDX.Direct3D11" Version="4.2.0" />
+    <PackageReference Include="SharpDX.Direct3D9" Version="4.2.0" />
+    <PackageReference Include="SharpDX.DXGI" Version="4.2.0" />
   </ItemGroup>
 </Project>
