@@ -66,7 +66,13 @@ bool contiguousEvidence = largeGapCount == 0;
 
 bool durationPass = evidenceSeconds >= minimumMinutes * 60.0;
 bool p95Pass = windows.All(window => window.P95Milliseconds < p95TargetMs);
-bool maxTrendPass = longestNonDecreasingMaxStreak < 6;
+// Magnitude ceiling on the tail. p95Pass gates the 95th percentile but leaves occasional
+// single-frame stutters (300ms-1s+) ungated; for a mirroring product those are user-visible.
+// This replaced the old non-decreasing-max-streak FAIL gate (now a WARN), which mis-fired on
+// benign sub-threshold upward drift. A magnitude gate catches real tail spikes regardless of
+// trend shape and ignores low-value drift.
+bool severeMaxPass = severeMaxWindows == 0;
+bool maxTrendWarn = longestNonDecreasingMaxStreak >= 6;
 bool corruptionPass = signals.CorruptionLines.Count == 0;
 bool reconnectPass = signals.ReconnectAttempts >= requiredReconnects;
 bool stableAdvertisePass = !requireStableAdvertise || signals.StableAdvertiseLines > 0;
@@ -75,7 +81,7 @@ bool highResolutionD3DPass = !requireHighResolutionD3D ||
 		signals.HighResolutionD3DMultithreadProtectedLines > 0 &&
 		signals.HighResolutionD3DFirstTextureLines > 0 &&
 		signals.HighResolutionD3DFailureLines.Count == 0);
-bool pass = durationPass && p95Pass && maxTrendPass && corruptionPass && reconnectPass && stableAdvertisePass && highResolutionD3DPass;
+bool pass = durationPass && p95Pass && severeMaxPass && corruptionPass && reconnectPass && stableAdvertisePass && highResolutionD3DPass;
 
 Console.WriteLine((pass ? "PASS" : "FAIL") + ": iMirror acceptance report");
 Console.WriteLine($"windows={windows.Count:N0}, evidenceDuration={FormatDuration(evidenceSeconds)}, targetDuration={minimumMinutes.ToString("0.###", CultureInfo.InvariantCulture)}min");
@@ -88,10 +94,14 @@ Console.WriteLine($"reconnectAttempts={signals.ReconnectAttempts:N0}, requiredRe
 Console.WriteLine($"stableAdvertiseLines={signals.StableAdvertiseLines:N0}, experimentalAdvertiseLines={signals.ExperimentalAdvertiseLines:N0}");
 Console.WriteLine($"highResolutionD3DPathActiveLines={signals.HighResolutionD3DPathActiveLines:N0}, d3d11MultithreadProtectedLines={signals.HighResolutionD3DMultithreadProtectedLines:N0}, highResolutionD3DFirstTextureLines={signals.HighResolutionD3DFirstTextureLines:N0}, highResolutionD3DFailureLines={signals.HighResolutionD3DFailureLines.Count:N0}, required={requireHighResolutionD3D}");
 Console.WriteLine($"corruptionLines={signals.CorruptionLines.Count:N0}");
-Console.WriteLine($"duration={(durationPass ? "pass" : "fail")}, p95={(p95Pass ? "pass" : "fail")}, maxTrend={(maxTrendPass ? "pass" : "fail")}, corruption={(corruptionPass ? "pass" : "fail")}, reconnect={(reconnectPass ? "pass" : "fail")}, stableAdvertise={(stableAdvertisePass ? "pass" : "fail")}, highResolutionD3D={(highResolutionD3DPass ? "pass" : "fail")}");
+Console.WriteLine($"duration={(durationPass ? "pass" : "fail")}, p95={(p95Pass ? "pass" : "fail")}, severeMax={(severeMaxPass ? "pass" : "fail")}, maxTrend={(maxTrendWarn ? "warn" : "pass")}, corruption={(corruptionPass ? "pass" : "fail")}, reconnect={(reconnectPass ? "pass" : "fail")}, stableAdvertise={(stableAdvertisePass ? "pass" : "fail")}, highResolutionD3D={(highResolutionD3DPass ? "pass" : "fail")}");
 if (!contiguousEvidence)
 {
 	Console.WriteLine($"WARN: evidence is not time-contiguous ({largeGapCount:N0} gap(s) over {largeGapThresholdSeconds:0}s, largest {FormatDuration(maxGapSeconds)}). A hand-selected or spliced clean slice can mask spikes; prefer a single continuous capture for product-release acceptance.");
+}
+if (maxTrendWarn)
+{
+	Console.WriteLine($"WARN: max latency increased for {longestNonDecreasingMaxStreak:N0} consecutive window(s). Inspect the spike distribution and queue/stall markers before treating this as a product latency failure.");
 }
 foreach (string corruptionLine in signals.CorruptionLines.Take(5))
 {

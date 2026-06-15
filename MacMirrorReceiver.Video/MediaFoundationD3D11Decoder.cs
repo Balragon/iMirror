@@ -198,6 +198,11 @@ public sealed class MediaFoundationD3D11Decoder : IDisposable
 			throw new InvalidOperationException("Microsoft H.264 Decoder MFT was not created.");
 		}
 
+		// MF_LOW_LATENCY: the Microsoft H.264 decoder otherwise buffers several frames for throughput
+		// (measured ~1s end-to-end on a mirror stream while decoderQueue stayed 0). Low-latency mode
+		// makes it emit each frame as soon as it is decoded, the equivalent of FFmpeg's low_delay.
+		TrySetLowLatency(_transform);
+
 		ThrowIfFailed(Native.MFCreateDXGIDeviceManager(out int resetToken, out _dxgiManagerPtr), "MFCreateDXGIDeviceManager");
 		var manager = (MfDxgiDeviceManager)Marshal.GetObjectForIUnknown(_dxgiManagerPtr);
 		try
@@ -818,6 +823,32 @@ public sealed class MediaFoundationD3D11Decoder : IDisposable
 		return hr;
 	}
 
+	private static readonly Guid MfLowLatency = new Guid("9C27891A-ED7A-40E1-88E8-B22727A024EE");
+
+	private static void TrySetLowLatency(MfTransform transform)
+	{
+		try
+		{
+			if (transform.GetAttributes(out IntPtr attributesPtr) >= 0 && attributesPtr != IntPtr.Zero)
+			{
+				var attributes = (MfAttributes)Marshal.GetObjectForIUnknown(attributesPtr);
+				try
+				{
+					Guid key = MfLowLatency;
+					attributes.SetUINT32(ref key, 1);
+				}
+				finally
+				{
+					Marshal.ReleaseComObject(attributes);
+					Marshal.Release(attributesPtr);
+				}
+			}
+		}
+		catch
+		{
+		}
+	}
+
 	private static int SetH264InputType(MfTransform transform, int width, int height, int fps)
 	{
 		int hr = Native.MFCreateMediaType(out MfMediaType mediaType);
@@ -1256,6 +1287,32 @@ internal interface IMFDXGIBuffer
 	[PreserveSig] int GetSubresourceIndex(out int subresourceIndex);
 	[PreserveSig] int GetUnknown(ref Guid guid, ref Guid riid, out IntPtr unknown);
 	[PreserveSig] int SetUnknown(ref Guid guid, IntPtr unknown);
+}
+
+[ComImport]
+[Guid("2CD2D921-C447-44A7-A13C-4ADABFC247E3")]
+[InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+internal interface MfAttributes
+{
+	[PreserveSig] int GetItem(ref Guid guidKey, IntPtr value);
+	[PreserveSig] int GetItemType(ref Guid guidKey, out int type);
+	[PreserveSig] int CompareItem(ref Guid guidKey, IntPtr value, out bool result);
+	[PreserveSig] int Compare(IntPtr attributes, int matchType, out bool result);
+	[PreserveSig] int GetUINT32(ref Guid guidKey, out int value);
+	[PreserveSig] int GetUINT64(ref Guid guidKey, out long value);
+	[PreserveSig] int GetDouble(ref Guid guidKey, out double value);
+	[PreserveSig] int GetGUID(ref Guid guidKey, out Guid value);
+	[PreserveSig] int GetStringLength(ref Guid guidKey, out int length);
+	[PreserveSig] int GetString(ref Guid guidKey, IntPtr value, int size, out int length);
+	[PreserveSig] int GetAllocatedString(ref Guid guidKey, out IntPtr value, out int length);
+	[PreserveSig] int GetBlobSize(ref Guid guidKey, out int size);
+	[PreserveSig] int GetBlob(ref Guid guidKey, IntPtr buffer, int bufferSize, out int blobSize);
+	[PreserveSig] int GetAllocatedBlob(ref Guid guidKey, out IntPtr buffer, out int size);
+	[PreserveSig] int GetUnknown(ref Guid guidKey, ref Guid riid, out IntPtr unknown);
+	[PreserveSig] int SetItem(ref Guid guidKey, IntPtr value);
+	[PreserveSig] int DeleteItem(ref Guid guidKey);
+	[PreserveSig] int DeleteAllItems();
+	[PreserveSig] int SetUINT32(ref Guid guidKey, int value);
 }
 
 [StructLayout(LayoutKind.Sequential)]

@@ -35,8 +35,11 @@ public sealed class AirPlayProbeService : IDisposable
 	private const int StableDisplayHeight = 1080;
 	private const int QualityMpvDisplayWidth = 2560;
 	private const int QualityMpvDisplayHeight = 1440;
-	private const int QualityWpfDisplayWidth = 2048;
-	private const int QualityWpfDisplayHeight = 1152;
+	// GPU (MediaFoundation/D3D11) path advertised geometry. Set to the Mac's native 2560x1440 so the
+	// Mac does not rescale its desktop (Point A) and the GPU decodes native (Point B). Phase 0 uses
+	// this behind the experimental quality flags to measure the GPU path at native resolution.
+	private const int QualityWpfDisplayWidth = 2560;
+	private const int QualityWpfDisplayHeight = 1440;
 	private const int StableDisplayFps = 60;
 	private const int QualityMpvDisplayFps = 30;
 	private const int QualityWpfDisplayFps = 30;
@@ -45,15 +48,26 @@ public sealed class AirPlayProbeService : IDisposable
 	private const string LegacyAirPlayFeatures = "0x5A7FFEE6";
 	private const string LegacyRaopPublicKey = "b07727d6f6cd6e08b58ede525ec3cdeaa252ad9f683feb212ef8a205246554e7";
 
+	// Video-only receiver scope. There is no audio receive/decode/playback pipeline yet, so the
+	// receiver must not claim audio it cannot render. This gates the audio capability claim in
+	// the /info plist and the audio headers in the RECORD response. Reversible: flip to true to
+	// re-enable audio negotiation when the audio milestone (receive -> decode -> WASAPI -> A/V
+	// sync) lands. NOTE: disabling changes the live AirPlay handshake; confirm a real-device
+	// mirror still negotiates after a build with this off.
+	private const bool AdvertiseAudioCapabilities = false;
+
 	private static readonly IPAddress MulticastAddress = IPAddress.Parse("224.0.0.251");
 	private static readonly IPEndPoint MulticastEndpoint = new IPEndPoint(MulticastAddress, MdnsPort);
-	private static readonly bool QualityRenderMode = RenderModeSettings.Load().EffectiveMode == ReceiverRenderModeSetting.Quality;
+	private static readonly bool QualityRenderMode = RenderModeSettings.Load().EffectiveMode == ReceiverRenderModeSetting.Quality
+		|| RenderModeSettings.GpuVideoEngineEnabled;
 	private static readonly bool QualityMpvAvailable = QualityRenderMode
 		&& RenderModeSettings.ExperimentalMpvQualityEnabled
 		&& MpvLocator.StartupRunnableMpvAvailable;
 #if HIGH_RESOLUTION_D3D
-	private static readonly bool QualityWpfAvailable = QualityRenderMode
-		&& RenderModeSettings.ExperimentalWpfQualityEnabled;
+	// GPU engine advertises native 2560x1440 by default (so the Mac sends native and the GPU decodes
+	// it); the legacy experimental flag still forces it on without GPU detection.
+	private static readonly bool QualityWpfAvailable = (QualityRenderMode && RenderModeSettings.ExperimentalWpfQualityEnabled)
+		|| RenderModeSettings.GpuVideoEngineEnabled;
 #else
 	private static readonly bool QualityWpfAvailable = false;
 #endif
@@ -1518,11 +1532,15 @@ public sealed class AirPlayProbeService : IDisposable
 			}
 			if (method == "RECORD")
 			{
-				return BuildRtspResponse(request, 200, "OK", Array.Empty<byte>(), "text/plain", new Dictionary<string, string>
-				{
-					["Audio-Latency"] = "11025",
-					["Audio-Jack-Status"] = "connected; type=analog"
-				});
+				// Video-only: omit audio jack/latency headers unless audio is advertised.
+				Dictionary<string, string> recordHeaders = AdvertiseAudioCapabilities
+					? new Dictionary<string, string>
+					{
+						["Audio-Latency"] = "11025",
+						["Audio-Jack-Status"] = "connected; type=analog"
+					}
+					: new Dictionary<string, string>();
+				return BuildRtspResponse(request, 200, "OK", Array.Empty<byte>(), "text/plain", recordHeaders);
 			}
 			if (method is "FLUSH" or "TEARDOWN" or "SET_PARAMETER" || target.Contains("feedback", StringComparison.OrdinalIgnoreCase))
 			{
@@ -1689,6 +1707,14 @@ public sealed class AirPlayProbeService : IDisposable
 				}
 			}
 		};
+
+		if (!AdvertiseAudioCapabilities)
+		{
+			// Video-only: drop the audio capability claim from the response. The negotiation
+			// fields above are left in source so re-enabling is a one-flag change.
+			info.Remove("audioFormats");
+			info.Remove("audioLatencies");
+		}
 
 		return AirPlayBinaryPlist.Write(info);
 	}

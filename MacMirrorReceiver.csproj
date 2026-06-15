@@ -15,7 +15,9 @@
   <PropertyGroup>
     <RootNamespace>MacMirrorReceiver</RootNamespace>
   </PropertyGroup>
-  <PropertyGroup Condition="'$(HighResolutionD3D)' == 'true'">
+  <!-- GPU (MediaFoundation/D3D11) decode+present is the default engine; always compiled. The
+       software FFmpeg path remains as the runtime fallback when hardware decode is unavailable. -->
+  <PropertyGroup>
     <DefineConstants>$(DefineConstants);HIGH_RESOLUTION_D3D</DefineConstants>
   </PropertyGroup>
   <ItemGroup>
@@ -35,7 +37,7 @@
   <ItemGroup Condition="'$(DirectXProbe)' == 'true'">
     <PackageReference Include="SharpDX.Direct3D9" Version="4.2.0" />
   </ItemGroup>
-  <ItemGroup Condition="'$(HighResolutionD3D)' == 'true'">
+  <ItemGroup>
     <PackageReference Include="SharpDX.Direct3D11" Version="4.2.0" />
     <PackageReference Include="SharpDX.Direct3D9" Version="4.2.0" />
     <PackageReference Include="SharpDX.DXGI" Version="4.2.0" />

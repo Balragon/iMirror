@@ -51,6 +51,20 @@ public sealed class FfmpegDecoder : IDisposable
 
 	private long _latestInputSourceTimestampNanos;
 
+	// True end-to-end latency instrumentation. Stamping each decoded frame with the LATEST written
+	// packet's receivedTick understates latency badly when frames buffer inside FFmpeg (the output
+	// frame is older than the most recent input). Instead, FIFO the receivedTick of each written
+	// packet and dequeue one per decoded frame, so a frame carries the receivedTick of the packet
+	// that actually produced it. The queue depth (= written but not yet emitted) is the FFmpeg
+	// pipeline buffering, which localizes hidden latency.
+	private readonly object _fifoGate = new object();
+
+	private readonly Queue<long> _writtenReceivedTicks = new Queue<long>();
+
+	private long _lastReadReceivedTick;
+
+	private int _pipelineDepthFrames;
+
 	private Process? _process;
 
 	private Task? _readTask;
@@ -138,6 +152,8 @@ public sealed class FfmpegDecoder : IDisposable
 	public long MaxWriteMilliseconds => Interlocked.Read(ref _maxWriteMilliseconds);
 
 	public long WriteStalls => Interlocked.Read(ref _writeStalls);
+
+	public int PipelineDepthFrames => Volatile.Read(ref _pipelineDepthFrames);
 
 	public int OutputWidth => _outputWidth;
 
@@ -373,9 +389,17 @@ public sealed class FfmpegDecoder : IDisposable
 		// undecodable mid-GOP P-frames. Verified by per-flag A/B on captured streams: nobuffer
 		// alone reproduces frames=0 / exit 69 (-max_error_rate exceeded); all other flags here
 		// were individually harmless (109/109 frames).
+		// Decode threading: software decode of high-motion 1080p60 (e.g. sports video) cannot keep
+		// up on a single core, so the input queue backs up ~5s (measured: decoderQueue ~250-300
+		// packets, true receive->render ~6s) even though the machine has idle cores. The AirPlay
+		// mirror stream encodes one slice per frame, so SLICE threading gives no parallelism and
+		// kept FFmpeg pinned to ~1 core. FRAME threading decodes consecutive frames across cores
+		// and does parallelize this stream. It adds ~(threads) frames of pipeline delay (~50ms),
+		// which is negligible against the multi-second queue backlog it removes. 4 ~ physical
+		// cores on the tested i5-1135G7.
 		return "-hide_banner -loglevel error -flags low_delay -probesize 1M -analyzeduration 200000 -avioflags direct -max_delay 0 "
 			+ GetDecoderInputArgument()
-			+ "-threads 1 -thread_type slice -f h264 -i pipe:0 "
+			+ "-threads 4 -thread_type frame -f h264 -i pipe:0 "
 			+ videoFilter
 			+ $"-fps_mode passthrough -f rawvideo -pix_fmt {OutputPixelFormat} pipe:1";
 	}
@@ -524,6 +548,13 @@ public sealed class FfmpegDecoder : IDisposable
 			_inputQueue.Clear();
 			_queuedInputBytes = 0L;
 			DroppedInputPackets += count;
+			lock (_fifoGate)
+			{
+				// In-flight frames belong to the (about to be replaced) process; drop their ticks
+				// so the new process's frames are not stamped with stale receivedTicks.
+				_writtenReceivedTicks.Clear();
+				Volatile.Write(ref _pipelineDepthFrames, 0);
+			}
 			return count;
 		}
 	}
@@ -561,6 +592,10 @@ public sealed class FfmpegDecoder : IDisposable
 							long startTick = Stopwatch.GetTimestamp();
 							await process.StandardInput.BaseStream.WriteAsync(packet.Payload, _cts.Token);
 							long endTick = Stopwatch.GetTimestamp();
+							lock (_fifoGate)
+							{
+								_writtenReceivedTicks.Enqueue(packet.ReceivedTick);
+							}
 							if (_writtenDump != null && _writtenDump.Write(packet.Payload))
 							{
 								this.StatusChanged?.Invoke($"H264 written dump reached {MaxDumpBytes / (1024 * 1024)}MB cap; further packets are not captured.");
@@ -596,12 +631,26 @@ public sealed class FfmpegDecoder : IDisposable
 				try
 				{
 					await ReadExactAsync(stream, buffer, _frameSize, _cts.Token);
+					long frameReceivedTick;
+					lock (_fifoGate)
+					{
+						if (_writtenReceivedTicks.Count > 0)
+						{
+							frameReceivedTick = _writtenReceivedTicks.Dequeue();
+							_lastReadReceivedTick = frameReceivedTick;
+						}
+						else
+						{
+							frameReceivedTick = _lastReadReceivedTick;
+						}
+						Volatile.Write(ref _pipelineDepthFrames, _writtenReceivedTicks.Count);
+					}
 					var frame = new VideoFrame
 					{
 						Width = _outputWidth,
 						Height = _outputHeight,
 						Buffer = buffer,
-						ReceivedTick = Interlocked.Read(ref _latestInputReceivedTick),
+						ReceivedTick = frameReceivedTick,
 						DecodedTick = Stopwatch.GetTimestamp(),
 						SourceTimestampNanos = unchecked((ulong)Interlocked.Read(ref _latestInputSourceTimestampNanos)),
 						ReturnBuffer = rented => ArrayPool<byte>.Shared.Return(rented)

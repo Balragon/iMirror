@@ -72,6 +72,20 @@ internal static class RenderModeSettings
 		"1",
 		StringComparison.OrdinalIgnoreCase);
 
+	public const string ForceSoftwareVideoEnvironmentVariableName = "IMIRROR_FORCE_SOFTWARE_VIDEO";
+
+	// Explicit opt-out: force the software (FFmpeg) engine even when GPU hardware decode is available.
+	public static bool ForceSoftwareVideoRequested => string.Equals(
+		Environment.GetEnvironmentVariable(ForceSoftwareVideoEnvironmentVariableName),
+		"1",
+		StringComparison.OrdinalIgnoreCase);
+
+	// The GPU (MediaFoundation/D3D11 decode + swap-chain present) engine is the default whenever the
+	// hardware supports it, unless the software engine is explicitly forced. Native resolution is then
+	// advertised and the GPU path is used, with the FFmpeg software path as the runtime fallback.
+	public static bool GpuVideoEngineEnabled =>
+		Video.HighResolutionPipelineProbe.IsHardwareDecodeAvailable && !ForceSoftwareVideoRequested;
+
 	public static void SavePersistedMode(ReceiverRenderModeSetting mode)
 	{
 		string path = SettingsPath;

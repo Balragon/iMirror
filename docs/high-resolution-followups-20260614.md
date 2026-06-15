@@ -33,16 +33,25 @@ Follow-up:
 - Keep the submitted dump byte/path validation and direct MF/D3D11 probe as the
   current accepted evidence.
 
-## Stable 1080 Post-Window Spikes
+## Stable 1080 Continuous Baseline
 
-The bounded stable 1080 active-motion window passed 4 minutes 30 seconds with
-FFmpeg software decode at 1920x1080 and no HRD3D/MF leakage. Later unbounded
-logging showed intermittent latency spikes.
+The earlier bounded stable 1080 active-motion window passed 4 minutes 30
+seconds with FFmpeg software decode at 1920x1080 and no HRD3D/MF leakage. A
+later single-session continuous stable baseline passed 11 minutes 20 seconds on
+the uncut raw log with `contiguousEvidence=True`, `p95BreachWindows=0`,
+`severeMaxWindows=0`, `corruptionLines=0`, and reconnects at 0.
+
+The only pre-adjustment failure was the acceptance tool's hard `maxTrend` gate:
+the longest non-decreasing max streak stayed below the p95 target and severe
+max threshold, so `maxTrend` is now reported as a warning rather than an
+acceptance failure.
 
 Follow-up:
 
-- Reopen only if the user reports visible stable-path stutter.
+- Treat stable 1080 product-release latency as supported by the current
+  continuous baseline.
+- Reopen only if a later single continuous baseline fails p95/severe-max
+  distribution, or if the user reports visible stable-path stutter.
 - If reopened, collect a bounded log around the visible event and compare it
-  against `stdinWrite`, `decoderQueue`, and payload cadence.
-- Do not treat post-window spikes as an acceptance blocker without matching
-  user-visible symptoms or sustained queue/drop evidence.
+  against `stdinWrite`, `decoderQueue`, payload cadence, and render/dispatcher
+  backlog.

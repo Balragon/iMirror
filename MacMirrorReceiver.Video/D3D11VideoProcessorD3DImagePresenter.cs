@@ -25,8 +25,16 @@ public sealed class D3D11VideoProcessorD3DImagePresenter : IDisposable
 	private D3D11.VideoProcessorOutputView? _outputView;
 	private D3D9.Texture? _d3d9Texture;
 	private D3D9.Surface? _d3d9Surface;
-	private int _width;
-	private int _height;
+	// Present surface size is decoupled from the decode size: WPF compositing a D3DImage scales
+	// poorly with surface area (a 2560x1440 D3DImage composited at only ~7fps), so the GPU video
+	// processor downscales the decoded native frame to <= PresentMaxWidth for a lighter WPF surface
+	// while decode stays native (Point A unaffected - the Mac still sends native).
+	private const int PresentMaxWidth = 1920;
+
+	private int _inputWidth;
+	private int _inputHeight;
+	private int _outputWidth;
+	private int _outputHeight;
 	private int _fps;
 	private bool _loggedInvalidInputSubresource;
 	private bool _loggedFrontBufferUnavailable;
@@ -35,9 +43,9 @@ public sealed class D3D11VideoProcessorD3DImagePresenter : IDisposable
 
 	public D3D11.Device Device => _d3d11Device;
 
-	public int Width => _width;
+	public int Width => _inputWidth;
 
-	public int Height => _height;
+	public int Height => _inputHeight;
 
 	public bool IsMultithreadProtected { get; private set; }
 
@@ -89,7 +97,8 @@ public sealed class D3D11VideoProcessorD3DImagePresenter : IDisposable
 
 	public void PresentNv12Texture(D3D11.Texture2D inputTexture, int subresourceIndex, int width, int height, int fps)
 	{
-		EnsurePipeline(width, height, fps);
+		(int outputWidth, int outputHeight) = ComputePresentSize(width, height);
+		EnsurePipeline(width, height, outputWidth, outputHeight, fps);
 		if (_enumerator == null || _processor == null || _outputView == null)
 		{
 			return;
@@ -116,11 +125,12 @@ public sealed class D3D11VideoProcessorD3DImagePresenter : IDisposable
 		_videoDevice.CreateVideoProcessorInputView(inputTexture, _enumerator, inputViewDesc, out D3D11.VideoProcessorInputView inputView);
 		using (inputView)
 		{
-			var rect = new RawRectangle(0, 0, width, height);
+			var sourceRect = new RawRectangle(0, 0, width, height);
+			var outputRect = new RawRectangle(0, 0, outputWidth, outputHeight);
 			_videoContext.VideoProcessorSetStreamFrameFormat(_processor, 0, D3D11.VideoFrameFormat.Progressive);
-			_videoContext.VideoProcessorSetStreamSourceRect(_processor, 0, true, rect);
-			_videoContext.VideoProcessorSetStreamDestRect(_processor, 0, true, rect);
-			_videoContext.VideoProcessorSetOutputTargetRect(_processor, true, rect);
+			_videoContext.VideoProcessorSetStreamSourceRect(_processor, 0, true, sourceRect);
+			_videoContext.VideoProcessorSetStreamDestRect(_processor, 0, true, outputRect);
+			_videoContext.VideoProcessorSetOutputTargetRect(_processor, true, outputRect);
 
 			var streams = new[]
 			{
@@ -151,12 +161,25 @@ public sealed class D3D11VideoProcessorD3DImagePresenter : IDisposable
 		ImageSource.Lock();
 		try
 		{
-			ImageSource.AddDirtyRect(new Int32Rect(0, 0, width, height));
+			ImageSource.AddDirtyRect(new Int32Rect(0, 0, outputWidth, outputHeight));
 		}
 		finally
 		{
 			ImageSource.Unlock();
 		}
+	}
+
+	private static (int Width, int Height) ComputePresentSize(int inputWidth, int inputHeight)
+	{
+		if (inputWidth <= 0 || inputHeight <= 0 || inputWidth <= PresentMaxWidth)
+		{
+			return (inputWidth, inputHeight);
+		}
+
+		int outputWidth = PresentMaxWidth;
+		int outputHeight = (int)Math.Round((double)inputHeight * PresentMaxWidth / inputWidth);
+		outputHeight = Math.Max(2, outputHeight / 2 * 2);
+		return (outputWidth, outputHeight);
 	}
 
 	private void OnFrontBufferAvailableChanged(object? sender, DependencyPropertyChangedEventArgs e)
@@ -169,7 +192,7 @@ public sealed class D3D11VideoProcessorD3DImagePresenter : IDisposable
 		}
 
 		_loggedFrontBufferUnavailable = false;
-		if (_d3d9Surface == null || _width <= 0 || _height <= 0)
+		if (_d3d9Surface == null || _outputWidth <= 0 || _outputHeight <= 0)
 		{
 			StatusChanged?.Invoke("D3DImage front buffer restored before the D3D9 surface was ready.");
 			return;
@@ -179,7 +202,7 @@ public sealed class D3D11VideoProcessorD3DImagePresenter : IDisposable
 		try
 		{
 			ImageSource.SetBackBuffer(D3DResourceType.IDirect3DSurface9, _d3d9Surface.NativePointer);
-			ImageSource.AddDirtyRect(new Int32Rect(0, 0, _width, _height));
+			ImageSource.AddDirtyRect(new Int32Rect(0, 0, _outputWidth, _outputHeight));
 		}
 		finally
 		{
@@ -188,27 +211,31 @@ public sealed class D3D11VideoProcessorD3DImagePresenter : IDisposable
 		StatusChanged?.Invoke("D3DImage front buffer restored; D3D9 surface reattached.");
 	}
 
-	private void EnsurePipeline(int width, int height, int fps)
+	private void EnsurePipeline(int inputWidth, int inputHeight, int outputWidth, int outputHeight, int fps)
 	{
-		if (_width == width && _height == height && _fps == fps && _processor != null && _outputView != null && _d3d9Surface != null)
+		if (_inputWidth == inputWidth && _inputHeight == inputHeight
+			&& _outputWidth == outputWidth && _outputHeight == outputHeight
+			&& _fps == fps && _processor != null && _outputView != null && _d3d9Surface != null)
 		{
 			return;
 		}
 
 		DisposePipeline();
-		_width = width;
-		_height = height;
+		_inputWidth = inputWidth;
+		_inputHeight = inputHeight;
+		_outputWidth = outputWidth;
+		_outputHeight = outputHeight;
 		_fps = fps;
 
 		var content = new D3D11.VideoProcessorContentDescription
 		{
 			InputFrameFormat = D3D11.VideoFrameFormat.Progressive,
 			InputFrameRate = new DXGI.Rational(fps, 1),
-			InputWidth = width,
-			InputHeight = height,
+			InputWidth = inputWidth,
+			InputHeight = inputHeight,
 			OutputFrameRate = new DXGI.Rational(fps, 1),
-			OutputWidth = width,
-			OutputHeight = height,
+			OutputWidth = outputWidth,
+			OutputHeight = outputHeight,
 			Usage = D3D11.VideoUsage.PlaybackNormal
 		};
 
@@ -218,8 +245,8 @@ public sealed class D3D11VideoProcessorD3DImagePresenter : IDisposable
 
 		_outputTexture = new D3D11.Texture2D(_d3d11Device, new D3D11.Texture2DDescription
 		{
-			Width = width,
-			Height = height,
+			Width = outputWidth,
+			Height = outputHeight,
 			MipLevels = 1,
 			ArraySize = 1,
 			Format = DXGI.Format.B8G8R8A8_UNorm,
@@ -236,7 +263,7 @@ public sealed class D3D11VideoProcessorD3DImagePresenter : IDisposable
 			Texture2D = new D3D11.Texture2DVpov { MipSlice = 0 }
 		};
 		_videoDevice.CreateVideoProcessorOutputView(_outputTexture, _enumerator, outputViewDesc, out _outputView);
-		AttachOutputToD3DImage(width, height);
+		AttachOutputToD3DImage(outputWidth, outputHeight);
 	}
 
 	private static void ValidateFormatSupport(D3D11.VideoProcessorEnumerator enumerator)

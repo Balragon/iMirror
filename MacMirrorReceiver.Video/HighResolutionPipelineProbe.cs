@@ -33,6 +33,91 @@ internal static class HighResolutionPipelineProbe
 		Run();
 	}
 
+	private static bool? _cachedHardwareDecodeAvailable;
+	private static readonly object _detectGate = new object();
+
+	// Whether this machine can hardware-decode H.264 to D3D11 textures (MF H.264 MFT is
+	// MF_SA_D3D11_AWARE and a D3D11 hardware video device can be created). Cached; used to decide
+	// whether to advertise native resolution and route to the GPU engine by default.
+	public static bool IsHardwareDecodeAvailable
+	{
+		get
+		{
+			lock (_detectGate)
+			{
+				_cachedHardwareDecodeAvailable ??= DetectHardwareDecode();
+				return _cachedHardwareDecodeAvailable.Value;
+			}
+		}
+	}
+
+	private static bool DetectHardwareDecode()
+	{
+		bool mfStarted = false;
+		try
+		{
+			if (MFStartup(MFVersion, 0) < 0)
+			{
+				return false;
+			}
+			mfStarted = true;
+
+			if (TryCreateD3D11Device(D3D11CreateDeviceBgraSupport | D3D11CreateDeviceVideoSupport, out _) != S_OK)
+			{
+				return false;
+			}
+
+			Guid clsid = ClsidCmsH264DecoderMft;
+			Guid iid = IidIMFTransform;
+			if (CoCreateInstance(ref clsid, IntPtr.Zero, ClsctxInprocServer, ref iid, out IntPtr decoder) != S_OK || decoder == IntPtr.Zero)
+			{
+				return false;
+			}
+
+			try
+			{
+				var transform = (IMFTransform)Marshal.GetObjectForIUnknown(decoder);
+				try
+				{
+					if (transform.GetAttributes(out IntPtr attributesPtr) < 0 || attributesPtr == IntPtr.Zero)
+					{
+						return false;
+					}
+					var attributes = (IMFAttributes)Marshal.GetObjectForIUnknown(attributesPtr);
+					try
+					{
+						Guid key = MfSaD3D11Aware;
+						return attributes.GetUINT32(ref key, out int aware) >= 0 && aware != 0;
+					}
+					finally
+					{
+						Marshal.ReleaseComObject(attributes);
+						Marshal.Release(attributesPtr);
+					}
+				}
+				finally
+				{
+					Marshal.ReleaseComObject(transform);
+				}
+			}
+			finally
+			{
+				Marshal.Release(decoder);
+			}
+		}
+		catch
+		{
+			return false;
+		}
+		finally
+		{
+			if (mfStarted)
+			{
+				MFShutdown();
+			}
+		}
+	}
+
 	private static void Run()
 	{
 		AppLog.Write("High-resolution v2 probe started.");

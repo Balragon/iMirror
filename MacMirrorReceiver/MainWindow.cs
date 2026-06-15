@@ -61,12 +61,14 @@ public partial class MainWindow : Window
 
 	private static readonly RenderModeSettingsSnapshot StartupRenderModeSettings = RenderModeSettings.Load();
 
-	private static readonly bool QualityRenderModeEnabled = StartupRenderModeSettings.EffectiveMode == ReceiverRenderModeSetting.Quality;
+	private static readonly bool QualityRenderModeEnabled = StartupRenderModeSettings.EffectiveMode == ReceiverRenderModeSetting.Quality
+		|| RenderModeSettings.GpuVideoEngineEnabled;
 
 	private static readonly bool ExperimentalMpvQualityRequested = RenderModeSettings.ExperimentalMpvQualityEnabled;
 
 #if HIGH_RESOLUTION_D3D
-	private static readonly bool ExperimentalWpfQualityRequested = RenderModeSettings.ExperimentalWpfQualityEnabled;
+	private static readonly bool ExperimentalWpfQualityRequested = RenderModeSettings.ExperimentalWpfQualityEnabled
+		|| RenderModeSettings.GpuVideoEngineEnabled;
 #else
 	private static readonly bool ExperimentalWpfQualityRequested = false;
 #endif
@@ -100,7 +102,10 @@ public partial class MainWindow : Window
 
 	private readonly Queue<PendingVideoPayload> _pendingVideoBeforeSink = new Queue<PendingVideoPayload>();
 
-	private readonly LatencyWindow _receiveToPresentLatencyWindow = new LatencyWindow(TimeSpan.FromSeconds(10.0));
+	// 3s warmup grace: BeginWarmup fires at decoder (re)start, but frames only flow after FFmpeg/MF
+	// spin-up (~0.8s) plus decryptor settling, so a shorter grace lets a startup straggler inflate
+	// the first window's max. Measured on a real-device run (first-window straggler ~248ms at ~1.6s).
+	private readonly LatencyWindow _receiveToPresentLatencyWindow = new LatencyWindow(TimeSpan.FromSeconds(10.0), TimeSpan.FromSeconds(3.0));
 
 	private MirrorClient? _client;
 
@@ -114,7 +119,7 @@ public partial class MainWindow : Window
 	private D3DImageFramePresenter? _d3dPresenter;
 #endif
 #if HIGH_RESOLUTION_D3D
-	private D3D11VideoProcessorD3DImagePresenter? _highResolutionD3DPresenter;
+	private D3D11SwapChainVideoPresenter? _highResolutionD3DPresenter;
 
 	private MediaFoundationD3D11Decoder? _mediaFoundationD3DDecoder;
 
@@ -166,6 +171,10 @@ public partial class MainWindow : Window
 	private long _lastPendingVideoDropLogTick;
 
 	private long _decoderRestarts;
+
+	// Set when the GPU engine faults at runtime (device-lost/TDR); the session then stays on the
+	// software decoder until the next connection. Reset in ResetStreamStateForNewConnection.
+	private bool _gpuPathDisabledThisSession;
 
 	private CancellationTokenSource? _videoWatchdogCts;
 
@@ -486,6 +495,7 @@ public partial class MainWindow : Window
 			_lastVideoHealthDecodedFrames = 0L;
 			_lastVideoHealthRenderedFrames = 0L;
 			_decoderRestarts = 0L;
+			_gpuPathDisabledThisSession = false;
 			_lastGateLogTick = 0L;
 			_pendingVideoDroppedBeforeSink = 0L;
 			_lastPendingVideoDropLogTick = 0L;
@@ -1143,9 +1153,12 @@ public partial class MainWindow : Window
 		{
 			return;
 		}
-		RenderOptions.SetBitmapScalingMode(
-			VideoImage,
-			(CurrentRenderMode == RenderMode.Auto || CurrentRenderMode == RenderMode.Quality) ? BitmapScalingMode.HighQuality : BitmapScalingMode.LowQuality);
+		// Use fast (bilinear) scaling for the live video element. HighQuality re-resamples the whole
+		// frame on every WPF composite, which throttled the present to ~9-14fps (Tier-2 hardware,
+		// 1-2ms present cost, yet only ~9 composites/sec). For real-time mirroring a fast blit at the
+		// display refresh rate matters far more than per-frame resample quality; the GPU video
+		// processor already scales to the present resolution.
+		RenderOptions.SetBitmapScalingMode(VideoImage, BitmapScalingMode.LowQuality);
 	}
 
 	private void RestartDecoderIfRenderWidthChanged(string reason)
@@ -1200,6 +1213,9 @@ public partial class MainWindow : Window
 #endif
 		DisposeMpvPresenter();
 		ReleasePendingFrame();
+		// Restart the latency warmup grace so decoder/renderer spin-up and reconnect/session-refresh
+		// catch-up are excluded from steady-state percentiles instead of inflating the first window.
+		_receiveToPresentLatencyWindow.BeginWarmup();
 		bool useMpvPresenter = ShouldUseMpvPresenter(config);
 		if (useMpvPresenter && TryStartMpvPresenter(config, reason))
 		{
@@ -1219,7 +1235,7 @@ public partial class MainWindow : Window
 			SetStatus("mpv unavailable; falling back to WPF renderer.");
 		}
 #if HIGH_RESOLUTION_D3D
-		bool requireHighResolutionD3DPath = ShouldUseHighResolutionD3DPath(config);
+		bool requireHighResolutionD3DPath = ShouldUseHighResolutionD3DPath(config) && !_gpuPathDisabledThisSession;
 		if (requireHighResolutionD3DPath && TryStartHighResolutionD3DPath(config, reason))
 		{
 			_decoderMaxRenderWidth = config.Width;
@@ -1231,10 +1247,15 @@ public partial class MainWindow : Window
 		}
 		if (requireHighResolutionD3DPath)
 		{
-			throw new InvalidOperationException("High-resolution D3D renderer failed after advertising the experimental high-resolution stream. Restart iMirror in stable mode or inspect the Media Foundation D3D11 failure log.");
+			// GPU engine init failed (no/blocked hardware decode, driver issue). Fall through to the
+			// software FFmpeg path, which decodes the (native) stream and downscales for present.
+			_decoderStatus = "GPU decode unavailable; falling back to software decoder.";
+			AppLog.Write("High-resolution D3D path failed; falling back to FFmpeg software decoder for " + reason + ".");
 		}
 #endif
-		_decoderMaxRenderWidth = ResolveMaxRenderWidth(config);
+		// Software (FFmpeg) decode of >1080 streams (e.g. GPU-fault fallback at native res) is heavy;
+		// cap the decoded/presented output to keep decode + present load manageable.
+		_decoderMaxRenderWidth = Math.Min(ResolveMaxRenderWidth(config), ResponsiveMaxRenderWidth);
 		_decoderOutputFps = ResolveOutputFps(config, _decoderMaxRenderWidth);
 		_decoder = new FfmpegDecoder(config.Width, config.Height, config.Fps, _decoderMaxRenderWidth, _decoderOutputFps);
 		_decoder.StatusChanged += delegate(string message)
@@ -1309,13 +1330,18 @@ public partial class MainWindow : Window
 	{
 		try
 		{
-			var presenter = new D3D11VideoProcessorD3DImagePresenter(new WindowInteropHelper(this).EnsureHandle());
+			var presenter = new D3D11SwapChainVideoPresenter();
 			var decoder = new MediaFoundationD3D11Decoder(config.Width, config.Height, config.Fps, presenter.Device);
 			_highResolutionD3DPresenter = presenter;
 			_mediaFoundationD3DDecoder = decoder;
-			VideoImage.Visibility = Visibility.Visible;
-			VideoImage.Source = presenter.ImageSource;
+			// Host the swap-chain child window in the video stage (bypasses WPF D3DImage composition).
+			VideoImage.Visibility = Visibility.Collapsed;
+			VideoImage.Source = null;
 			_bitmap = null;
+			VideoStage.Children.Insert(0, presenter);
+			presenter.HorizontalAlignment = HorizontalAlignment.Stretch;
+			presenter.VerticalAlignment = VerticalAlignment.Stretch;
+			VideoStage.UpdateLayout();
 			presenter.StatusChanged += delegate(string message)
 			{
 				string message2 = message;
@@ -1375,14 +1401,27 @@ public partial class MainWindow : Window
 	{
 		AppLog.Write(message);
 		_decoderStatus = message;
-		SetStatus("High-resolution D3D failed. Restart iMirror in stable mode.");
+		// Disable the GPU engine for the rest of this session (reset on the next connection) and
+		// restart on the software decoder so a runtime GPU fault (device-lost/TDR) does not kill
+		// the mirror.
+		_gpuPathDisabledThisSession = true;
 		_mediaFoundationD3DDecoder?.Dispose();
 		_mediaFoundationD3DDecoder = null;
 		DisposeHighResolutionD3DPresenter();
 		ReleasePendingD3DFrame();
-		VideoImage.Source = null;
-		EmptyStatePanel.Visibility = Visibility.Visible;
 		RequireH264Keyframe();
+		if (_streamConfig != null)
+		{
+			SetStatus("GPU decode faulted; switching to software decoder.");
+			AppLog.Write("GPU decode faulted; restarting on FFmpeg software decoder.");
+			StartFreshDecoder(_streamConfig, "GPU fault fallback");
+		}
+		else
+		{
+			SetStatus("GPU decode failed.");
+			VideoImage.Source = null;
+			EmptyStatePanel.Visibility = Visibility.Visible;
+		}
 		UpdateDiagnostics();
 	}
 #endif
@@ -1895,6 +1934,7 @@ public partial class MainWindow : Window
 			$"receive->present window={FormatLatencyWindow(_receiveToPresentLatencyWindow.GetCurrentOrLastSnapshot(Stopwatch.GetTimestamp()))}, " +
 			$"pendingRender={GetPendingRenderFrameCount()}, dispatcherQueued={Volatile.Read(ref _renderQueued)}, " +
 			$"decoderQueue={ActiveQueuedInputPackets} packets/{(double)ActiveQueuedInputBytes / 1024.0:N1}KB, " +
+			$"ffmpegPipeline={ActiveFfmpegPipelineDepth} frames, " +
 			$"h264 accepted/written/dropped={ActiveAcceptedInputPackets:N0}/{ActiveWrittenInputPackets:N0}/{ActiveDroppedInputPackets:N0}, " +
 			$"stdinWrite={ActiveLatestWriteMilliseconds}ms max={ActiveMaxWriteMilliseconds}ms stalls={ActiveWriteStalls:N0}");
 	}
@@ -1986,8 +2026,27 @@ public partial class MainWindow : Window
 #if HIGH_RESOLUTION_D3D
 	private void DisposeHighResolutionD3DPresenter()
 	{
-		_highResolutionD3DPresenter?.Dispose();
+		D3D11SwapChainVideoPresenter? presenter = _highResolutionD3DPresenter;
+		if (presenter == null)
+		{
+			return;
+		}
 		_highResolutionD3DPresenter = null;
+		try
+		{
+			VideoStage.Children.Remove(presenter);
+		}
+		catch
+		{
+		}
+		try
+		{
+			presenter.Dispose();
+		}
+		catch
+		{
+		}
+		VideoImage.Visibility = Visibility.Visible;
 	}
 #endif
 
@@ -2201,7 +2260,7 @@ public partial class MainWindow : Window
 		long renderStartTick = Stopwatch.GetTimestamp();
 		try
 		{
-			D3D11VideoProcessorD3DImagePresenter? presenter = _highResolutionD3DPresenter;
+			D3D11SwapChainVideoPresenter? presenter = _highResolutionD3DPresenter;
 			if (presenter == null)
 			{
 				return;
@@ -2251,7 +2310,12 @@ public partial class MainWindow : Window
 		}
 
 		string label = snapshot.Completed ? "last" : "current";
-		return $"{label} {snapshot.WindowSeconds:N1}s n={snapshot.SampleCount:N0} p50={snapshot.P50Milliseconds}ms p95={snapshot.P95Milliseconds}ms max={snapshot.MaxMilliseconds}ms";
+		string text = $"{label} {snapshot.WindowSeconds:N1}s n={snapshot.SampleCount:N0} p50={snapshot.P50Milliseconds}ms p95={snapshot.P95Milliseconds}ms max={snapshot.MaxMilliseconds}ms";
+		if (snapshot.WarmupSamplesSkipped > 0)
+		{
+			text += $" warmupSkipped={snapshot.WarmupSamplesSkipped:N0} warmupMax={snapshot.WarmupMaxMilliseconds}ms";
+		}
+		return text;
 	}
 
 	private string ResolveOutputDiagnostics()
@@ -2312,6 +2376,8 @@ public partial class MainWindow : Window
 		?? _mediaFoundationD3DDecoder?.MaxWriteMilliseconds
 #endif
 		?? _decoder?.MaxWriteMilliseconds ?? 0L;
+
+	private int ActiveFfmpegPipelineDepth => _decoder?.PipelineDepthFrames ?? 0;
 
 	private long ActiveWriteStalls => _mpvPresenter?.WriteStalls
 #if HIGH_RESOLUTION_D3D
