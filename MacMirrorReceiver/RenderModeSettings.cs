@@ -1,6 +1,4 @@
 using System;
-using System.IO;
-using System.Text.Json;
 
 namespace MacMirrorReceiver;
 
@@ -23,29 +21,11 @@ internal static class RenderModeSettings
 
 	public const string QualityEnvironmentVariableName = "IMIRROR_EXPERIMENTAL_QUALITY";
 
-	private const string SettingsDirectoryName = "iMirror";
-	private const string SettingsFileName = "settings.json";
 	private const string QualityValue = "quality";
 	private const string StableValue = "stable";
 
-	private static readonly JsonSerializerOptions JsonOptions = new JsonSerializerOptions
-	{
-		WriteIndented = true
-	};
-
-	public static string SettingsPath
-	{
-		get
-		{
-			string appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
-			if (string.IsNullOrWhiteSpace(appData))
-			{
-				appData = AppContext.BaseDirectory;
-			}
-
-			return Path.Combine(appData, SettingsDirectoryName, SettingsFileName);
-		}
-	}
+	// The settings file is owned by ReceiverSettings; render mode is one field in it.
+	public static string SettingsPath => ReceiverSettings.SettingsPath;
 
 	public static RenderModeSettingsSnapshot Load()
 	{
@@ -81,18 +61,7 @@ internal static class RenderModeSettings
 
 	public static void SavePersistedMode(ReceiverRenderModeSetting mode)
 	{
-		string path = SettingsPath;
-		string? directory = Path.GetDirectoryName(path);
-		if (!string.IsNullOrWhiteSpace(directory))
-		{
-			Directory.CreateDirectory(directory);
-		}
-
-		var dto = new SettingsDto
-		{
-			RenderMode = ToSettingValue(mode)
-		};
-		File.WriteAllText(path, JsonSerializer.Serialize(dto, JsonOptions));
+		ReceiverSettings.UpdateDto(dto => dto.RenderMode = ToSettingValue(mode));
 	}
 
 	public static string ToSettingValue(ReceiverRenderModeSetting mode)
@@ -102,24 +71,9 @@ internal static class RenderModeSettings
 
 	private static ReceiverRenderModeSetting LoadPersistedMode()
 	{
-		string path = SettingsPath;
-		if (!File.Exists(path))
+		if (TryParseMode(ReceiverSettings.LoadDto().RenderMode, out ReceiverRenderModeSetting mode))
 		{
-			return ReceiverRenderModeSetting.Quality;
-		}
-
-		try
-		{
-			using FileStream stream = File.OpenRead(path);
-			SettingsDto? dto = JsonSerializer.Deserialize<SettingsDto>(stream);
-			if (TryParseMode(dto?.RenderMode, out ReceiverRenderModeSetting mode))
-			{
-				return mode;
-			}
-		}
-		catch (Exception ex)
-		{
-			AppLog.Write("Render mode settings could not be loaded: " + ex.Message);
+			return mode;
 		}
 
 		return ReceiverRenderModeSetting.Quality;
@@ -148,10 +102,5 @@ internal static class RenderModeSettings
 		default:
 			return false;
 		}
-	}
-
-	private sealed class SettingsDto
-	{
-		public string? RenderMode { get; set; }
 	}
 }

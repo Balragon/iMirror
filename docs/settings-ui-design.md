@@ -152,26 +152,35 @@ Rules:
 
 ## Work split
 
-### This session (front-end / design)
-1. Generalize `RenderModeSettings` → a `ReceiverSettings` model: the versioned
-   DTO above, `Load()` with env-override resolution per field, `Save(dto)`,
-   migration from the legacy single-field file.
-2. Build the Settings overlay XAML + handlers: bind controls, override-disable
-   notes, one shared restart banner, live slider for audio sync.
-3. Keep the existing render-mode card behavior intact (do not regress override
-   handling or the restart flow).
+### This session (front-end / design) — DONE
+1. `ReceiverSettings` model (`MacMirrorReceiver/ReceiverSettings.cs`): the
+   versioned DTO above, `Load()` with per-field env-override resolution,
+   `UpdateDto()` read-modify-write so single-field saves never clobber others,
+   and legacy single-field migration. `RenderModeSettings` now delegates its file
+   IO here, so `settings.json` has a single owner.
+2. Settings overlay XAML + handlers in `MainWindow`: receiver name, render/quality
+   mode (moved into the overlay), video engine, audio toggle, **live** audio-sync
+   slider, diagnostics expander, per-field override-disable notes, and one shared
+   restart banner.
+3. Audio sync offset is wired live: `MainWindow._audioSyncOffsetMilliseconds` is a
+   `Volatile` instance field the slider writes and the audio thread reads, and the
+   value persists when the overlay closes.
 
 ### Hand off to Codex/GPT-5.5 session (back-end wiring) — spec
-For each option below, change the consumer to read
-`ReceiverSettings.Effective.X` instead of `Environment.GetEnvironmentVariable`,
-preserving the env override:
-- `AirPlayProbeService` receiver name (hardcoded `"iMirror"`) and audio-advertise
-  gating (`IMIRROR_AUDIO_DISCOVERY`).
-- `MainWindow` audio sync offset (`IMIRROR_AUDIO_SYNC_OFFSET_MS`) — make it
-  re-readable at runtime for the live slider, not a `static readonly` captured at
-  load.
+The model and UI are in place. Remaining work is to make the *consumers* read
+`ReceiverSettings.Load().Effective.X` instead of `Environment.GetEnvironmentVariable`,
+preserving the env override (UI already disables overridden controls):
+- `AirPlayProbeService`: use `Effective.ReceiverName` instead of the hardcoded
+  `"iMirror"` advertised name, and gate audio advertise on `Effective.AudioEnabled`
+  (today `IMIRROR_AUDIO_DISCOVERY` only toggles verbose logging).
 - Diagnostics gates (`IMIRROR_WRITE_DIAGNOSTICS`, `IMIRROR_DUMP_H264`,
-  `IMIRROR_DUMP_AUDIO`) read from the settings model at session/dump start.
-- Acceptance: env var set ⇒ control disabled + override note + old behavior; env
-  var unset ⇒ control drives behavior and persists across restart.
+  `IMIRROR_DUMP_AUDIO`): read `Effective.WriteDiagnostics/DumpH264/DumpAudio` at
+  session/dump start.
+- Video engine: `Effective.VideoEngine == Software` should map to the existing
+  force-software path (`RenderModeSettings.ForceSoftwareVideoRequested`), so the
+  persisted choice and `IMIRROR_FORCE_SOFTWARE_VIDEO` resolve identically.
+- Acceptance per option: env var set ⇒ control disabled + override note + old
+  behavior; env var unset ⇒ the persisted setting drives behavior and survives a
+  restart. Audio sync offset is already fully wired (live + persisted) — no
+  back-end change needed there.
 ```
