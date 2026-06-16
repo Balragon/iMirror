@@ -15,6 +15,7 @@ obj/
 *.user
 *.suo
 outputs/
+artifacts/
 Diagnostics/
 tools/ffmpeg/
 tools/mpv/
