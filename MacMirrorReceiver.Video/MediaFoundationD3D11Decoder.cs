@@ -105,6 +105,8 @@ public sealed class MediaFoundationD3D11Decoder : IDisposable
 
 	public event Action<string>? Faulted;
 
+	public bool DumpH264Enabled { get; set; }
+
 	public MediaFoundationD3D11Decoder(int width, int height, int fps, D3D11.Device device)
 	{
 		_width = width;
@@ -125,7 +127,7 @@ public sealed class MediaFoundationD3D11Decoder : IDisposable
 	private void TryOpenH264Dump()
 	{
 		string? setting = Environment.GetEnvironmentVariable("IMIRROR_DUMP_H264");
-		if (string.IsNullOrWhiteSpace(setting))
+		if (!DumpH264Enabled && string.IsNullOrWhiteSpace(setting))
 		{
 			return;
 		}
@@ -133,7 +135,7 @@ public sealed class MediaFoundationD3D11Decoder : IDisposable
 		try
 		{
 			string basePath;
-			if (setting == "1" || string.Equals(setting, "true", StringComparison.OrdinalIgnoreCase))
+			if (string.IsNullOrWhiteSpace(setting) || setting == "1" || string.Equals(setting, "true", StringComparison.OrdinalIgnoreCase))
 			{
 				string fileName = "imirror-" + DateTime.Now.ToString("yyyyMMdd-HHmmss", CultureInfo.InvariantCulture) + ".h264";
 				basePath = System.IO.Path.Combine(AppContext.BaseDirectory, fileName);

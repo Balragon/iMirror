@@ -197,6 +197,8 @@ public sealed class FfmpegDecoder : IDisposable
 	// cleanly at the next keyframe instead of with mid-GOP P-frames.
 	public event Action? InputQueueOverflowed;
 
+	public bool DumpH264Enabled { get; set; }
+
 	public FfmpegDecoder(int width, int height, int inputFps, int maxOutputWidth, int targetOutputFps)
 	{
 		_inputWidth = width;
@@ -232,7 +234,7 @@ public sealed class FfmpegDecoder : IDisposable
 	private void TryOpenH264Dump()
 	{
 		string? setting = Environment.GetEnvironmentVariable("IMIRROR_DUMP_H264");
-		if (string.IsNullOrWhiteSpace(setting))
+		if (!DumpH264Enabled && string.IsNullOrWhiteSpace(setting))
 		{
 			return;
 		}
@@ -240,7 +242,7 @@ public sealed class FfmpegDecoder : IDisposable
 		try
 		{
 			string basePath;
-			if (setting == "1" || string.Equals(setting, "true", StringComparison.OrdinalIgnoreCase))
+			if (string.IsNullOrWhiteSpace(setting) || setting == "1" || string.Equals(setting, "true", StringComparison.OrdinalIgnoreCase))
 			{
 				string fileName = "imirror-" + DateTime.Now.ToString("yyyyMMdd-HHmmss", System.Globalization.CultureInfo.InvariantCulture) + ".h264";
 				basePath = Path.Combine(AppContext.BaseDirectory, fileName);

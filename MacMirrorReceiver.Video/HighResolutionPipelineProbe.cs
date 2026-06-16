@@ -43,6 +43,11 @@ internal static class HighResolutionPipelineProbe
 	{
 		get
 		{
+			if (ReceiverSettings.Load().Effective.VideoEngine == ReceiverVideoEngineSetting.Software)
+			{
+				return false;
+			}
+
 			lock (_detectGate)
 			{
 				_cachedHardwareDecodeAvailable ??= DetectHardwareDecode();

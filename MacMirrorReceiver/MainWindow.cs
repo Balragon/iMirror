@@ -87,7 +87,11 @@ public partial class MainWindow : Window
 
 	private readonly MdnsBrowser _browser = new MdnsBrowser();
 
-	private readonly AirPlayProbeService _airPlayProbe = new AirPlayProbeService("iMirror");
+	private readonly AirPlayProbeService _airPlayProbe = new AirPlayProbeService(
+		StartupReceiverSettings.Effective.ReceiverName,
+		StartupReceiverSettings.Effective.AudioEnabled,
+		StartupReceiverSettings.Effective.WriteDiagnostics,
+		StartupReceiverSettings.Effective.DumpAudio);
 
 	private readonly H264AnnexBStreamGate _h264Gate = new H264AnnexBStreamGate();
 
@@ -1615,6 +1619,7 @@ public partial class MainWindow : Window
 		_decoderMaxRenderWidth = Math.Min(ResolveMaxRenderWidth(config), ResponsiveMaxRenderWidth);
 		_decoderOutputFps = ResolveOutputFps(config, _decoderMaxRenderWidth);
 		_decoder = new FfmpegDecoder(config.Width, config.Height, config.Fps, _decoderMaxRenderWidth, _decoderOutputFps);
+		_decoder.DumpH264Enabled = StartupReceiverSettings.Effective.DumpH264;
 		_decoder.StatusChanged += delegate(string message)
 		{
 			string message2 = message;
@@ -1681,6 +1686,7 @@ public partial class MainWindow : Window
 		{
 			var presenter = new D3D11SwapChainVideoPresenter();
 			var decoder = new MediaFoundationD3D11Decoder(config.Width, config.Height, config.Fps, presenter.Device);
+			decoder.DumpH264Enabled = StartupReceiverSettings.Effective.DumpH264;
 			_highResolutionD3DPresenter = presenter;
 			_mediaFoundationD3DDecoder = decoder;
 			// Host the swap-chain child window in the video stage (bypasses WPF D3DImage composition).
