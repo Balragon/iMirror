@@ -48,13 +48,16 @@ public sealed class AirPlayProbeService : IDisposable
 	private const string LegacyAirPlayFeatures = "0x5A7FFEE6";
 	private const string LegacyRaopPublicKey = "b07727d6f6cd6e08b58ede525ec3cdeaa252ad9f683feb212ef8a205246554e7";
 
-	// Video-only receiver scope. There is no audio receive/decode/playback pipeline yet, so the
-	// receiver must not claim audio it cannot render. This gates the audio capability claim in
-	// the /info plist and the audio headers in the RECORD response. Reversible: flip to true to
-	// re-enable audio negotiation when the audio milestone (receive -> decode -> WASAPI -> A/V
-	// sync) lands. NOTE: disabling changes the live AirPlay handshake; confirm a real-device
-	// mirror still negotiates after a build with this off.
-	private const bool AdvertiseAudioCapabilities = false;
+	// Product default: advertise audio now that the receiver has a decode/output pipeline. Failures in
+	// the downstream audio path fall back to silence while video keeps running.
+	private const bool AdvertiseAudioCapabilities = true;
+
+	// Optional verbose discovery diagnostics. Set IMIRROR_AUDIO_DISCOVERY=1 to log non-video data-stream
+	// packets and full SETUP plists while investigating sender behavior.
+	private static readonly bool AudioDiscoveryEnabled = string.Equals(
+		Environment.GetEnvironmentVariable("IMIRROR_AUDIO_DISCOVERY"), "1", StringComparison.OrdinalIgnoreCase);
+
+	private static bool AudioAdvertised => AdvertiseAudioCapabilities || AudioDiscoveryEnabled;
 
 	private static readonly IPAddress MulticastAddress = IPAddress.Parse("224.0.0.251");
 	private static readonly IPEndPoint MulticastEndpoint = new IPEndPoint(MulticastAddress, MdnsPort);
@@ -82,6 +85,7 @@ public sealed class AirPlayProbeService : IDisposable
 	private readonly AirPlayPairingContext _pairing = new AirPlayPairingContext();
 	private readonly AirPlayFairPlayContext _fairPlay = new AirPlayFairPlayContext();
 	private readonly AirPlayTimingClient _timingClient = new AirPlayTimingClient(TimingPort);
+	private readonly AirPlayAudioReceiver _audioReceiver = new AirPlayAudioReceiver();
 	private readonly AirPlaySetupContext _setup;
 	private readonly object _mirrorKeyGate = new object();
 
@@ -111,6 +115,8 @@ public sealed class AirPlayProbeService : IDisposable
 	private readonly HashSet<int> _loggedDecryptPayloadFailureTypes = new HashSet<int>();
 	private readonly HashSet<int> _loggedDecryptCandidateReportTypes = new HashSet<int>();
 	private readonly HashSet<int> _loggedSkippedPacketTypes = new HashSet<int>();
+
+	private readonly Dictionary<int, long> _audioDiscoveryPacketCounts = new Dictionary<int, long>();
 	private bool _loggedDecryptorInUse;
 	private bool _mirrorDiagnosticWritten;
 	private long _lastVideoDataStatusTick;
@@ -123,7 +129,40 @@ public sealed class AirPlayProbeService : IDisposable
 		_pairingId = Guid.NewGuid().ToString("D");
 		_airPlayInstanceName = _displayName + "." + AirPlayServiceType;
 		_raopInstanceName = _deviceId.Replace(":", "", StringComparison.Ordinal) + "@" + _displayName + "." + RaopServiceType;
-		_setup = new AirPlaySetupContext(_timingClient);
+		_audioReceiver.StreamStarted += info => AudioStreamStarted?.Invoke(info.SampleRate, info.Channels, info.SamplesPerFrame);
+		_audioReceiver.AudioFrameReceived += (frame, timestamp, sequence) => AudioFrameReceived?.Invoke(frame, timestamp, sequence);
+		_setup = new AirPlaySetupContext(_timingClient, _audioReceiver, TryGetAudioCrypto);
+	}
+
+	// Provides the FairPlay-unwrapped session AES key + eiv to the audio receiver. The audio
+	// realtime stream (type=96) reuses the same et=32 session ekey/eiv the video path already
+	// captures in ObserveSetupRequest. The receiver combines the first 16 bytes of that key with
+	// the pair-verify shared secret for the confirmed AAC-ELD RTP CBC key derivation.
+	private AirPlayAudioCrypto? TryGetAudioCrypto()
+	{
+		byte[]? encryptedKey;
+		byte[]? eiv;
+		ulong? rtspTargetSessionId;
+		lock (_mirrorKeyGate)
+		{
+			encryptedKey = _encryptedMirrorAesKey == null ? null : CopyOf(_encryptedMirrorAesKey);
+			eiv = _mirrorEiv == null ? null : CopyOf(_mirrorEiv);
+			rtspTargetSessionId = _rtspTargetSessionId;
+		}
+
+		if (encryptedKey == null)
+		{
+			return null;
+		}
+
+		byte[]? aesKey = _fairPlay.TryDecryptAesKey(encryptedKey);
+		if (aesKey == null)
+		{
+			return null;
+		}
+
+		byte[]? sharedSecret = _pairing.TryGetSharedSecret();
+		return new AirPlayAudioCrypto(aesKey, eiv, sharedSecret, encryptedKey, rtspTargetSessionId);
 	}
 
 	public event Action<string>? StatusChanged;
@@ -131,6 +170,10 @@ public sealed class AirPlayProbeService : IDisposable
 	public event Action<StreamConfig>? StreamConfigReceived;
 
 	public event Action<byte[], ulong, long>? VideoPayloadReceived;
+
+	public event Action<int, int, int>? AudioStreamStarted;
+
+	public event Action<byte[], uint, ushort>? AudioFrameReceived;
 
 	public string StatusText { get; private set; } = "AirPlay receiver not started.";
 
@@ -391,6 +434,19 @@ public sealed class AirPlayProbeService : IDisposable
 				continue;
 			}
 
+			if (AudioDiscoveryEnabled)
+			{
+				long discoveryCount = _audioDiscoveryPacketCounts.TryGetValue(payloadType, out long existing) ? existing + 1 : 1;
+				_audioDiscoveryPacketCounts[payloadType] = discoveryCount;
+				// Log the first few of each non-video type (with head bytes to reveal RTP/ADTS/codec
+				// structure) and then periodically, to identify the audio stream on the TCP data path.
+				if (discoveryCount <= 5 || discoveryCount % 250 == 0)
+				{
+					AppLog.Write($"AUDIO-DISCOVERY data-stream packet: type={payloadType}, option={payloadOption}, size={payloadSize}, count={discoveryCount}, head={DescribeHeadBytes(payload, 24)}");
+				}
+				continue;
+			}
+
 			if (_loggedSkippedPacketTypes.Add(payloadType))
 			{
 				AppLog.Write($"AirPlay mirror packet skipped: type={payloadType}, option={payloadOption}, size={payloadSize}");
@@ -398,6 +454,39 @@ public sealed class AirPlayProbeService : IDisposable
 		}
 
 		return emitted;
+	}
+
+	private static string DescribeHeadBytes(byte[] payload, int count)
+	{
+		if (payload == null || payload.Length == 0)
+		{
+			return "(empty)";
+		}
+		int n = Math.Min(count, payload.Length);
+		return BitConverter.ToString(payload, 0, n);
+	}
+
+	// Compact recursive description of a parsed plist (for audio-discovery logging). Byte arrays are
+	// shown as length + a short hex prefix so keys like ekey/eiv are visible without huge dumps.
+	private static string DescribePlistObject(object? value, int depth)
+	{
+		if (depth > 6)
+		{
+			return "...";
+		}
+		switch (value)
+		{
+			case null:
+				return "null";
+			case byte[] bytes:
+				return $"bytes[{bytes.Length}]{(bytes.Length > 0 ? " " + BitConverter.ToString(bytes, 0, Math.Min(16, bytes.Length)) : string.Empty)}";
+			case Dictionary<string, object?> dict:
+				return "{" + string.Join(", ", dict.Select(kv => kv.Key + "=" + DescribePlistObject(kv.Value, depth + 1))) + "}";
+			case System.Collections.IEnumerable enumerable when value is not string:
+				return "[" + string.Join(", ", enumerable.Cast<object?>().Select(item => DescribePlistObject(item, depth + 1))) + "]";
+			default:
+				return value.ToString() ?? "?";
+		}
 	}
 
 	private bool TryDecryptMirrorPayload(byte[] payload, out byte[] decryptedPayload)
@@ -1243,6 +1332,13 @@ public sealed class AirPlayProbeService : IDisposable
 			return;
 		}
 
+		if (AudioDiscoveryEnabled)
+		{
+			// Dump the full SETUP plist so we can read the audio stream descriptor (type, codec/ct,
+			// audioFormat, sample rate, channels, requested UDP ports) and the encryption fields.
+			AppLog.Write("AUDIO-DISCOVERY SETUP plist: " + DescribePlistObject(request, 0));
+		}
+
 		bool changed = false;
 		if (TryReadRtspTargetSessionId(target, out ulong rtspTargetSessionId))
 		{
@@ -1533,7 +1629,7 @@ public sealed class AirPlayProbeService : IDisposable
 			if (method == "RECORD")
 			{
 				// Video-only: omit audio jack/latency headers unless audio is advertised.
-				Dictionary<string, string> recordHeaders = AdvertiseAudioCapabilities
+				Dictionary<string, string> recordHeaders = AudioAdvertised
 					? new Dictionary<string, string>
 					{
 						["Audio-Latency"] = "11025",
@@ -1708,7 +1804,7 @@ public sealed class AirPlayProbeService : IDisposable
 			}
 		};
 
-		if (!AdvertiseAudioCapabilities)
+		if (!AudioAdvertised)
 		{
 			// Video-only: drop the audio capability claim from the response. The negotiation
 			// fields above are left in source so re-enabling is a one-flag change.
@@ -2118,6 +2214,7 @@ public sealed class AirPlayProbeService : IDisposable
 		_eventListener?.Stop();
 		_timingListener?.Stop();
 		_timingClient.Dispose();
+		_audioReceiver.Dispose();
 			lock (_mirrorKeyGate)
 				{
 					_mirrorDecryptor?.Dispose();
