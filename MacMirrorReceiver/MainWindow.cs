@@ -89,7 +89,7 @@ public partial class MainWindow : Window
 
 	private readonly AirPlayProbeService _airPlayProbe = new AirPlayProbeService(
 		StartupReceiverSettings.Effective.ReceiverName,
-		StartupReceiverSettings.Effective.AudioEnabled,
+		ResolveStartupAudioAdvertised(),
 		StartupReceiverSettings.Effective.WriteDiagnostics,
 		StartupReceiverSettings.Effective.DumpAudio);
 
@@ -317,6 +317,13 @@ public partial class MainWindow : Window
 		await DisconnectAsync(null, userRequested: true);
 		_airPlayProbe.Dispose();
 		_browser.Dispose();
+	}
+
+	private static bool ResolveStartupAudioAdvertised()
+	{
+		return StartupReceiverSettings.Overrides.AudioEnabled
+			? StartupReceiverSettings.Persisted.AudioEnabled
+			: StartupReceiverSettings.Effective.AudioEnabled;
 	}
 
 	private void Window_SizeChanged(object sender, SizeChangedEventArgs e)
