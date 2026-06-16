@@ -8,6 +8,19 @@ Use this page as the product validation checklist before promoting work to `main
 dotnet build .\MacMirrorReceiver.csproj -c Release
 ```
 
+## Release Package Gate
+
+Create a self-contained Windows x64 package before handing builds to users.
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\publish-win-x64.ps1
+```
+
+Then extract the generated zip outside the repository and launch that copy of
+`iMirror.exe`. The package must include `tools\ffmpeg\bin\ffmpeg.exe` and
+`ThirdParty\playfair\` files. See `docs/release.md` for the full packaging
+smoke test.
+
 ## Smoke Test
 
 1. Launch `iMirror.exe`.

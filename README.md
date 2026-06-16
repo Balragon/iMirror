@@ -31,6 +31,17 @@ dotnet build .\MacMirrorReceiver.csproj -c Release
 
 The project targets `net8.0-windows`, `x64`, and WPF.
 
+## Publish
+
+Create a self-contained Windows x64 zip package:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\publish-win-x64.ps1
+```
+
+The package is written under `artifacts\`. See `docs/release.md` for FFmpeg
+requirements and package smoke-test steps.
+
 ## Runtime Dependencies
 
 FFmpeg is intentionally not committed. Put a Windows FFmpeg build here:
@@ -102,4 +113,5 @@ See `docs/validation.md` for the recommended release gate.
 ## Documentation
 
 - `docs/architecture.md` - current product architecture.
+- `docs/release.md` - self-contained Windows zip packaging flow.
 - `docs/validation.md` - validation and acceptance workflow.
