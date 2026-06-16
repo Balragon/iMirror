@@ -5,6 +5,7 @@ param(
 	[string]$Version = "",
 	[string]$FfmpegPath = "",
 	[switch]$AllowMissingFfmpeg,
+	[switch]$KeepPublishOutput,
 	[switch]$NoZip
 )
 
@@ -94,7 +95,8 @@ try
 
 	$packageName = "iMirror-$Version-$Runtime"
 	$outputRootFull = Join-Path $repoRoot $OutputRoot
-	$publishDir = Join-Path $outputRootFull "publish\$packageName"
+	$publishRoot = Join-Path $outputRootFull "publish"
+	$publishDir = Join-Path $publishRoot $packageName
 	$packageDir = Join-Path $outputRootFull "package\$packageName"
 	$zipPath = Join-Path $outputRootFull "$packageName.zip"
 
@@ -191,7 +193,21 @@ Notes:
 	if (-not $NoZip)
 	{
 		Write-Host "Creating zip: $zipPath"
-		Compress-Archive -Path $packageDir -DestinationPath $zipPath -Force
+		Add-Type -AssemblyName System.IO.Compression.FileSystem
+		[IO.Compression.ZipFile]::CreateFromDirectory(
+			$packageDir,
+			$zipPath,
+			[IO.Compression.CompressionLevel]::Fastest,
+			$true)
+	}
+
+	if (-not $KeepPublishOutput)
+	{
+		Remove-PathIfExists $repoRoot $publishDir
+		if ((Test-Path -LiteralPath $publishRoot -PathType Container) -and -not (Get-ChildItem -LiteralPath $publishRoot -Force))
+		{
+			Remove-PathIfExists $repoRoot $publishRoot
+		}
 	}
 
 	Write-Host "Package directory: $packageDir"

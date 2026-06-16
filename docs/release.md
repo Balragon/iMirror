@@ -34,6 +34,8 @@ Outputs:
 
 The zip contains only the runnable app payload, bundled FFmpeg, FairPlay table
 files, runtime dependencies, and a short `README.txt`.
+Intermediate publish output is removed by default; pass `-KeepPublishOutput` if
+you need to inspect it.
 
 ## Package Smoke Test
 
