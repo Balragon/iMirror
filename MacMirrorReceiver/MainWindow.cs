@@ -273,6 +273,7 @@ public partial class MainWindow : Window
 				AirPlayProbeTextBlock.Text = message;
 			}), DispatcherPriority.Background);
 		};
+		_airPlayProbe.MirrorSessionStarted += HandleAirPlayMirrorSessionStarted;
 		_airPlayProbe.StreamConfigReceived += HandleAirPlayStreamConfig;
 		_airPlayProbe.VideoPayloadReceived += HandleAirPlayVideoPayload;
 		_airPlayProbe.AudioStreamStarted += HandleAirPlayAudioStreamStarted;
@@ -357,6 +358,43 @@ public partial class MainWindow : Window
 	private async void ConnectButton_Click(object sender, RoutedEventArgs e)
 	{
 		await ConnectToSelectedAsync();
+	}
+
+	private void HandleAirPlayMirrorSessionStarted()
+	{
+		if (base.Dispatcher.CheckAccess())
+		{
+			ResetAirPlayMirrorSessionState();
+			return;
+		}
+
+		base.Dispatcher.Invoke(new Action(ResetAirPlayMirrorSessionState), DispatcherPriority.Send);
+	}
+
+	private void ResetAirPlayMirrorSessionState()
+	{
+		Interlocked.Increment(ref _connectionGeneration);
+		StopVideoWatchdog();
+		_decoder?.Dispose();
+		_decoder = null;
+#if HIGH_RESOLUTION_D3D
+		_mediaFoundationD3DDecoder?.Dispose();
+		_mediaFoundationD3DDecoder = null;
+		DisposeHighResolutionD3DPresenter();
+		ReleasePendingD3DFrame();
+#endif
+		ReleasePendingFrame();
+		StopAudioPipeline();
+		_bitmap = null;
+		VideoImage.Source = null;
+		VideoImage.Visibility = Visibility.Visible;
+		EmptyStatePanel.Visibility = Visibility.Visible;
+		_decoderOutputFps = 0;
+		_decoderMaxRenderWidth = RealtimeMaxRenderWidth;
+		ResetStreamStateForNewConnection();
+		SetStatus("AirPlay session starting.");
+		AppLog.Write("AirPlay mirror session state reset for new sender/session.");
+		UpdateDiagnostics();
 	}
 
 	private void HandleAirPlayStreamConfig(StreamConfig config)
