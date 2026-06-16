@@ -14,15 +14,18 @@ internal sealed class AirPlaySetupContext
 	private readonly AirPlayTimingClient _timingClient;
 	private readonly AirPlayAudioReceiver _audioReceiver;
 	private readonly Func<AirPlayAudioCrypto?> _audioCryptoProvider;
+	private readonly bool _dumpAudio;
 
 	public AirPlaySetupContext(
 		AirPlayTimingClient timingClient,
 		AirPlayAudioReceiver audioReceiver,
-		Func<AirPlayAudioCrypto?> audioCryptoProvider)
+		Func<AirPlayAudioCrypto?> audioCryptoProvider,
+		bool dumpAudio = false)
 	{
 		_timingClient = timingClient;
 		_audioReceiver = audioReceiver;
 		_audioCryptoProvider = audioCryptoProvider;
+		_dumpAudio = dumpAudio;
 	}
 
 	public byte[] BuildSetupResponse(byte[] requestBody, IPAddress? remoteAddress)
@@ -107,7 +110,7 @@ internal sealed class AirPlaySetupContext
 			AppLog.Write("AirPlay SETUP audio stream (type=96) received before FairPlay session key was available; audio decryption will be unavailable.");
 		}
 
-		if (!_audioReceiver.Start(remoteAddress, macControlPort, info, crypto))
+		if (!_audioReceiver.Start(remoteAddress, macControlPort, info, crypto, _dumpAudio))
 		{
 			AppLog.Write("AirPlay SETUP audio stream (type=96) could not start UDP receiver; responding without an audio stream.");
 			return null;

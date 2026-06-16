@@ -17,7 +17,7 @@ namespace MacMirrorReceiver.Networking;
 // UDP RTP to the dataPort advertised in the SETUP response; a sibling controlPort carries
 // timing/retransmit. The receiver opens the UDP sockets, parses RTP, FairPlay-unwraps the
 // session AES key provided by the caller, and can optionally capture private local audio
-// diagnostics when IMIRROR_DUMP_AUDIO is set.
+// diagnostics when enabled in Settings or IMIRROR_DUMP_AUDIO is set.
 internal sealed class AirPlayAudioReceiver : IDisposable
 {
 	private const int RtpHeaderLength = 12;
@@ -68,7 +68,7 @@ internal sealed class AirPlayAudioReceiver : IDisposable
 
 	// Bind UDP sockets and start receiving. Restarts cleanly if a prior session was running.
 	// Returns true once the data socket is bound (so the SETUP response can advertise the port).
-	public bool Start(IPAddress? remoteAddress, int macControlPort, AirPlayAudioStreamInfo info, AirPlayAudioCrypto? crypto)
+	public bool Start(IPAddress? remoteAddress, int macControlPort, AirPlayAudioStreamInfo info, AirPlayAudioCrypto? crypto, bool dumpAudio = false)
 	{
 		StopInternal();
 
@@ -95,7 +95,7 @@ internal sealed class AirPlayAudioReceiver : IDisposable
 				_statusWindowPackets = 0;
 				_payloadTypeCounts.Clear();
 
-				_dump = AudioDumpWriter.TryCreate(_info, crypto, macControlPort, DataPort, ControlPort);
+				_dump = AudioDumpWriter.TryCreate(_info, crypto, macControlPort, DataPort, ControlPort, dumpAudio);
 
 				CancellationToken token = _cts.Token;
 				UdpClient data = _dataClient;
@@ -345,7 +345,7 @@ internal sealed class AirPlayAudioReceiver : IDisposable
 		return copy;
 	}
 
-	// Private local capture gated by IMIRROR_DUMP_AUDIO. Writes a length-framed raw RTP stream
+	// Private local capture gated by Settings or IMIRROR_DUMP_AUDIO. Writes a length-framed raw RTP stream
 	// (every packet, header included) plus a sidecar meta.json that records the FairPlay-unwrapped
 	// AES key, eiv and stream parameters for offline diagnosis. These files contain key material
 	// and audio; they are only written when explicitly enabled.
@@ -366,12 +366,19 @@ internal sealed class AirPlayAudioReceiver : IDisposable
 			_clearStream = clearStream;
 		}
 
-		public static AudioDumpWriter? TryCreate(AirPlayAudioStreamInfo info, AirPlayAudioCrypto? crypto, int macControlPort, int dataPort, int controlPort)
+		public static AudioDumpWriter? TryCreate(
+			AirPlayAudioStreamInfo info,
+			AirPlayAudioCrypto? crypto,
+			int macControlPort,
+			int dataPort,
+			int controlPort,
+			bool dumpAudio = false)
 		{
 			byte[]? aesKey = crypto?.AesKey;
 			byte[]? eiv = crypto?.Eiv;
 			string? setting = Environment.GetEnvironmentVariable("IMIRROR_DUMP_AUDIO");
-			if (string.IsNullOrWhiteSpace(setting))
+			bool envEnabled = !string.IsNullOrWhiteSpace(setting);
+			if (!dumpAudio && !envEnabled)
 			{
 				return null;
 			}
@@ -380,7 +387,7 @@ internal sealed class AirPlayAudioReceiver : IDisposable
 			{
 				string directory;
 				string stamp = DateTime.Now.ToString("yyyyMMdd-HHmmss", CultureInfo.InvariantCulture);
-				if (setting == "1" || string.Equals(setting, "true", StringComparison.OrdinalIgnoreCase))
+				if (string.IsNullOrWhiteSpace(setting) || setting == "1" || string.Equals(setting, "true", StringComparison.OrdinalIgnoreCase))
 				{
 					directory = AppContext.BaseDirectory;
 				}

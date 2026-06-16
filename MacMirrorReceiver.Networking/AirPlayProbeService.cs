@@ -46,14 +46,12 @@ public sealed class AirPlayProbeService : IDisposable
 
 	// Product default: advertise audio now that the receiver has a decode/output pipeline. Failures in
 	// the downstream audio path fall back to silence while video keeps running.
-	private const bool AdvertiseAudioCapabilities = true;
+	private const bool AdvertiseAudioCapabilitiesDefault = true;
 
 	// Optional verbose discovery diagnostics. Set IMIRROR_AUDIO_DISCOVERY=1 to log non-video data-stream
 	// packets and full SETUP plists while investigating sender behavior.
-	private static readonly bool AudioDiscoveryEnabled = string.Equals(
+	private static readonly bool AudioDiscoveryLogging = string.Equals(
 		Environment.GetEnvironmentVariable("IMIRROR_AUDIO_DISCOVERY"), "1", StringComparison.OrdinalIgnoreCase);
-
-	private static bool AudioAdvertised => AdvertiseAudioCapabilities || AudioDiscoveryEnabled;
 
 	private static readonly IPAddress MulticastAddress = IPAddress.Parse("224.0.0.251");
 	private static readonly IPEndPoint MulticastEndpoint = new IPEndPoint(MulticastAddress, MdnsPort);
@@ -74,6 +72,9 @@ public sealed class AirPlayProbeService : IDisposable
 	private readonly string _raopInstanceName;
 	private readonly string _deviceId;
 	private readonly string _pairingId;
+	private readonly bool _audioAdvertised;
+	private readonly bool _writeDiagnostics;
+	private readonly bool _dumpAudio;
 	private readonly AirPlayPairingContext _pairing = new AirPlayPairingContext();
 	private readonly AirPlayFairPlayContext _fairPlay = new AirPlayFairPlayContext();
 	private readonly AirPlayTimingClient _timingClient = new AirPlayTimingClient(TimingPort);
@@ -113,7 +114,11 @@ public sealed class AirPlayProbeService : IDisposable
 	private bool _mirrorDiagnosticWritten;
 	private long _lastVideoDataStatusTick;
 
-	public AirPlayProbeService(string displayName)
+	public AirPlayProbeService(
+		string displayName,
+		bool advertiseAudio = AdvertiseAudioCapabilitiesDefault,
+		bool writeDiagnostics = false,
+		bool dumpAudio = false)
 	{
 		_displayName = SanitizeLabel(displayName);
 		_hostName = SanitizeLabel(Environment.MachineName) + ".local";
@@ -121,9 +126,12 @@ public sealed class AirPlayProbeService : IDisposable
 		_pairingId = Guid.NewGuid().ToString("D");
 		_airPlayInstanceName = _displayName + "." + AirPlayServiceType;
 		_raopInstanceName = _deviceId.Replace(":", "", StringComparison.Ordinal) + "@" + _displayName + "." + RaopServiceType;
+		_audioAdvertised = advertiseAudio;
+		_writeDiagnostics = writeDiagnostics;
+		_dumpAudio = dumpAudio;
 		_audioReceiver.StreamStarted += info => AudioStreamStarted?.Invoke(info.SampleRate, info.Channels, info.SamplesPerFrame);
 		_audioReceiver.AudioFrameReceived += (frame, timestamp, sequence) => AudioFrameReceived?.Invoke(frame, timestamp, sequence);
-		_setup = new AirPlaySetupContext(_timingClient, _audioReceiver, TryGetAudioCrypto);
+		_setup = new AirPlaySetupContext(_timingClient, _audioReceiver, TryGetAudioCrypto, _dumpAudio);
 	}
 
 	// Provides the FairPlay-unwrapped session AES key + eiv to the audio receiver. The audio
@@ -426,7 +434,7 @@ public sealed class AirPlayProbeService : IDisposable
 				continue;
 			}
 
-			if (AudioDiscoveryEnabled)
+			if (AudioDiscoveryLogging)
 			{
 				long discoveryCount = _audioDiscoveryPacketCounts.TryGetValue(payloadType, out long existing) ? existing + 1 : 1;
 				_audioDiscoveryPacketCounts[payloadType] = discoveryCount;
@@ -700,7 +708,7 @@ public sealed class AirPlayProbeService : IDisposable
 
 		if (!ShouldWriteMirrorDiagnostics())
 		{
-			AppLog.Write("AirPlay mirror diagnostic snapshot skipped; set IMIRROR_WRITE_DIAGNOSTICS=1 to enable private local capture.");
+			AppLog.Write("AirPlay mirror diagnostic snapshot skipped; enable Write diagnostics in Settings or set IMIRROR_WRITE_DIAGNOSTICS=1.");
 			return;
 		}
 
@@ -739,11 +747,7 @@ public sealed class AirPlayProbeService : IDisposable
 		}
 	}
 
-	private static bool ShouldWriteMirrorDiagnostics()
-	{
-		string? setting = Environment.GetEnvironmentVariable("IMIRROR_WRITE_DIAGNOSTICS");
-		return setting == "1" || string.Equals(setting, "true", StringComparison.OrdinalIgnoreCase);
-	}
+	private bool ShouldWriteMirrorDiagnostics() => _writeDiagnostics;
 
 	private static string? HexOrNull(byte[]? bytes)
 	{
@@ -1320,7 +1324,7 @@ public sealed class AirPlayProbeService : IDisposable
 			return;
 		}
 
-		if (AudioDiscoveryEnabled)
+		if (AudioDiscoveryLogging)
 		{
 			// Dump the full SETUP plist so we can read the audio stream descriptor (type, codec/ct,
 			// audioFormat, sample rate, channels, requested UDP ports) and the encryption fields.
@@ -1617,7 +1621,7 @@ public sealed class AirPlayProbeService : IDisposable
 			if (method == "RECORD")
 			{
 				// Video-only: omit audio jack/latency headers unless audio is advertised.
-				Dictionary<string, string> recordHeaders = AudioAdvertised
+				Dictionary<string, string> recordHeaders = _audioAdvertised
 					? new Dictionary<string, string>
 					{
 						["Audio-Latency"] = "11025",
@@ -1792,7 +1796,7 @@ public sealed class AirPlayProbeService : IDisposable
 			}
 		};
 
-		if (!AudioAdvertised)
+		if (!_audioAdvertised)
 		{
 			// Video-only: drop the audio capability claim from the response. The negotiation
 			// fields above are left in source so re-enabling is a one-flag change.
