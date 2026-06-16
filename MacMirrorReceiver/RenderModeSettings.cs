@@ -21,9 +21,7 @@ internal static class RenderModeSettings
 {
 	public const string EnvironmentVariableName = "IMIRROR_RENDER_MODE";
 
-	public const string ExperimentalMpvEnvironmentVariableName = "IMIRROR_EXPERIMENTAL_MPV";
-
-	public const string ExperimentalQualityEnvironmentVariableName = "IMIRROR_EXPERIMENTAL_QUALITY";
+	public const string QualityEnvironmentVariableName = "IMIRROR_EXPERIMENTAL_QUALITY";
 
 	private const string SettingsDirectoryName = "iMirror";
 	private const string SettingsFileName = "settings.json";
@@ -62,13 +60,8 @@ internal static class RenderModeSettings
 			SettingsPath);
 	}
 
-	public static bool ExperimentalMpvQualityEnabled => string.Equals(
-		Environment.GetEnvironmentVariable(ExperimentalMpvEnvironmentVariableName),
-		"1",
-		StringComparison.OrdinalIgnoreCase);
-
-	public static bool ExperimentalWpfQualityEnabled => string.Equals(
-		Environment.GetEnvironmentVariable(ExperimentalQualityEnvironmentVariableName),
+	public static bool ExperimentalQualityEnabled => string.Equals(
+		Environment.GetEnvironmentVariable(QualityEnvironmentVariableName),
 		"1",
 		StringComparison.OrdinalIgnoreCase);
 
@@ -112,7 +105,7 @@ internal static class RenderModeSettings
 		string path = SettingsPath;
 		if (!File.Exists(path))
 		{
-			return ReceiverRenderModeSetting.Stable;
+			return ReceiverRenderModeSetting.Quality;
 		}
 
 		try
@@ -129,7 +122,7 @@ internal static class RenderModeSettings
 			AppLog.Write("Render mode settings could not be loaded: " + ex.Message);
 		}
 
-		return ReceiverRenderModeSetting.Stable;
+		return ReceiverRenderModeSetting.Quality;
 	}
 
 	private static bool TryParseMode(string? value, out ReceiverRenderModeSetting mode)

@@ -55,7 +55,7 @@ public sealed class MirrorClient : IAsyncDisposable
 		await _stream.WriteAsync(array2, _cts.Token);
 		await _stream.FlushAsync(_cts.Token);
 		this.StatusChanged?.Invoke("PIN sent. Waiting for sender stream.");
-		_receiveTask = Task.Run((Func<Task?>)ReceiveLoopAsync);
+		_receiveTask = Task.Run(ReceiveLoopAsync);
 	}
 
 	private async Task ReceiveLoopAsync()
@@ -107,7 +107,7 @@ public sealed class MirrorClient : IAsyncDisposable
 		{
 		case MirrorMessageType.AuthResult:
 		{
-			AuthResult authResult = JsonSerializer.Deserialize<AuthResult>(payload);
+			AuthResult? authResult = JsonSerializer.Deserialize<AuthResult>(payload);
 			this.StatusChanged?.Invoke(authResult?.Message ?? "Authenticated.");
 			if (authResult != null && !authResult.Accepted)
 			{
@@ -117,7 +117,7 @@ public sealed class MirrorClient : IAsyncDisposable
 		}
 		case MirrorMessageType.StreamConfig:
 		{
-			StreamConfig streamConfig = JsonSerializer.Deserialize<StreamConfig>(payload);
+			StreamConfig? streamConfig = JsonSerializer.Deserialize<StreamConfig>(payload);
 			if (streamConfig != null)
 			{
 				this.StatusChanged?.Invoke($"Stream config received: {streamConfig.Width}x{streamConfig.Height} @ {streamConfig.Fps} fps.");
@@ -144,7 +144,7 @@ public sealed class MirrorClient : IAsyncDisposable
 			}
 		case MirrorMessageType.Error:
 		{
-			StatusMessage statusMessage = JsonSerializer.Deserialize<StatusMessage>(payload);
+			StatusMessage? statusMessage = JsonSerializer.Deserialize<StatusMessage>(payload);
 			this.StatusChanged?.Invoke(statusMessage?.Message ?? "Sender reported an error.");
 			break;
 		}

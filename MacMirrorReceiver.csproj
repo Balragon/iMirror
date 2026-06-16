@@ -35,9 +35,6 @@
     <Content Include="ThirdParty\playfair\omg_hax.h" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="ThirdParty\playfair\sap_hash.c" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
-  <ItemGroup Condition="'$(DirectXProbe)' == 'true'">
-    <PackageReference Include="SharpDX.Direct3D9" Version="4.2.0" />
-  </ItemGroup>
   <ItemGroup>
     <PackageReference Include="SharpDX.Direct3D11" Version="4.2.0" />
     <PackageReference Include="SharpDX.Direct3D9" Version="4.2.0" />

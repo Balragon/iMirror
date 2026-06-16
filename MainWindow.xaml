@@ -324,8 +324,8 @@
                                     </StackPanel>
                                 </RadioButton>
 
-                                <TextBlock x:Name="RenderModeMpvNoteTextBlock"
-                                           Text="Experimental mpv quality is enabled but mpv was not found."
+                                <TextBlock x:Name="RenderModeNoteTextBlock"
+                                           Text="GPU mode is enabled when hardware decode is available."
                                            Foreground="{StaticResource MutedTextBrush}"
                                            FontSize="12"
                                            TextWrapping="Wrap"

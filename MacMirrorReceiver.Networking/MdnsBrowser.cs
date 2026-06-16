@@ -34,20 +34,26 @@ public sealed class MdnsBrowser : IDisposable
 		_udpClient.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, optionValue: true);
 		_udpClient.Client.Bind(new IPEndPoint(IPAddress.Any, 5353));
 		_udpClient.JoinMulticastGroup(MulticastAddress);
-		_receiveTask = Task.Run((Func<Task?>)ReceiveLoopAsync);
-		_queryTask = Task.Run((Func<Task?>)QueryLoopAsync);
+		_receiveTask = Task.Run(ReceiveLoopAsync);
+		_queryTask = Task.Run(QueryLoopAsync);
 		return Task.CompletedTask;
 	}
 
 	private async Task QueryLoopAsync()
 	{
+		UdpClient? client = _udpClient;
+		if (client == null)
+		{
+			return;
+		}
+
 		IPEndPoint endpoint = new IPEndPoint(MulticastAddress, 5353);
 		while (!_cts.IsCancellationRequested)
 		{
 			try
 			{
 				byte[] array = BuildPtrQuery("_macmirror._tcp.local");
-				await _udpClient.SendAsync(array, endpoint, _cts.Token);
+				await client.SendAsync(array, endpoint, _cts.Token);
 				await Task.Delay(TimeSpan.FromSeconds(3.0), _cts.Token);
 			}
 			catch (OperationCanceledException)
@@ -63,11 +69,17 @@ public sealed class MdnsBrowser : IDisposable
 
 	private async Task ReceiveLoopAsync()
 	{
+		UdpClient? client = _udpClient;
+		if (client == null)
+		{
+			return;
+		}
+
 		while (!_cts.IsCancellationRequested)
 		{
 			try
 			{
-				foreach (MirrorDevice item in ParseResponse((await _udpClient.ReceiveAsync(_cts.Token)).Buffer))
+				foreach (MirrorDevice item in ParseResponse((await client.ReceiveAsync(_cts.Token)).Buffer))
 				{
 					this.DeviceFound?.Invoke(item);
 				}
