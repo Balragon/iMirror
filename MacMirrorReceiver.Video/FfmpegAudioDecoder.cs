@@ -130,7 +130,7 @@ public sealed class FfmpegAudioDecoder : IDisposable
 			if (_seenSequences.Contains(sequence))
 			{
 				Interlocked.Increment(ref _duplicateInputFrames);
-				return true;
+				return false;
 			}
 			_seenSequences.Add(sequence);
 			_seenSequenceOrder.Enqueue(sequence);

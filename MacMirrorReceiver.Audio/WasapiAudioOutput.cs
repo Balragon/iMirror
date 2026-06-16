@@ -9,18 +9,22 @@ namespace MacMirrorReceiver.Audio;
 public sealed class WasapiAudioOutput : IDisposable
 {
 	private const int WasapiLatencyMilliseconds = 80;
-	private const int BufferMilliseconds = 500;
-	private const int TargetBufferMilliseconds = 120;
-	private const int MaxHealthyBufferMilliseconds = 350;
+	private const int BufferMilliseconds = 1000;
+	private const int LowBufferMilliseconds = 40;
+	private const int LowBufferRecoveredMilliseconds = 90;
+	private const int TargetBufferMilliseconds = 140;
+	private const int HighBufferMilliseconds = 260;
 	private readonly object _gate = new object();
 	private readonly BufferedWaveProvider _buffer;
 	private readonly WasapiOut _output;
 	private readonly int _averageBytesPerSecond;
 	private long _submittedFrames;
 	private long _submittedBytes;
+	private long _droppedFrames;
 	private long _bufferClears;
 	private long _lowBufferEvents;
 	private long _lastStatusTick;
+	private bool _lowBufferActive;
 	private bool _disposed;
 
 	public WasapiAudioOutput(int sampleRate, int channels)
@@ -49,6 +53,8 @@ public sealed class WasapiAudioOutput : IDisposable
 
 	public long SubmittedBytes => Interlocked.Read(ref _submittedBytes);
 
+	public long DroppedFrames => Interlocked.Read(ref _droppedFrames);
+
 	public long BufferClears => Interlocked.Read(ref _bufferClears);
 
 	public long LowBufferEvents => Interlocked.Read(ref _lowBufferEvents);
@@ -71,17 +77,31 @@ public sealed class WasapiAudioOutput : IDisposable
 
 			int beforeBytes = _buffer.BufferedBytes;
 			int beforeMs = BytesToMilliseconds(beforeBytes);
-			if (beforeBytes + frame.ByteCount > _buffer.BufferLength || beforeMs > MaxHealthyBufferMilliseconds)
+			if (beforeBytes + frame.ByteCount > _buffer.BufferLength)
 			{
 				_buffer.ClearBuffer();
 				Interlocked.Increment(ref _bufferClears);
 				beforeBytes = 0;
 				beforeMs = 0;
 			}
-
-			if (beforeMs < TargetBufferMilliseconds / 3 && Interlocked.Read(ref _submittedFrames) > 10)
+			else if (beforeMs >= HighBufferMilliseconds)
 			{
-				Interlocked.Increment(ref _lowBufferEvents);
+				Interlocked.Increment(ref _droppedFrames);
+				LogStatusThrottled(beforeMs);
+				return;
+			}
+
+			if (beforeMs < LowBufferMilliseconds && Interlocked.Read(ref _submittedFrames) > 10)
+			{
+				if (!_lowBufferActive)
+				{
+					_lowBufferActive = true;
+					Interlocked.Increment(ref _lowBufferEvents);
+				}
+			}
+			else if (beforeMs >= LowBufferRecoveredMilliseconds)
+			{
+				_lowBufferActive = false;
 			}
 
 			_buffer.AddSamples(frame.Buffer, 0, frame.ByteCount);
@@ -106,7 +126,7 @@ public sealed class WasapiAudioOutput : IDisposable
 
 		this.StatusChanged?.Invoke(
 			$"WASAPI audio buffer: before={beforeMilliseconds}ms, after={BufferedMilliseconds}ms, " +
-			$"frames={SubmittedFrames:N0}, clears={BufferClears:N0}, low={LowBufferEvents:N0}.");
+			$"frames={SubmittedFrames:N0}, dropped={DroppedFrames:N0}, clears={BufferClears:N0}, lowTransitions={LowBufferEvents:N0}, target={TargetBufferMilliseconds}-{HighBufferMilliseconds}ms.");
 	}
 
 	private int BytesToMilliseconds(int bytes)

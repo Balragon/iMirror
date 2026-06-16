@@ -2584,7 +2584,7 @@ public partial class MainWindow : Window
 		return $"audio: {_audioStatus}, received/queued={Interlocked.Read(ref _audioFramesReceived):N0}/{Interlocked.Read(ref _audioFramesQueued):N0}, " +
 			$"dedup={decoder.DuplicateInputFrames:N0}, decoded={Interlocked.Read(ref _audioPcmFrames):N0} ({(double)Interlocked.Read(ref _audioPcmBytes) / 1024.0:N1} KB), " +
 			$"decoderQueue={decoder.QueuedInputFrames:N0}, audioBuffer={output.BufferedMilliseconds:N0}ms, " +
-			$"clears={output.BufferClears:N0}, low={output.LowBufferEvents:N0}";
+			$"audioDropped={output.DroppedFrames:N0}, clears={output.BufferClears:N0}, low={output.LowBufferEvents:N0}";
 	}
 
 	private int ActiveQueuedInputPackets => _mpvPresenter?.QueuedInputPackets
