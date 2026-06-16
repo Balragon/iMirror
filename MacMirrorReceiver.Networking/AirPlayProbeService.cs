@@ -102,6 +102,9 @@ public sealed class AirPlayProbeService : IDisposable
 	private ulong? _streamConnectionId;
 	private ulong? _rtspTargetSessionId;
 	private ulong? _decryptorStreamConnectionId;
+	private ulong? _announcedMirrorRtspTargetSessionId;
+	private ulong? _announcedMirrorStreamConnectionId;
+	private bool _announcedIdentitylessMirrorSession;
 	private AirPlayMirrorDecryptor? _mirrorDecryptor;
 	private List<AirPlayMirrorDecryptor>? _mirrorDecryptorProbePool;
 	private bool _loggedWaitingForMirrorDecryptor;
@@ -166,6 +169,8 @@ public sealed class AirPlayProbeService : IDisposable
 	}
 
 	public event Action<string>? StatusChanged;
+
+	public event Action? MirrorSessionStarted;
 
 	public event Action<StreamConfig>? StreamConfigReceived;
 
@@ -1332,8 +1337,12 @@ public sealed class AirPlayProbeService : IDisposable
 		}
 
 		bool changed = false;
+		ulong? observedRtspTargetSessionId = null;
+		ulong? observedStreamConnectionId = null;
+		bool mirrorSetup = ContainsMirrorVideoStream(request);
 		if (TryReadRtspTargetSessionId(target, out ulong rtspTargetSessionId))
 		{
+			observedRtspTargetSessionId = rtspTargetSessionId;
 			lock (_mirrorKeyGate)
 			{
 				_rtspTargetSessionId = rtspTargetSessionId;
@@ -1343,29 +1352,31 @@ public sealed class AirPlayProbeService : IDisposable
 
 		if (TryReadData(request, "ekey", out byte[] encryptedKey))
 		{
-				lock (_mirrorKeyGate)
-				{
-					_mirrorDecryptor?.Dispose();
-					_mirrorDecryptor = null;
-					DisposeMirrorProbePoolLocked();
-					_streamConnectionId = null;
-					_decryptorStreamConnectionId = null;
-					_encryptedMirrorAesKey = CopyOf(encryptedKey);
-					_mirrorFairPlayAesKey = null;
-					_mirrorSharedSecret = null;
-					_loggedWaitingForMirrorDecryptor = false;
-					_loggedDecryptPayloadFailureTypes.Clear();
-					_loggedDecryptCandidateReportTypes.Clear();
-					_loggedSkippedPacketTypes.Clear();
-					_loggedDecryptorInUse = false;
-					_mirrorDiagnosticWritten = false;
-				}
+			mirrorSetup = true;
+			lock (_mirrorKeyGate)
+			{
+				_mirrorDecryptor?.Dispose();
+				_mirrorDecryptor = null;
+				DisposeMirrorProbePoolLocked();
+				_streamConnectionId = null;
+				_decryptorStreamConnectionId = null;
+				_encryptedMirrorAesKey = CopyOf(encryptedKey);
+				_mirrorFairPlayAesKey = null;
+				_mirrorSharedSecret = null;
+				_loggedWaitingForMirrorDecryptor = false;
+				_loggedDecryptPayloadFailureTypes.Clear();
+				_loggedDecryptCandidateReportTypes.Clear();
+				_loggedSkippedPacketTypes.Clear();
+				_loggedDecryptorInUse = false;
+				_mirrorDiagnosticWritten = false;
+			}
 			AppLog.Write($"AirPlay SETUP mirror ekey received: {encryptedKey.Length} bytes.");
 			changed = true;
 		}
 
 		if (TryReadData(request, "eiv", out byte[] mirrorEiv))
 		{
+			mirrorSetup = true;
 			lock (_mirrorKeyGate)
 			{
 				_mirrorEiv = CopyOf(mirrorEiv);
@@ -1374,32 +1385,96 @@ public sealed class AirPlayProbeService : IDisposable
 			changed = true;
 		}
 
-			if (TryReadStreamConnectionId(request, out ulong streamConnectionId))
+		if (TryReadStreamConnectionId(request, out ulong streamConnectionId))
+		{
+			observedStreamConnectionId = streamConnectionId;
+			lock (_mirrorKeyGate)
 			{
-				lock (_mirrorKeyGate)
+				if (_streamConnectionId != null && _streamConnectionId.Value != streamConnectionId)
 				{
-					if (_streamConnectionId != null && _streamConnectionId.Value != streamConnectionId)
-						{
-							_mirrorDecryptor?.Dispose();
-							_mirrorDecryptor = null;
-							DisposeMirrorProbePoolLocked();
-							_decryptorStreamConnectionId = null;
-							_loggedWaitingForMirrorDecryptor = false;
-						_loggedDecryptPayloadFailureTypes.Clear();
-						_loggedDecryptCandidateReportTypes.Clear();
-						_loggedSkippedPacketTypes.Clear();
-						_loggedDecryptorInUse = false;
-						_mirrorDiagnosticWritten = false;
-					}
-					_streamConnectionId = streamConnectionId;
+					_mirrorDecryptor?.Dispose();
+					_mirrorDecryptor = null;
+					DisposeMirrorProbePoolLocked();
+					_decryptorStreamConnectionId = null;
+					_loggedWaitingForMirrorDecryptor = false;
+					_loggedDecryptPayloadFailureTypes.Clear();
+					_loggedDecryptCandidateReportTypes.Clear();
+					_loggedSkippedPacketTypes.Clear();
+					_loggedDecryptorInUse = false;
+					_mirrorDiagnosticWritten = false;
 				}
-				AppLog.Write($"AirPlay SETUP streamConnectionID received: {streamConnectionId}.");
-				changed = true;
+				_streamConnectionId = streamConnectionId;
+			}
+			AppLog.Write($"AirPlay SETUP streamConnectionID received: {streamConnectionId}.");
+			changed = true;
+		}
+
+		if (mirrorSetup && TryAnnounceMirrorSessionStarted(observedRtspTargetSessionId, observedStreamConnectionId))
+		{
+			_audioReceiver.Stop();
+			AppLog.Write("AirPlay mirror session started; receiver pipeline reset requested.");
+			MirrorSessionStarted?.Invoke();
 		}
 
 		if (changed)
 		{
 			TryInitializeMirrorDecryptor();
+		}
+	}
+
+	private bool TryAnnounceMirrorSessionStarted(ulong? rtspTargetSessionId, ulong? streamConnectionId)
+	{
+		lock (_mirrorKeyGate)
+		{
+			if (rtspTargetSessionId != null)
+			{
+				if (_announcedMirrorRtspTargetSessionId == rtspTargetSessionId)
+				{
+					if (streamConnectionId != null)
+					{
+						_announcedMirrorStreamConnectionId = streamConnectionId;
+					}
+
+					return false;
+				}
+
+				if (_announcedMirrorRtspTargetSessionId == null &&
+					streamConnectionId != null &&
+					_announcedMirrorStreamConnectionId == streamConnectionId)
+				{
+					_announcedMirrorRtspTargetSessionId = rtspTargetSessionId;
+					return false;
+				}
+
+				_announcedIdentitylessMirrorSession = false;
+				_announcedMirrorRtspTargetSessionId = rtspTargetSessionId;
+				if (streamConnectionId != null)
+				{
+					_announcedMirrorStreamConnectionId = streamConnectionId;
+				}
+
+				return true;
+			}
+
+			if (streamConnectionId != null)
+			{
+				if (_announcedMirrorStreamConnectionId == streamConnectionId)
+				{
+					return false;
+				}
+
+				_announcedIdentitylessMirrorSession = false;
+				_announcedMirrorStreamConnectionId = streamConnectionId;
+				return true;
+			}
+
+			if (_announcedIdentitylessMirrorSession)
+			{
+				return false;
+			}
+
+			_announcedIdentitylessMirrorSession = true;
+			return true;
 		}
 	}
 
@@ -1520,6 +1595,24 @@ public sealed class AirPlayProbeService : IDisposable
 		return false;
 	}
 
+	private static bool ContainsMirrorVideoStream(Dictionary<string, object?> request)
+	{
+		if (!request.TryGetValue("streams", out object? streamsObject) || streamsObject is not List<object?> streams)
+		{
+			return false;
+		}
+
+		foreach (Dictionary<string, object?> stream in streams.OfType<Dictionary<string, object?>>())
+		{
+			if (TryReadInt32(stream, "type", out int streamType) && streamType == 110)
+			{
+				return true;
+			}
+		}
+
+		return false;
+	}
+
 	private static bool TryReadRtspTargetSessionId(string target, out ulong sessionId)
 	{
 		sessionId = 0;
@@ -1530,6 +1623,36 @@ public sealed class AirPlayProbeService : IDisposable
 		}
 
 		return ulong.TryParse(target.AsSpan(slash + 1), out sessionId);
+	}
+
+	private static bool TryReadInt32(Dictionary<string, object?> dictionary, string key, out int value)
+	{
+		value = 0;
+		if (!dictionary.TryGetValue(key, out object? rawValue))
+		{
+			return false;
+		}
+
+		switch (rawValue)
+		{
+			case byte number:
+				value = number;
+				return true;
+			case short number:
+				value = number;
+				return true;
+			case int number:
+				value = number;
+				return true;
+			case long number when number >= int.MinValue && number <= int.MaxValue:
+				value = (int)number;
+				return true;
+			case ulong number when number <= int.MaxValue:
+				value = (int)number;
+				return true;
+			default:
+				return false;
+		}
 	}
 
 	private static bool TryReadUInt64(Dictionary<string, object?> dictionary, string key, out ulong value)
