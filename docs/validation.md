@@ -70,7 +70,3 @@ Expected result:
 - the GPU path or FFmpeg fallback restarts cleanly
 - audio restarts cleanly or degrades without interrupting video
 - no stale decoder, stale GPU surface, or hung RTSP/data connection remains
-
-## Archive
-
-Historical evidence and design notes live under `docs/archive/`. They are retained for debugging context, but the current product contract is this file plus `docs/architecture.md`.

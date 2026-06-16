@@ -21,7 +21,7 @@ The product path is now centered on native GPU video: AirPlay control and media 
 - `MacMirrorReceiver.Protocol/` - Shared protocol models for mirror/auth/status/config messages.
 - `ThirdParty/playfair/` - FairPlay reference sources used for validation.
 - `tools/` - Focused diagnostics and acceptance helpers.
-- `docs/` - Product architecture, validation notes, and archived investigation history.
+- `docs/` - Product architecture and validation notes.
 
 ## Build
 
@@ -103,4 +103,3 @@ See `docs/validation.md` for the recommended release gate.
 
 - `docs/architecture.md` - current product architecture.
 - `docs/validation.md` - validation and acceptance workflow.
-- `docs/archive/` - historical investigation notes retained for context.
