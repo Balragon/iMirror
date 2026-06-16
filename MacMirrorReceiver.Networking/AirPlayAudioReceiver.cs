@@ -14,11 +14,10 @@ using System.Threading.Tasks;
 namespace MacMirrorReceiver.Networking;
 
 // AirPlay 2 screen-mirroring audio (RAOP type=96) receiver. The Mac sends AAC-ELD frames over
-// UDP RTP to the dataPort we advertise in the SETUP response; a sibling controlPort carries
-// timing/retransmit. This Phase-2 receiver opens the UDP sockets, parses RTP, FairPlay-unwraps
-// the session AES key (provided by the caller) and, when IMIRROR_DUMP_AUDIO is set, captures the
-// raw encrypted RTP plus the key/eiv/stream parameters so the AES mode and key derivation can be
-// confirmed offline with ffmpeg before the decode/playback pipeline (Phase 3+) is built.
+// UDP RTP to the dataPort advertised in the SETUP response; a sibling controlPort carries
+// timing/retransmit. The receiver opens the UDP sockets, parses RTP, FairPlay-unwraps the
+// session AES key provided by the caller, and can optionally capture private local audio
+// diagnostics when IMIRROR_DUMP_AUDIO is set.
 internal sealed class AirPlayAudioReceiver : IDisposable
 {
 	private const int RtpHeaderLength = 12;
@@ -49,9 +48,9 @@ internal sealed class AirPlayAudioReceiver : IDisposable
 
 	public int ControlPort { get; private set; }
 
-	// Raised for each decrypted AAC-ELD frame: (frame bytes, RTP timestamp, RTP sequence). Phase 3
-	// (ffmpeg decode) and Phase 5 (A/V sync) consume this. Redundant/duplicate packets are passed
-	// through as-is; de-duplication and jitter buffering belong to the consumer.
+	// Raised for each decrypted AAC-ELD frame: (frame bytes, RTP timestamp, RTP sequence).
+	// Redundant/duplicate packets are passed through as-is; de-duplication and jitter buffering
+	// belong to the consumer.
 	public event Action<byte[], uint, ushort>? AudioFrameReceived;
 
 	public event Action<AirPlayAudioStreamInfo>? StreamStarted;
@@ -346,11 +345,10 @@ internal sealed class AirPlayAudioReceiver : IDisposable
 		return copy;
 	}
 
-	// Private local capture for the Phase-2 audio gate, gated by IMIRROR_DUMP_AUDIO. Writes a
-	// length-framed raw RTP stream (every packet, header included) plus a sidecar meta.json that
-	// records the FairPlay-unwrapped AES key, eiv and stream parameters, so the AES mode/key
-	// derivation can be reproduced offline. These files contain key material and audio; they are
-	// only written when explicitly enabled.
+	// Private local capture gated by IMIRROR_DUMP_AUDIO. Writes a length-framed raw RTP stream
+	// (every packet, header included) plus a sidecar meta.json that records the FairPlay-unwrapped
+	// AES key, eiv and stream parameters for offline diagnosis. These files contain key material
+	// and audio; they are only written when explicitly enabled.
 	private sealed class AudioDumpWriter : IDisposable
 	{
 		private readonly object _gate = new object();

@@ -33,16 +33,12 @@ public sealed class AirPlayProbeService : IDisposable
 	private const int MaxH264NalUnitLength = 8 * 1024 * 1024;
 	private const int StableDisplayWidth = 1920;
 	private const int StableDisplayHeight = 1080;
-	private const int QualityMpvDisplayWidth = 2560;
-	private const int QualityMpvDisplayHeight = 1440;
 	// GPU (MediaFoundation/D3D11) path advertised geometry. Set to the Mac's native 2560x1440 so the
-	// Mac does not rescale its desktop (Point A) and the GPU decodes native (Point B). Phase 0 uses
-	// this behind the experimental quality flags to measure the GPU path at native resolution.
-	private const int QualityWpfDisplayWidth = 2560;
-	private const int QualityWpfDisplayHeight = 1440;
+	// sender does not rescale its desktop and the receiver decodes the native stream.
+	private const int GpuDisplayWidth = 2560;
+	private const int GpuDisplayHeight = 1440;
 	private const int StableDisplayFps = 60;
-	private const int QualityMpvDisplayFps = 30;
-	private const int QualityWpfDisplayFps = 30;
+	private const int GpuDisplayFps = 30;
 	private const string LegacyAirTunesVersion = "220.68";
 	private const string LegacyAirPlayModel = "AppleTV2,1";
 	private const string LegacyAirPlayFeatures = "0x5A7FFEE6";
@@ -61,18 +57,14 @@ public sealed class AirPlayProbeService : IDisposable
 
 	private static readonly IPAddress MulticastAddress = IPAddress.Parse("224.0.0.251");
 	private static readonly IPEndPoint MulticastEndpoint = new IPEndPoint(MulticastAddress, MdnsPort);
-	private static readonly bool QualityRenderMode = RenderModeSettings.Load().EffectiveMode == ReceiverRenderModeSetting.Quality
-		|| RenderModeSettings.GpuVideoEngineEnabled;
-	private static readonly bool QualityMpvAvailable = QualityRenderMode
-		&& RenderModeSettings.ExperimentalMpvQualityEnabled
-		&& MpvLocator.StartupRunnableMpvAvailable;
+	private static readonly bool QualityRenderMode = RenderModeSettings.Load().EffectiveMode == ReceiverRenderModeSetting.Quality;
 #if HIGH_RESOLUTION_D3D
-	// GPU engine advertises native 2560x1440 by default (so the Mac sends native and the GPU decodes
-	// it); the legacy experimental flag still forces it on without GPU detection.
-	private static readonly bool QualityWpfAvailable = (QualityRenderMode && RenderModeSettings.ExperimentalWpfQualityEnabled)
+	// GPU engine advertises native 2560x1440 by default so the Mac sends native and the GPU decodes
+	// it. The quality flag can still force the path on for local validation.
+	private static readonly bool GpuDisplayAvailable = (QualityRenderMode && RenderModeSettings.ExperimentalQualityEnabled)
 		|| RenderModeSettings.GpuVideoEngineEnabled;
 #else
-	private static readonly bool QualityWpfAvailable = false;
+	private static readonly bool GpuDisplayAvailable = false;
 #endif
 
 	private readonly CancellationTokenSource _cts = new CancellationTokenSource();
@@ -844,17 +836,13 @@ public sealed class AirPlayProbeService : IDisposable
 
 	private static int ResolveAdvertisedFps(int width, int height)
 	{
-		if (!QualityRenderMode || (!QualityMpvAvailable && !QualityWpfAvailable))
+		if (!QualityRenderMode || !GpuDisplayAvailable)
 		{
 			return StableDisplayFps;
 		}
-		if (QualityMpvAvailable && width >= QualityMpvDisplayWidth && height >= QualityMpvDisplayHeight)
+		if (GpuDisplayAvailable && width >= GpuDisplayWidth && height >= GpuDisplayHeight)
 		{
-			return QualityMpvDisplayFps;
-		}
-		if (QualityWpfAvailable && width >= QualityWpfDisplayWidth && height >= QualityWpfDisplayHeight)
-		{
-			return QualityWpfDisplayFps;
+			return GpuDisplayFps;
 		}
 		return StableDisplayFps;
 	}
@@ -1726,16 +1714,16 @@ public sealed class AirPlayProbeService : IDisposable
 		int displayWidth = StableDisplayWidth;
 		int displayHeight = StableDisplayHeight;
 		int displayFps = StableDisplayFps;
-		if (QualityRenderMode && (QualityMpvAvailable || QualityWpfAvailable))
+		if (QualityRenderMode && GpuDisplayAvailable)
 		{
-			displayWidth = QualityMpvAvailable ? QualityMpvDisplayWidth : QualityWpfDisplayWidth;
-			displayHeight = QualityMpvAvailable ? QualityMpvDisplayHeight : QualityWpfDisplayHeight;
-			displayFps = QualityMpvAvailable ? QualityMpvDisplayFps : QualityWpfDisplayFps;
-			AppLog.Write($"AirPlay /info experimental quality display advertise: {displayWidth}x{displayHeight} @ {displayFps} (mpvAvailable={QualityMpvAvailable}, wpfAvailable={QualityWpfAvailable}).");
+			displayWidth = GpuDisplayWidth;
+			displayHeight = GpuDisplayHeight;
+			displayFps = GpuDisplayFps;
+			AppLog.Write($"AirPlay /info GPU display advertise: {displayWidth}x{displayHeight} @ {displayFps}.");
 		}
 		else if (QualityRenderMode)
 		{
-			AppLog.Write("AirPlay /info quality requested but experimental quality is disabled or unavailable; advertising stable 1920x1080.");
+			AppLog.Write("AirPlay /info GPU display unavailable; advertising stable 1920x1080.");
 		}
 
 		Dictionary<string, object> info = new Dictionary<string, object>

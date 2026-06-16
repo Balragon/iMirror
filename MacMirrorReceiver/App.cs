@@ -26,7 +26,7 @@ public class App : Application
 
 	private static void InstallSharpDxAssemblyResolver()
 	{
-#if HIGH_RESOLUTION_D3D || DIRECTX_PROBE
+#if HIGH_RESOLUTION_D3D
 		AssemblyLoadContext.Default.Resolving += delegate(AssemblyLoadContext context, AssemblyName assemblyName)
 		{
 			if (assemblyName.Name?.StartsWith("SharpDX", StringComparison.OrdinalIgnoreCase) != true)

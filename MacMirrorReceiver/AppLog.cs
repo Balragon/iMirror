@@ -11,8 +11,6 @@ internal static class AppLog
 		AppContext.BaseDirectory,
 #if HARDWARE_PROBE
 			"iMirror-hwprobe.log");
-#elif DIRECTX_PROBE
-			"iMirror-dxprobe.log");
 #else
 			"iMirror.log");
 #endif

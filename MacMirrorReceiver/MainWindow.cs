@@ -40,8 +40,6 @@ public partial class MainWindow : Window
 
 	private const int QualityMaxRenderWidth = 2560;
 
-	private const int QualityMpvDisplayHeight = 1440;
-
 	private const int RealtimeMaxRenderFps = 60;
 
 	private const int HighResolutionMaxRenderFps = 30;
@@ -74,28 +72,17 @@ public partial class MainWindow : Window
 
 	private static readonly RenderModeSettingsSnapshot StartupRenderModeSettings = RenderModeSettings.Load();
 
-	private static readonly bool QualityRenderModeEnabled = StartupRenderModeSettings.EffectiveMode == ReceiverRenderModeSetting.Quality
-		|| RenderModeSettings.GpuVideoEngineEnabled;
-
-	private static readonly bool ExperimentalMpvQualityRequested = RenderModeSettings.ExperimentalMpvQualityEnabled;
+	private static readonly bool QualityRenderModeEnabled = StartupRenderModeSettings.EffectiveMode == ReceiverRenderModeSetting.Quality;
 
 #if HIGH_RESOLUTION_D3D
-	private static readonly bool ExperimentalWpfQualityRequested = RenderModeSettings.ExperimentalWpfQualityEnabled
+	private static readonly bool GpuQualityRequested = RenderModeSettings.ExperimentalQualityEnabled
 		|| RenderModeSettings.GpuVideoEngineEnabled;
 #else
-	private static readonly bool ExperimentalWpfQualityRequested = false;
+	private static readonly bool GpuQualityRequested = false;
 #endif
 
-	private static readonly bool ExperimentalMpvCandidateAvailable = ExperimentalMpvQualityRequested
-		&& MpvLocator.StartupRunnableMpvAvailable;
-
-	private static readonly bool ExperimentalQualityFlagEnabled = ExperimentalMpvQualityRequested || ExperimentalWpfQualityRequested;
-
-	private static readonly bool QualityMpvAvailable = QualityRenderModeEnabled
-		&& ExperimentalMpvCandidateAvailable;
-
-	private static readonly bool QualityWpfAvailable = QualityRenderModeEnabled
-		&& ExperimentalWpfQualityRequested;
+	private static readonly bool QualityPathAvailable = QualityRenderModeEnabled
+		&& GpuQualityRequested;
 
 	private static int ReadBoundedIntegerEnvironment(string name, int defaultValue, int minValue, int maxValue)
 	{
@@ -140,13 +127,8 @@ public partial class MainWindow : Window
 
 	private WasapiAudioOutput? _audioOutput;
 
-	private MpvVideoPresenter? _mpvPresenter;
-
 	private WriteableBitmap? _bitmap;
 
-#if DIRECTX_PROBE
-	private D3DImageFramePresenter? _d3dPresenter;
-#endif
 #if HIGH_RESOLUTION_D3D
 	private D3D11SwapChainVideoPresenter? _highResolutionD3DPresenter;
 
@@ -259,10 +241,6 @@ public partial class MainWindow : Window
 
 	private bool _renderModeSettingsUiReady;
 
-#if DIRECTX_PROBE
-	private bool _directXRendererFailed;
-#endif
-
 	private WindowStyle _previousWindowStyle;
 
 	private WindowState _previousWindowState;
@@ -371,7 +349,7 @@ public partial class MainWindow : Window
 		base.Dispatcher.BeginInvoke(new Action(delegate
 		{
 			bool sameStreamConfig = _streamConfig != null
-				&& (_decoder != null || _mpvPresenter != null
+				&& (_decoder != null
 #if HIGH_RESOLUTION_D3D
 					|| _mediaFoundationD3DDecoder != null
 #endif
@@ -737,35 +715,13 @@ public partial class MainWindow : Window
 			return;
 		}
 
-		MpvVideoPresenter? mpvPresenter = _mpvPresenter;
 		FfmpegDecoder? decoder = _decoder;
 #if HIGH_RESOLUTION_D3D
 		MediaFoundationD3D11Decoder? mediaFoundationD3DDecoder = _mediaFoundationD3DDecoder;
 #endif
 		byte[]? array = ProcessH264Payload(payload, out long h264ForwardedPackets, out string h264LastDecision);
-		if (array != null && mpvPresenter != null)
-		{
-			if (h264ForwardedPackets == 1)
-			{
-				AppLog.Write("First H264 payload forwarded to mpv: " + h264LastDecision);
-			}
-			if (!mpvPresenter.QueueH264(array, sourceTimestampNanos, receivedTick))
-			{
-				_decoderStatus = "mpv input unavailable; waiting for renderer";
-				RequireH264Keyframe();
-				AppLog.Write("mpv input unavailable; holding video until next keyframe.");
-			}
-			else
-			{
-				base.Dispatcher.BeginInvoke(new Action(delegate
-				{
-					EmptyStatePanel.Visibility = Visibility.Collapsed;
-					CompactStatusTextBlock.Text = "Live: mpv";
-				}), DispatcherPriority.Background);
-			}
-		}
 #if HIGH_RESOLUTION_D3D
-		else if (mediaFoundationD3DDecoder != null && array != null)
+		if (mediaFoundationD3DDecoder != null && array != null)
 		{
 			if (h264ForwardedPackets == 1)
 			{
@@ -778,7 +734,11 @@ public partial class MainWindow : Window
 			}
 		}
 #endif
+#if HIGH_RESOLUTION_D3D
 		else if (decoder != null && array != null)
+#else
+		if (decoder != null && array != null)
+#endif
 		{
 			if (h264ForwardedPackets == 1)
 			{
@@ -802,11 +762,6 @@ public partial class MainWindow : Window
 			LogGateDecisionThrottled();
 		}
 #endif
-		else if (mpvPresenter != null)
-		{
-			_decoderStatus = h264LastDecision;
-			LogGateDecisionThrottled();
-		}
 		if (countReceived)
 		{
 			LogVideoHealthThrottled();
@@ -827,8 +782,7 @@ public partial class MainWindow : Window
 		}
 #endif
 
-		MpvVideoPresenter? presenter = _mpvPresenter;
-		return presenter != null && presenter.CanAcceptInput;
+		return false;
 	}
 
 	private byte[]? ProcessH264Payload(byte[] payload, out long forwardedPackets, out string lastDecision)
@@ -1115,7 +1069,11 @@ public partial class MainWindow : Window
 	{
 		UpdateRenderModeDetail();
 		UpdateRenderScalingMode();
-		if (_streamConfig != null && (_decoder != null || _mpvPresenter != null))
+		if (_streamConfig != null && (_decoder != null
+#if HIGH_RESOLUTION_D3D
+			|| _mediaFoundationD3DDecoder != null
+#endif
+			))
 		{
 			Interlocked.Increment(ref _decoderRestarts);
 			RequireH264Keyframe();
@@ -1162,7 +1120,7 @@ public partial class MainWindow : Window
 			? StartupRenderModeSettings.EffectiveMode
 			: StartupRenderModeSettings.PersistedMode;
 		if (!StartupRenderModeSettings.HasEnvironmentOverride
-			&& !ExperimentalQualityFlagEnabled
+			&& !QualityPathAvailable
 			&& displayedMode == ReceiverRenderModeSetting.Quality)
 		{
 			displayedMode = ReceiverRenderModeSetting.Stable;
@@ -1173,7 +1131,7 @@ public partial class MainWindow : Window
 		QualityRenderModeRadioButton.IsChecked = displayedMode == ReceiverRenderModeSetting.Quality;
 		bool canEditSetting = !StartupRenderModeSettings.HasEnvironmentOverride;
 		StableRenderModeRadioButton.IsEnabled = canEditSetting;
-		QualityRenderModeRadioButton.IsEnabled = canEditSetting && ExperimentalQualityFlagEnabled;
+		QualityRenderModeRadioButton.IsEnabled = canEditSetting && QualityPathAvailable;
 		RenderModeOverrideTextBlock.Visibility = StartupRenderModeSettings.HasEnvironmentOverride
 			? Visibility.Visible
 			: Visibility.Collapsed;
@@ -1203,41 +1161,29 @@ public partial class MainWindow : Window
 		bool qualitySelected = _pendingRenderModeSetting == ReceiverRenderModeSetting.Quality;
 		if (!qualitySelected)
 		{
-			RenderModeSettingDetailTextBlock.Text = "1080p AirPlay display for smooth mirroring.";
-			RenderModeMpvNoteTextBlock.Visibility = Visibility.Collapsed;
+			RenderModeSettingDetailTextBlock.Text = "Compatibility mode advertises a 1080p AirPlay display.";
+			RenderModeNoteTextBlock.Visibility = Visibility.Collapsed;
 		}
-		else if (ExperimentalMpvCandidateAvailable)
-		{
-			RenderModeSettingDetailTextBlock.Text = "Experimental 2560x1440 mpv path.";
-			RenderModeMpvNoteTextBlock.Text = "Use only for testing; real Mac motion can still overrun this path.";
-			RenderModeMpvNoteTextBlock.Visibility = Visibility.Visible;
-		}
-		else if (ExperimentalWpfQualityRequested)
+		else if (GpuQualityRequested)
 		{
 #if HIGH_RESOLUTION_D3D
-			RenderModeSettingDetailTextBlock.Text = "Experimental 2048x1152 Media Foundation/D3D11 path.";
-			RenderModeMpvNoteTextBlock.Text = "Use only for testing; this path still requires real Mac motion acceptance.";
+			RenderModeSettingDetailTextBlock.Text = "Native GPU mode uses Media Foundation/D3D11 decode and present.";
+			RenderModeNoteTextBlock.Text = "Falls back to the software decoder if GPU startup fails.";
 #else
-			RenderModeSettingDetailTextBlock.Text = "Experimental 2048x1152 WPF path.";
-			RenderModeMpvNoteTextBlock.Text = "Use only for testing; this path accumulated latency on real Mac motion.";
+			RenderModeSettingDetailTextBlock.Text = "Native GPU mode requires a HIGH_RESOLUTION_D3D build.";
+			RenderModeNoteTextBlock.Text = "This build will use the 1080p compatibility path.";
 #endif
-			RenderModeMpvNoteTextBlock.Visibility = Visibility.Visible;
-		}
-		else if (ExperimentalMpvQualityRequested)
-		{
-			RenderModeSettingDetailTextBlock.Text = "mpv experiment requested, but mpv did not pass startup validation.";
-			RenderModeMpvNoteTextBlock.Text = "iMirror will advertise stable 1080p until tools\\mpv\\mpv.exe or PATH mpv is fixed.";
-			RenderModeMpvNoteTextBlock.Visibility = Visibility.Visible;
+			RenderModeNoteTextBlock.Visibility = Visibility.Visible;
 		}
 		else
 		{
-			RenderModeSettingDetailTextBlock.Text = "High quality is experimental; iMirror will keep stable 1080p unless an experimental flag is set.";
+			RenderModeSettingDetailTextBlock.Text = "GPU native mode is unavailable; iMirror will advertise 1080p.";
 #if HIGH_RESOLUTION_D3D
-			RenderModeMpvNoteTextBlock.Text = "Set IMIRROR_EXPERIMENTAL_QUALITY=1 for 2048x1152 MF/D3D11, or IMIRROR_EXPERIMENTAL_MPV=1 for 2560x1440 mpv testing.";
+			RenderModeNoteTextBlock.Text = "Set IMIRROR_EXPERIMENTAL_QUALITY=1 to force the GPU path for local validation.";
 #else
-			RenderModeMpvNoteTextBlock.Text = "Set IMIRROR_EXPERIMENTAL_QUALITY=1 for 2048x1152 WPF, or IMIRROR_EXPERIMENTAL_MPV=1 for 2560x1440 mpv testing.";
+			RenderModeNoteTextBlock.Text = "Build with HIGH_RESOLUTION_D3D to enable the GPU path.";
 #endif
-			RenderModeMpvNoteTextBlock.Visibility = Visibility.Visible;
+			RenderModeNoteTextBlock.Visibility = Visibility.Visible;
 		}
 		bool restartRequired = !StartupRenderModeSettings.HasEnvironmentOverride
 			&& _pendingRenderModeSetting != StartupRenderModeSettings.PersistedMode;
@@ -1292,7 +1238,7 @@ public partial class MainWindow : Window
 	{
 		get
 		{
-			return QualityRenderModeEnabled && (QualityMpvAvailable || QualityWpfAvailable)
+			return QualityPathAvailable
 				? RenderMode.Quality
 				: RenderMode.Auto;
 		}
@@ -1338,17 +1284,15 @@ public partial class MainWindow : Window
 		RenderModeDetailTextBlock.Text = CurrentRenderMode switch
 		{
 			RenderMode.Responsive => "Caps viewer output at 1080p for faster pointer motion.",
-			RenderMode.Quality => QualityMpvAvailable
-				? "Advertises the experimental 1440p mpv path."
 #if HIGH_RESOLUTION_D3D
-				: "Advertises the experimental 1152p Media Foundation/D3D11 path.",
+			RenderMode.Quality => "Advertises the native GPU Media Foundation/D3D11 path.",
 #else
-				: "Advertises the experimental 1152p WPF path.",
+			RenderMode.Quality => "GPU mode requires a HIGH_RESOLUTION_D3D build.",
 #endif
-			RenderMode.Native4K => "Uses the mpv GPU path for native 4K when available.",
+			RenderMode.Native4K => "Uses the native GPU receiver path when available.",
 			_ => QualityRenderModeEnabled
-				? "Quality requested, but no experimental high-resolution path is enabled; using stable 1080p."
-				: "Uses the stable 1080p receiver path."
+				? "GPU mode requested, but unavailable; using the 1080p compatibility path."
+				: "Uses the 1080p compatibility receiver path."
 		};
 	}
 
@@ -1416,29 +1360,10 @@ public partial class MainWindow : Window
 		DisposeHighResolutionD3DPresenter();
 		ReleasePendingD3DFrame();
 #endif
-		DisposeMpvPresenter();
 		ReleasePendingFrame();
 		// Restart the latency warmup grace so decoder/renderer spin-up and reconnect/session-refresh
 		// catch-up are excluded from steady-state percentiles instead of inflating the first window.
 		_receiveToPresentLatencyWindow.BeginWarmup();
-		bool useMpvPresenter = ShouldUseMpvPresenter(config);
-		if (useMpvPresenter && TryStartMpvPresenter(config, reason))
-		{
-			_decoderMaxRenderWidth = Math.Min(config.Width, RealtimeMaxRenderWidth);
-			_decoderOutputFps = Math.Clamp(config.Fps, 1, RealtimeMaxRenderFps);
-			FlushPendingVideoToSink();
-			AppLog.Write("mpv presenter started for " + reason + ".");
-			StartVideoWatchdog(config, _connectionGeneration);
-			return;
-		}
-		if (useMpvPresenter && IsQualityMpvAdvertisedStream(config))
-		{
-			throw new InvalidOperationException("High-quality mpv renderer failed after advertising 2560x1440. Restart iMirror in stable mode or fix tools\\mpv\\mpv.exe.");
-		}
-		if (useMpvPresenter)
-		{
-			SetStatus("mpv unavailable; falling back to WPF renderer.");
-		}
 #if HIGH_RESOLUTION_D3D
 		bool requireHighResolutionD3DPath = ShouldUseHighResolutionD3DPath(config) && !_gpuPathDisabledThisSession;
 		if (requireHighResolutionD3DPath && TryStartHighResolutionD3DPath(config, reason))
@@ -1514,19 +1439,11 @@ public partial class MainWindow : Window
 		StartVideoWatchdog(config, _connectionGeneration);
 	}
 
-	private bool ShouldUseMpvPresenter(StreamConfig config)
-	{
-		return QualityMpvAvailable
-			&& config.Width >= 2560
-			&& config.Height >= QualityMpvDisplayHeight;
-	}
-
 #if HIGH_RESOLUTION_D3D
 	private static bool ShouldUseHighResolutionD3DPath(StreamConfig config)
 	{
 		return QualityRenderModeEnabled
-			&& ExperimentalWpfQualityRequested
-			&& !IsQualityMpvAdvertisedStream(config)
+			&& GpuQualityRequested
 			&& config.Width > ResponsiveMaxRenderWidth
 			&& config.Height > 1080;
 	}
@@ -1668,63 +1585,6 @@ public partial class MainWindow : Window
 		UpdateDiagnostics();
 	}
 #endif
-
-	private static bool IsQualityMpvAdvertisedStream(StreamConfig config)
-	{
-		return QualityRenderModeEnabled
-			&& QualityMpvAvailable
-			&& config.Width >= QualityMaxRenderWidth
-			&& config.Height >= QualityMpvDisplayHeight;
-	}
-
-	private bool TryStartMpvPresenter(StreamConfig config, string reason)
-	{
-		try
-		{
-			var presenter = new MpvVideoPresenter(config.Width, config.Height, config.Fps);
-			_mpvPresenter = presenter;
-			presenter.StatusChanged += delegate(string message)
-			{
-				string message2 = message;
-				base.Dispatcher.Invoke(delegate
-				{
-					_decoderStatus = message2;
-					AppLog.Write("mpv status: " + message2);
-					SetStatus(message2);
-					UpdateDiagnostics();
-				});
-			};
-			presenter.InputQueueOverflowed += delegate
-			{
-				base.Dispatcher.BeginInvoke(new Action(delegate
-				{
-					RequireH264Keyframe();
-					AppLog.Write("mpv input queue overflowed; holding video until next keyframe.");
-					UpdateDiagnostics();
-				}), DispatcherPriority.Background);
-			};
-			VideoImage.Visibility = Visibility.Collapsed;
-			VideoImage.Source = null;
-			_bitmap = null;
-			VideoStage.Children.Insert(0, presenter);
-			presenter.HorizontalAlignment = HorizontalAlignment.Stretch;
-			presenter.VerticalAlignment = VerticalAlignment.Stretch;
-			VideoStage.UpdateLayout();
-			presenter.Start();
-			_decoderStatus = "mpv started";
-			AppLog.Write("mpv presenter selected for native GPU path: " + reason + ".");
-			UpdateDiagnostics();
-			return true;
-		}
-		catch (Exception ex)
-		{
-			AppLog.Write("mpv presenter failed: " + ex);
-			_decoderStatus = "mpv unavailable: " + ex.Message;
-			DisposeMpvPresenter();
-			VideoImage.Visibility = Visibility.Visible;
-			return false;
-		}
-	}
 
 	private void StartVideoWatchdog(StreamConfig config, int generation)
 	{
@@ -2091,29 +1951,6 @@ public partial class MainWindow : Window
 		{
 			VideoImage.Visibility = Visibility.Visible;
 		}
-#if DIRECTX_PROBE
-		if (!_directXRendererFailed)
-		{
-			try
-			{
-				if (_d3dPresenter == null)
-				{
-					_d3dPresenter = new D3DImageFramePresenter(new WindowInteropHelper(this).Handle);
-					VideoImage.Source = _d3dPresenter.ImageSource;
-					_bitmap = null;
-					AppLog.Write("DX probe renderer active: D3DImage/Direct3D9 surface.");
-				}
-				_d3dPresenter.Present(frame);
-				return;
-			}
-			catch (Exception ex)
-			{
-				_directXRendererFailed = true;
-				AppLog.Write("DX probe renderer failed; falling back to WriteableBitmap: " + ex);
-				DisposeDirectXPresenter();
-			}
-		}
-#endif
 		PresentFrameToWriteableBitmap(frame);
 	}
 
@@ -2243,11 +2080,9 @@ public partial class MainWindow : Window
 			_mediaFoundationD3DDecoder?.Dispose();
 			_mediaFoundationD3DDecoder = null;
 #endif
-			DisposeMpvPresenter();
 #if HIGH_RESOLUTION_D3D
 			DisposeHighResolutionD3DPresenter();
 #endif
-			DisposeDirectXPresenter();
 			_bitmap = null;
 			VideoImage.Source = null;
 			VideoImage.Visibility = Visibility.Visible;
@@ -2262,20 +2097,9 @@ public partial class MainWindow : Window
 		_decoderOutputFps = 0;
 		_decoderMaxRenderWidth = RealtimeMaxRenderWidth;
 			ResetH264Gate();
-#if DIRECTX_PROBE
-			_directXRendererFailed = false;
-#endif
 			SetConnectedUi(connected: false, finalStatus, revealPanel);
 			UpdateDiagnostics();
 		}
-
-	private void DisposeDirectXPresenter()
-	{
-#if DIRECTX_PROBE
-		_d3dPresenter?.Dispose();
-		_d3dPresenter = null;
-#endif
-	}
 
 #if HIGH_RESOLUTION_D3D
 	private void DisposeHighResolutionD3DPresenter()
@@ -2303,30 +2127,6 @@ public partial class MainWindow : Window
 		VideoImage.Visibility = Visibility.Visible;
 	}
 #endif
-
-	private void DisposeMpvPresenter()
-	{
-		MpvVideoPresenter? presenter = _mpvPresenter;
-		if (presenter == null)
-		{
-			return;
-		}
-		_mpvPresenter = null;
-		try
-		{
-			VideoStage.Children.Remove(presenter);
-		}
-		catch
-		{
-		}
-		try
-		{
-			presenter.Dispose();
-		}
-		catch
-		{
-		}
-	}
 
 	private void SetConnectedUi(bool connected, string? disconnectedStatus = "Disconnected.", bool revealPanel = true)
 	{
@@ -2574,10 +2374,6 @@ public partial class MainWindow : Window
 
 	private string ResolveOutputDiagnostics()
 	{
-		if (_mpvPresenter != null && _streamConfig != null)
-		{
-			return $"output: mpv native {_streamConfig.Width}x{_streamConfig.Height}, GPU renderer";
-		}
 #if HIGH_RESOLUTION_D3D
 		if (_mediaFoundationD3DDecoder != null)
 		{
@@ -2627,55 +2423,63 @@ public partial class MainWindow : Window
 		return Math.Clamp(target, MinAudioSyncTargetMilliseconds, MaxAudioSyncTargetMilliseconds);
 	}
 
-	private int ActiveQueuedInputPackets => _mpvPresenter?.QueuedInputPackets
+	private int ActiveQueuedInputPackets =>
 #if HIGH_RESOLUTION_D3D
-		?? _mediaFoundationD3DDecoder?.QueuedInputPackets
+		_mediaFoundationD3DDecoder?.QueuedInputPackets
+		??
 #endif
-		?? _decoder?.QueuedInputPackets ?? 0;
+		_decoder?.QueuedInputPackets ?? 0;
 
-	private long ActiveQueuedInputBytes => _mpvPresenter?.QueuedInputBytes
+	private long ActiveQueuedInputBytes =>
 #if HIGH_RESOLUTION_D3D
-		?? _mediaFoundationD3DDecoder?.QueuedInputBytes
+		_mediaFoundationD3DDecoder?.QueuedInputBytes
+		??
 #endif
-		?? _decoder?.QueuedInputBytes ?? 0L;
+		_decoder?.QueuedInputBytes ?? 0L;
 
-	private long ActiveDroppedInputPackets => _mpvPresenter?.DroppedInputPackets
+	private long ActiveDroppedInputPackets =>
 #if HIGH_RESOLUTION_D3D
-		?? _mediaFoundationD3DDecoder?.DroppedInputPackets
+		_mediaFoundationD3DDecoder?.DroppedInputPackets
+		??
 #endif
-		?? _decoder?.DroppedInputPackets ?? 0L;
+		_decoder?.DroppedInputPackets ?? 0L;
 
-	private long ActiveAcceptedInputPackets => _mpvPresenter?.AcceptedInputPackets
+	private long ActiveAcceptedInputPackets =>
 #if HIGH_RESOLUTION_D3D
-		?? _mediaFoundationD3DDecoder?.AcceptedInputPackets
+		_mediaFoundationD3DDecoder?.AcceptedInputPackets
+		??
 #endif
-		?? _decoder?.AcceptedInputPackets ?? 0L;
+		_decoder?.AcceptedInputPackets ?? 0L;
 
-	private long ActiveWrittenInputPackets => _mpvPresenter?.WrittenInputPackets
+	private long ActiveWrittenInputPackets =>
 #if HIGH_RESOLUTION_D3D
-		?? _mediaFoundationD3DDecoder?.WrittenInputPackets
+		_mediaFoundationD3DDecoder?.WrittenInputPackets
+		??
 #endif
-		?? _decoder?.WrittenInputPackets ?? 0L;
+		_decoder?.WrittenInputPackets ?? 0L;
 
-	private long ActiveLatestWriteMilliseconds => _mpvPresenter?.LatestWriteMilliseconds
+	private long ActiveLatestWriteMilliseconds =>
 #if HIGH_RESOLUTION_D3D
-		?? _mediaFoundationD3DDecoder?.LatestWriteMilliseconds
+		_mediaFoundationD3DDecoder?.LatestWriteMilliseconds
+		??
 #endif
-		?? _decoder?.LatestWriteMilliseconds ?? 0L;
+		_decoder?.LatestWriteMilliseconds ?? 0L;
 
-	private long ActiveMaxWriteMilliseconds => _mpvPresenter?.MaxWriteMilliseconds
+	private long ActiveMaxWriteMilliseconds =>
 #if HIGH_RESOLUTION_D3D
-		?? _mediaFoundationD3DDecoder?.MaxWriteMilliseconds
+		_mediaFoundationD3DDecoder?.MaxWriteMilliseconds
+		??
 #endif
-		?? _decoder?.MaxWriteMilliseconds ?? 0L;
+		_decoder?.MaxWriteMilliseconds ?? 0L;
 
 	private int ActiveFfmpegPipelineDepth => _decoder?.PipelineDepthFrames ?? 0;
 
-	private long ActiveWriteStalls => _mpvPresenter?.WriteStalls
+	private long ActiveWriteStalls =>
 #if HIGH_RESOLUTION_D3D
-		?? _mediaFoundationD3DDecoder?.WriteStalls
+		_mediaFoundationD3DDecoder?.WriteStalls
+		??
 #endif
-		?? _decoder?.WriteStalls ?? 0L;
+		_decoder?.WriteStalls ?? 0L;
 
 	private int GetPendingRenderFrameCount()
 	{
