@@ -52,6 +52,12 @@ public partial class MainWindow : Window
 
 	private const long MaxPendingVideoBytesBeforeSink = 8L * 1024L * 1024L;
 
+	private const int DefaultAudioSyncOffsetMilliseconds = 120;
+
+	private const int MinAudioSyncTargetMilliseconds = 120;
+
+	private const int MaxAudioSyncTargetMilliseconds = 220;
+
 	private const double RemoteCursorMinScale = 0.35;
 
 	private const double RemoteCursorMaxScale = 1.0;
@@ -59,6 +65,12 @@ public partial class MainWindow : Window
 	private static readonly TimeSpan AutoReconnectDelay = TimeSpan.FromSeconds(2.0);
 
 	private static readonly bool SyntheticCursorOverlayEnabled = false;
+
+	private static readonly int AudioSyncOffsetMilliseconds = ReadBoundedIntegerEnvironment(
+		"IMIRROR_AUDIO_SYNC_OFFSET_MS",
+		DefaultAudioSyncOffsetMilliseconds,
+		60,
+		220);
 
 	private static readonly RenderModeSettingsSnapshot StartupRenderModeSettings = RenderModeSettings.Load();
 
@@ -84,6 +96,16 @@ public partial class MainWindow : Window
 
 	private static readonly bool QualityWpfAvailable = QualityRenderModeEnabled
 		&& ExperimentalWpfQualityRequested;
+
+	private static int ReadBoundedIntegerEnvironment(string name, int defaultValue, int minValue, int maxValue)
+	{
+		string? value = Environment.GetEnvironmentVariable(name);
+		if (string.IsNullOrWhiteSpace(value) || !int.TryParse(value, out int parsed))
+		{
+			return defaultValue;
+		}
+		return Math.Clamp(parsed, minValue, maxValue);
+	}
 
 	private readonly ObservableCollection<MirrorDevice> _devices = new ObservableCollection<MirrorDevice>();
 
@@ -502,6 +524,7 @@ public partial class MainWindow : Window
 				return;
 			}
 
+			output.SetSyncTargetLatencyMilliseconds(ResolveAudioSyncTargetLatencyMilliseconds());
 			output.Submit(frame);
 			Interlocked.Increment(ref _audioPcmFrames);
 			Interlocked.Add(ref _audioPcmBytes, frame.ByteCount);
@@ -2584,7 +2607,24 @@ public partial class MainWindow : Window
 		return $"audio: {_audioStatus}, received/queued={Interlocked.Read(ref _audioFramesReceived):N0}/{Interlocked.Read(ref _audioFramesQueued):N0}, " +
 			$"dedup={decoder.DuplicateInputFrames:N0}, decoded={Interlocked.Read(ref _audioPcmFrames):N0} ({(double)Interlocked.Read(ref _audioPcmBytes) / 1024.0:N1} KB), " +
 			$"decoderQueue={decoder.QueuedInputFrames:N0}, audioBuffer={output.BufferedMilliseconds:N0}ms, " +
-			$"audioDropped={output.DroppedFrames:N0}, clears={output.BufferClears:N0}, low={output.LowBufferEvents:N0}";
+			$"audioLatency={output.LatestEstimatedLatencyMilliseconds}/{output.SyncTargetLatencyMilliseconds}ms, " +
+			$"audioDropped={output.DroppedFrames:N0} sync={output.SyncDroppedFrames:N0}, clears={output.BufferClears:N0}, low={output.LowBufferEvents:N0}";
+	}
+
+	private int ResolveAudioSyncTargetLatencyMilliseconds()
+	{
+		long latestVideoLatencyMs = Interlocked.Read(ref _latestReceiveToRenderMs);
+		if (latestVideoLatencyMs <= 0)
+		{
+			LatencyWindowSnapshot snapshot = _receiveToPresentLatencyWindow.GetCurrentOrLastSnapshot(Stopwatch.GetTimestamp());
+			if (snapshot.HasSamples)
+			{
+				latestVideoLatencyMs = snapshot.P50Milliseconds;
+			}
+		}
+
+		int target = checked((int)Math.Clamp(latestVideoLatencyMs, 0L, 1000L)) + AudioSyncOffsetMilliseconds;
+		return Math.Clamp(target, MinAudioSyncTargetMilliseconds, MaxAudioSyncTargetMilliseconds);
 	}
 
 	private int ActiveQueuedInputPackets => _mpvPresenter?.QueuedInputPackets

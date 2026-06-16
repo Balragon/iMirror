@@ -14,6 +14,9 @@ public sealed class WasapiAudioOutput : IDisposable
 	private const int LowBufferRecoveredMilliseconds = 90;
 	private const int TargetBufferMilliseconds = 140;
 	private const int HighBufferMilliseconds = 260;
+	private const int MinSyncTargetLatencyMilliseconds = 100;
+	private const int MaxSyncTargetLatencyMilliseconds = 260;
+	private const int SyncDropToleranceMilliseconds = 45;
 	private readonly object _gate = new object();
 	private readonly BufferedWaveProvider _buffer;
 	private readonly WasapiOut _output;
@@ -21,9 +24,12 @@ public sealed class WasapiAudioOutput : IDisposable
 	private long _submittedFrames;
 	private long _submittedBytes;
 	private long _droppedFrames;
+	private long _syncDroppedFrames;
 	private long _bufferClears;
 	private long _lowBufferEvents;
 	private long _lastStatusTick;
+	private int _syncTargetLatencyMilliseconds = 180;
+	private int _latestEstimatedLatencyMilliseconds;
 	private bool _lowBufferActive;
 	private bool _disposed;
 
@@ -55,11 +61,23 @@ public sealed class WasapiAudioOutput : IDisposable
 
 	public long DroppedFrames => Interlocked.Read(ref _droppedFrames);
 
+	public long SyncDroppedFrames => Interlocked.Read(ref _syncDroppedFrames);
+
 	public long BufferClears => Interlocked.Read(ref _bufferClears);
 
 	public long LowBufferEvents => Interlocked.Read(ref _lowBufferEvents);
 
+	public int SyncTargetLatencyMilliseconds => Volatile.Read(ref _syncTargetLatencyMilliseconds);
+
+	public int LatestEstimatedLatencyMilliseconds => Volatile.Read(ref _latestEstimatedLatencyMilliseconds);
+
 	public event Action<string>? StatusChanged;
+
+	public void SetSyncTargetLatencyMilliseconds(int targetLatencyMilliseconds)
+	{
+		int clamped = Math.Clamp(targetLatencyMilliseconds, MinSyncTargetLatencyMilliseconds, MaxSyncTargetLatencyMilliseconds);
+		Volatile.Write(ref _syncTargetLatencyMilliseconds, clamped);
+	}
 
 	public void Submit(AudioPcmFrame frame)
 	{
@@ -77,12 +95,22 @@ public sealed class WasapiAudioOutput : IDisposable
 
 			int beforeBytes = _buffer.BufferedBytes;
 			int beforeMs = BytesToMilliseconds(beforeBytes);
+			int estimatedLatencyMs = EstimateLatencyMilliseconds(frame, beforeMs);
+			Volatile.Write(ref _latestEstimatedLatencyMilliseconds, estimatedLatencyMs);
+			int syncTargetMs = SyncTargetLatencyMilliseconds;
 			if (beforeBytes + frame.ByteCount > _buffer.BufferLength)
 			{
 				_buffer.ClearBuffer();
 				Interlocked.Increment(ref _bufferClears);
 				beforeBytes = 0;
 				beforeMs = 0;
+			}
+			else if (estimatedLatencyMs > syncTargetMs + SyncDropToleranceMilliseconds && beforeMs >= LowBufferRecoveredMilliseconds)
+			{
+				Interlocked.Increment(ref _droppedFrames);
+				Interlocked.Increment(ref _syncDroppedFrames);
+				LogStatusThrottled(beforeMs);
+				return;
 			}
 			else if (beforeMs >= HighBufferMilliseconds)
 			{
@@ -126,7 +154,24 @@ public sealed class WasapiAudioOutput : IDisposable
 
 		this.StatusChanged?.Invoke(
 			$"WASAPI audio buffer: before={beforeMilliseconds}ms, after={BufferedMilliseconds}ms, " +
-			$"frames={SubmittedFrames:N0}, dropped={DroppedFrames:N0}, clears={BufferClears:N0}, lowTransitions={LowBufferEvents:N0}, target={TargetBufferMilliseconds}-{HighBufferMilliseconds}ms.");
+			$"frames={SubmittedFrames:N0}, dropped={DroppedFrames:N0}, syncDropped={SyncDroppedFrames:N0}, clears={BufferClears:N0}, " +
+			$"lowTransitions={LowBufferEvents:N0}, estimatedLatency={LatestEstimatedLatencyMilliseconds}ms, syncTarget={SyncTargetLatencyMilliseconds}ms, " +
+			$"bufferTarget={TargetBufferMilliseconds}-{HighBufferMilliseconds}ms.");
+	}
+
+	private int EstimateLatencyMilliseconds(AudioPcmFrame frame, int bufferedMilliseconds)
+	{
+		long receivedTick = frame.ReceivedTick;
+		int receiveToSubmitMs = 0;
+		if (receivedTick > 0)
+		{
+			long now = System.Diagnostics.Stopwatch.GetTimestamp();
+			if (now > receivedTick)
+			{
+				receiveToSubmitMs = (int)Math.Round((now - receivedTick) * 1000.0 / System.Diagnostics.Stopwatch.Frequency);
+			}
+		}
+		return Math.Max(0, receiveToSubmitMs) + bufferedMilliseconds + WasapiLatencyMilliseconds;
 	}
 
 	private int BytesToMilliseconds(int bytes)
