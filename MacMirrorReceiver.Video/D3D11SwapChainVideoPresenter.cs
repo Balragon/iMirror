@@ -130,11 +130,14 @@ public sealed class D3D11SwapChainVideoPresenter : HwndHost
 				using (inputView)
 				{
 					var sourceRect = new RawRectangle(0, 0, width, height);
-					var outputRect = new RawRectangle(0, 0, _swapWidth, _swapHeight);
+					// Stretch-fill the child window (clean, no per-frame clear, no resize artifacts).
+					// Aspect ratio is preserved by WPF sizing the host window to the source aspect; the
+					// letterbox/pillarbox bars are the (black) WPF background around the host window.
+					var destRect = new RawRectangle(0, 0, _swapWidth, _swapHeight);
 					_videoContext.VideoProcessorSetStreamFrameFormat(_processor, 0, D3D11.VideoFrameFormat.Progressive);
 					_videoContext.VideoProcessorSetStreamSourceRect(_processor, 0, true, sourceRect);
-					_videoContext.VideoProcessorSetStreamDestRect(_processor, 0, true, outputRect);
-					_videoContext.VideoProcessorSetOutputTargetRect(_processor, true, outputRect);
+					_videoContext.VideoProcessorSetStreamDestRect(_processor, 0, true, destRect);
+					_videoContext.VideoProcessorSetOutputTargetRect(_processor, true, destRect);
 
 					var streams = new[]
 					{

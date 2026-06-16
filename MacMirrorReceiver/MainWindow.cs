@@ -227,6 +227,9 @@ public partial class MainWindow : Window
 		AppLog.Write("MainWindow constructor entered.");
 		InitializeComponent();
 		AppLog.Write("MainWindow InitializeComponent returned.");
+#if HIGH_RESOLUTION_D3D
+		VideoStage.SizeChanged += VideoStage_SizeChanged;
+#endif
 		DeviceComboBox.ItemsSource = _devices;
 		DeviceComboBox.SelectionChanged += delegate
 		{
@@ -302,6 +305,14 @@ public partial class MainWindow : Window
 			}), DispatcherPriority.Background);
 		});
 	}
+
+#if HIGH_RESOLUTION_D3D
+	private void VideoStage_SizeChanged(object sender, SizeChangedEventArgs e)
+	{
+		UpdateHighResolutionD3DPresenterLayout();
+		RefreshRemoteCursorPosition();
+	}
+#endif
 
 	private async void ConnectButton_Click(object sender, RoutedEventArgs e)
 	{
@@ -1339,8 +1350,9 @@ public partial class MainWindow : Window
 			VideoImage.Source = null;
 			_bitmap = null;
 			VideoStage.Children.Insert(0, presenter);
-			presenter.HorizontalAlignment = HorizontalAlignment.Stretch;
-			presenter.VerticalAlignment = VerticalAlignment.Stretch;
+			presenter.HorizontalAlignment = HorizontalAlignment.Center;
+			presenter.VerticalAlignment = VerticalAlignment.Center;
+			UpdateHighResolutionD3DPresenterLayout(presenter, config);
 			VideoStage.UpdateLayout();
 			presenter.StatusChanged += delegate(string message)
 			{
@@ -1395,6 +1407,43 @@ public partial class MainWindow : Window
 			ReleasePendingD3DFrame();
 			return false;
 		}
+	}
+
+	private void UpdateHighResolutionD3DPresenterLayout()
+	{
+		D3D11SwapChainVideoPresenter? presenter = _highResolutionD3DPresenter;
+		StreamConfig? config = _streamConfig;
+		if (presenter == null || config == null)
+		{
+			return;
+		}
+		UpdateHighResolutionD3DPresenterLayout(presenter, config);
+	}
+
+	private void UpdateHighResolutionD3DPresenterLayout(D3D11SwapChainVideoPresenter presenter, StreamConfig config)
+	{
+		double stageWidthDip = VideoStage.ActualWidth;
+		double stageHeightDip = VideoStage.ActualHeight;
+		if (stageWidthDip <= 0.0 || stageHeightDip <= 0.0 || config.Width <= 0 || config.Height <= 0)
+		{
+			return;
+		}
+
+		DpiScale dpi = VisualTreeHelper.GetDpi(VideoStage);
+		double dpiScaleX = dpi.DpiScaleX > 0.0 ? dpi.DpiScaleX : 1.0;
+		double dpiScaleY = dpi.DpiScaleY > 0.0 ? dpi.DpiScaleY : 1.0;
+		double stageWidthPixels = stageWidthDip * dpiScaleX;
+		double stageHeightPixels = stageHeightDip * dpiScaleY;
+		double scale = Math.Min(stageWidthPixels / config.Width, stageHeightPixels / config.Height);
+		double fitWidthPixels = Math.Max(1.0, Math.Round(config.Width * scale));
+		double fitHeightPixels = Math.Max(1.0, Math.Round(config.Height * scale));
+		double fitWidthDip = Math.Min(stageWidthDip, fitWidthPixels / dpiScaleX);
+		double fitHeightDip = Math.Min(stageHeightDip, fitHeightPixels / dpiScaleY);
+
+		presenter.Width = fitWidthDip;
+		presenter.Height = fitHeightDip;
+		presenter.HorizontalAlignment = HorizontalAlignment.Center;
+		presenter.VerticalAlignment = VerticalAlignment.Center;
 	}
 
 	private void HandleHighResolutionD3DFatal(string message)
@@ -1796,6 +1845,16 @@ public partial class MainWindow : Window
 		{
 			return Rect.Empty;
 		}
+
+#if HIGH_RESOLUTION_D3D
+		D3D11SwapChainVideoPresenter? d3dPresenter = _highResolutionD3DPresenter;
+		if (d3dPresenter != null && d3dPresenter.ActualWidth > 0.0 && d3dPresenter.ActualHeight > 0.0)
+		{
+			double d3dLeft = Math.Max(0.0, (VideoStage.ActualWidth - d3dPresenter.ActualWidth) / 2.0);
+			double d3dTop = Math.Max(0.0, (VideoStage.ActualHeight - d3dPresenter.ActualHeight) / 2.0);
+			return new Rect(d3dLeft, d3dTop, d3dPresenter.ActualWidth, d3dPresenter.ActualHeight);
+		}
+#endif
 
 		double hostWidth = VideoImage?.ActualWidth > 0 ? VideoImage.ActualWidth : VideoStage.ActualWidth;
 		double hostHeight = VideoImage?.ActualHeight > 0 ? VideoImage.ActualHeight : VideoStage.ActualHeight;

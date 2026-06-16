@@ -563,7 +563,7 @@
 
         <Grid x:Name="VideoStage"
               Grid.Column="1"
-              Background="#0A0A0C"
+              Background="#000000"
               MouseLeftButtonDown="VideoStage_MouseLeftButtonDown">
             <Image x:Name="VideoImage"
                    Stretch="Uniform"
