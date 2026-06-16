@@ -16,6 +16,7 @@ using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Interop;
 using System.Windows.Threading;
+using MacMirrorReceiver.Audio;
 using MacMirrorReceiver.Models;
 using MacMirrorReceiver.Networking;
 using MacMirrorReceiver.Protocol;
@@ -102,6 +103,8 @@ public partial class MainWindow : Window
 
 	private readonly Queue<PendingVideoPayload> _pendingVideoBeforeSink = new Queue<PendingVideoPayload>();
 
+	private readonly object _audioGate = new object();
+
 	// 3s warmup grace: BeginWarmup fires at decoder (re)start, but frames only flow after FFmpeg/MF
 	// spin-up (~0.8s) plus decryptor settling, so a shorter grace lets a startup straggler inflate
 	// the first window's max. Measured on a real-device run (first-window straggler ~248ms at ~1.6s).
@@ -110,6 +113,10 @@ public partial class MainWindow : Window
 	private MirrorClient? _client;
 
 	private FfmpegDecoder? _decoder;
+
+	private FfmpegAudioDecoder? _audioDecoder;
+
+	private WasapiAudioOutput? _audioOutput;
 
 	private MpvVideoPresenter? _mpvPresenter;
 
@@ -172,6 +179,14 @@ public partial class MainWindow : Window
 
 	private long _decoderRestarts;
 
+	private long _audioFramesReceived;
+
+	private long _audioFramesQueued;
+
+	private long _audioPcmFrames;
+
+	private long _audioPcmBytes;
+
 	// Set when the GPU engine faults at runtime (device-lost/TDR); the session then stays on the
 	// software decoder until the next connection. Reset in ResetStreamStateForNewConnection.
 	private bool _gpuPathDisabledThisSession;
@@ -199,6 +214,14 @@ public partial class MainWindow : Window
 	private string? _lastPin;
 
 	private string _decoderStatus = "not started";
+
+	private string _audioStatus = "not started";
+
+	private int _audioSampleRate = 44100;
+
+	private int _audioChannels = 2;
+
+	private int _audioSamplesPerFrame = 480;
 
 	private readonly record struct PendingVideoPayload(byte[] Payload, ulong SourceTimestampNanos, long ReceivedTick);
 
@@ -245,6 +268,8 @@ public partial class MainWindow : Window
 		};
 		_airPlayProbe.StreamConfigReceived += HandleAirPlayStreamConfig;
 		_airPlayProbe.VideoPayloadReceived += HandleAirPlayVideoPayload;
+		_airPlayProbe.AudioStreamStarted += HandleAirPlayAudioStreamStarted;
+		_airPlayProbe.AudioFrameReceived += HandleAirPlayAudioFrame;
 		InitializeRenderModeSettingsUi();
 		RenderModeComboBox.SelectedIndex = 0;
 		UpdateRenderModeDetail();
@@ -375,6 +400,146 @@ public partial class MainWindow : Window
 	private void HandleAirPlayVideoPayload(byte[] payload, ulong sourceTimestampNanos, long receivedTick)
 	{
 		ProcessVideoPayload(payload, sourceTimestampNanos, receivedTick, countReceived: true, allowPreSinkBuffer: true);
+	}
+
+	private void HandleAirPlayAudioStreamStarted(int sampleRate, int channels, int samplesPerFrame)
+	{
+		lock (_audioGate)
+		{
+			bool formatChanged = _audioDecoder != null
+				&& (_audioSampleRate != sampleRate || _audioChannels != channels || _audioSamplesPerFrame != samplesPerFrame);
+			_audioSampleRate = sampleRate > 0 ? sampleRate : 44100;
+			_audioChannels = channels > 0 ? channels : 2;
+			_audioSamplesPerFrame = samplesPerFrame > 0 ? samplesPerFrame : 480;
+			if (formatChanged)
+			{
+				StopAudioPipelineLocked();
+			}
+			StartAudioPipelineLocked("AirPlay audio stream setup");
+		}
+	}
+
+	private void HandleAirPlayAudioFrame(byte[] frame, uint rtpTimestamp, ushort sequence)
+	{
+		Interlocked.Increment(ref _audioFramesReceived);
+		long receivedTick = Stopwatch.GetTimestamp();
+		FfmpegAudioDecoder? decoder;
+		lock (_audioGate)
+		{
+			if (_audioDecoder == null)
+			{
+				StartAudioPipelineLocked("first AirPlay audio frame");
+			}
+			decoder = _audioDecoder;
+		}
+
+		if (decoder == null)
+		{
+			QueueDiagnosticsUpdate();
+			return;
+		}
+
+		if (decoder.QueueFrame(frame, rtpTimestamp, sequence, receivedTick))
+		{
+			Interlocked.Increment(ref _audioFramesQueued);
+		}
+		QueueDiagnosticsUpdate();
+	}
+
+	private void StartAudioPipelineLocked(string reason)
+	{
+		if (_audioDecoder != null)
+		{
+			return;
+		}
+
+		try
+		{
+			var output = new WasapiAudioOutput(_audioSampleRate, _audioChannels);
+			output.StatusChanged += HandleAudioStatus;
+			_audioOutput = output;
+
+			var decoder = new FfmpegAudioDecoder(_audioSampleRate, _audioChannels, _audioSamplesPerFrame);
+			decoder.StatusChanged += HandleAudioStatus;
+			decoder.PcmFrameDecoded += HandleAudioPcmFrame;
+			_audioDecoder = decoder;
+			decoder.Start();
+
+			_audioStatus = $"started ({_audioSampleRate}Hz/{_audioChannels}ch/{_audioSamplesPerFrame}spf)";
+			AppLog.Write("Audio pipeline started for " + reason + ".");
+			QueueDiagnosticsUpdate();
+		}
+		catch (Exception ex)
+		{
+			_audioStatus = "failed: " + ex.Message;
+			AppLog.Write("Audio pipeline failed to start: " + ex);
+			StopAudioPipelineLocked();
+			QueueDiagnosticsUpdate();
+		}
+	}
+
+	private void HandleAudioStatus(string message)
+	{
+		base.Dispatcher.BeginInvoke(new Action(delegate
+		{
+			_audioStatus = message;
+			AppLog.Write("Audio status: " + message);
+			UpdateDiagnostics();
+		}), DispatcherPriority.Background);
+	}
+
+	private void HandleAudioPcmFrame(AudioPcmFrame frame)
+	{
+		try
+		{
+			WasapiAudioOutput? output;
+			lock (_audioGate)
+			{
+				output = _audioOutput;
+			}
+			if (output == null)
+			{
+				return;
+			}
+
+			output.Submit(frame);
+			Interlocked.Increment(ref _audioPcmFrames);
+			Interlocked.Add(ref _audioPcmBytes, frame.ByteCount);
+		}
+		finally
+		{
+			frame.Release();
+		}
+	}
+
+	private void StopAudioPipeline()
+	{
+		lock (_audioGate)
+		{
+			StopAudioPipelineLocked();
+		}
+	}
+
+	private void StopAudioPipelineLocked()
+	{
+		FfmpegAudioDecoder? decoder = _audioDecoder;
+		WasapiAudioOutput? output = _audioOutput;
+		_audioDecoder = null;
+		_audioOutput = null;
+		try
+		{
+			decoder?.Dispose();
+		}
+		catch
+		{
+		}
+		try
+		{
+			output?.Dispose();
+		}
+		catch
+		{
+		}
 	}
 
 	private async Task ConnectToSelectedAsync()
@@ -510,6 +675,12 @@ public partial class MainWindow : Window
 			_lastGateLogTick = 0L;
 			_pendingVideoDroppedBeforeSink = 0L;
 			_lastPendingVideoDropLogTick = 0L;
+			_audioFramesReceived = 0L;
+			_audioFramesQueued = 0L;
+			_audioPcmFrames = 0L;
+			_audioPcmBytes = 0L;
+			_audioStatus = "waiting for stream";
+			StopAudioPipeline();
 				_streamConfig = null;
 				ResetRemoteCursorState();
 				_decoderStatus = "waiting for stream config";
@@ -2044,6 +2215,7 @@ public partial class MainWindow : Window
 				StopVideoWatchdog();
 				_decoder?.Dispose();
 				_decoder = null;
+				StopAudioPipeline();
 #if HIGH_RESOLUTION_D3D
 			_mediaFoundationD3DDecoder?.Dispose();
 			_mediaFoundationD3DDecoder = null;
@@ -2309,7 +2481,7 @@ public partial class MainWindow : Window
 						? (_lastPresentedCursorState == null ? "none" : (_lastPresentedCursorState.Visible ? $"visible {_lastPresentedCursorState.X:P1}, {_lastPresentedCursorState.Y:P1}" : "hidden"))
 						: "embedded in video";
 					string latencyWindow = FormatLatencyWindow(_receiveToPresentLatencyWindow.GetCurrentOrLastSnapshot(Stopwatch.GetTimestamp()));
-					DiagnosticsTextBlock.Text = $"{value}\nrealtime output: {value2}\n{outputValue}\nreceived video: {value3:N0} / {(double)num / 1024.0:N1} KB\npre-render queue/dropped: {pendingVideoBeforeSinkPackets:N0} ({(double)pendingVideoBeforeSinkBytes / 1024.0:N1} KB) / {Interlocked.Read(ref _pendingVideoDroppedBeforeSink):N0}\ncursor: {cursorMessages:N0} / {cursorValue}\nforwarded/dropped h264: {h264Forwarded:N0} / {h264Dropped:N0}\ndecoded/rendered: {decodedFrames:N0} / {renderedFrames:N0}\nrender dropped: {Interlocked.Read(ref _renderDroppedFrames):N0}\nlatest latency: recv->render {Interlocked.Read(ref _latestReceiveToRenderMs)} ms, decode->render {Interlocked.Read(ref _latestDecodeToRenderMs)} ms\nlatency window: {latencyWindow}\nrender queue: pending {pendingRenderFrames}, dispatcher {dispatcherQueued}\ndecoder input queued/dropped: {ActiveQueuedInputPackets:N0} ({(double)ActiveQueuedInputBytes / 1024.0:N1} KB) / {ActiveDroppedInputPackets:N0}\nh264 accepted/written: {ActiveAcceptedInputPackets:N0} / {ActiveWrittenInputPackets:N0}\nstdin write: {ActiveLatestWriteMilliseconds} ms, max {ActiveMaxWriteMilliseconds} ms, stalls {ActiveWriteStalls:N0}\ndecoder restarts: {Interlocked.Read(ref _decoderRestarts):N0}\ndecoder: {_decoderStatus}";
+					DiagnosticsTextBlock.Text = $"{value}\nrealtime output: {value2}\n{outputValue}\n{ResolveAudioDiagnostics()}\nreceived video: {value3:N0} / {(double)num / 1024.0:N1} KB\npre-render queue/dropped: {pendingVideoBeforeSinkPackets:N0} ({(double)pendingVideoBeforeSinkBytes / 1024.0:N1} KB) / {Interlocked.Read(ref _pendingVideoDroppedBeforeSink):N0}\ncursor: {cursorMessages:N0} / {cursorValue}\nforwarded/dropped h264: {h264Forwarded:N0} / {h264Dropped:N0}\ndecoded/rendered: {decodedFrames:N0} / {renderedFrames:N0}\nrender dropped: {Interlocked.Read(ref _renderDroppedFrames):N0}\nlatest latency: recv->render {Interlocked.Read(ref _latestReceiveToRenderMs)} ms, decode->render {Interlocked.Read(ref _latestDecodeToRenderMs)} ms\nlatency window: {latencyWindow}\nrender queue: pending {pendingRenderFrames}, dispatcher {dispatcherQueued}\ndecoder input queued/dropped: {ActiveQueuedInputPackets:N0} ({(double)ActiveQueuedInputBytes / 1024.0:N1} KB) / {ActiveDroppedInputPackets:N0}\nh264 accepted/written: {ActiveAcceptedInputPackets:N0} / {ActiveWrittenInputPackets:N0}\nstdin write: {ActiveLatestWriteMilliseconds} ms, max {ActiveMaxWriteMilliseconds} ms, stalls {ActiveWriteStalls:N0}\ndecoder restarts: {Interlocked.Read(ref _decoderRestarts):N0}\ndecoder: {_decoderStatus}";
 		CompactStatusTextBlock.Text = ((renderedFrames > 0) ? $"Live: {renderedFrames:N0} frames" : CompactStatus(_statusText));
 	}
 
@@ -2392,6 +2564,27 @@ public partial class MainWindow : Window
 		return (_decoder == null)
 			? "output: none"
 			: $"output: {_decoder.OutputWidth}x{_decoder.OutputHeight}, {(double)_decoder.OutputFrameBytes / 1024.0 / 1024.0:N1} MB/frame";
+	}
+
+	private string ResolveAudioDiagnostics()
+	{
+		FfmpegAudioDecoder? decoder;
+		WasapiAudioOutput? output;
+		lock (_audioGate)
+		{
+			decoder = _audioDecoder;
+			output = _audioOutput;
+		}
+
+		if (decoder == null || output == null)
+		{
+			return $"audio: {_audioStatus}, received={Interlocked.Read(ref _audioFramesReceived):N0}";
+		}
+
+		return $"audio: {_audioStatus}, received/queued={Interlocked.Read(ref _audioFramesReceived):N0}/{Interlocked.Read(ref _audioFramesQueued):N0}, " +
+			$"dedup={decoder.DuplicateInputFrames:N0}, decoded={Interlocked.Read(ref _audioPcmFrames):N0} ({(double)Interlocked.Read(ref _audioPcmBytes) / 1024.0:N1} KB), " +
+			$"decoderQueue={decoder.QueuedInputFrames:N0}, audioBuffer={output.BufferedMilliseconds:N0}ms, " +
+			$"clears={output.BufferClears:N0}, low={output.LowBufferEvents:N0}";
 	}
 
 	private int ActiveQueuedInputPackets => _mpvPresenter?.QueuedInputPackets

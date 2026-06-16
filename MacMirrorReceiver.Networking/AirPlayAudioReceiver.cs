@@ -54,6 +54,8 @@ internal sealed class AirPlayAudioReceiver : IDisposable
 	// through as-is; de-duplication and jitter buffering belong to the consumer.
 	public event Action<byte[], uint, ushort>? AudioFrameReceived;
 
+	public event Action<AirPlayAudioStreamInfo>? StreamStarted;
+
 	public bool IsRunning
 	{
 		get
@@ -112,6 +114,7 @@ internal sealed class AirPlayAudioReceiver : IDisposable
 		AppLog.Write($"AirPlay audio receiver started: dataPort={DataPort}, controlPort={ControlPort}, macControlPort={macControlPort}, " +
 			$"ct={info.CompressionType}, spf={info.SamplesPerFrame}, sr={info.SampleRate}, audioFormat=0x{info.AudioFormat:X8}, redundantAudio={info.RedundantAudio}, " +
 			$"hasKey={(aesKey != null)}, hasEiv={(eiv != null)}, canDecrypt={(_decryptor != null)}, dump={(_dump != null)}.");
+		StreamStarted?.Invoke(info);
 		return true;
 	}
 

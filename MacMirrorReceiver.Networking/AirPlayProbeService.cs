@@ -48,17 +48,12 @@ public sealed class AirPlayProbeService : IDisposable
 	private const string LegacyAirPlayFeatures = "0x5A7FFEE6";
 	private const string LegacyRaopPublicKey = "b07727d6f6cd6e08b58ede525ec3cdeaa252ad9f683feb212ef8a205246554e7";
 
-	// Video-only receiver scope. There is no audio receive/decode/playback pipeline yet, so the
-	// receiver must not claim audio it cannot render. This gates the audio capability claim in
-	// the /info plist and the audio headers in the RECORD response. Reversible: flip to true to
-	// re-enable audio negotiation when the audio milestone (receive -> decode -> WASAPI -> A/V
-	// sync) lands. NOTE: disabling changes the live AirPlay handshake; confirm a real-device
-	// mirror still negotiates after a build with this off.
-	private const bool AdvertiseAudioCapabilities = false;
+	// Product default: advertise audio now that the receiver has a decode/output pipeline. Failures in
+	// the downstream audio path fall back to silence while video keeps running.
+	private const bool AdvertiseAudioCapabilities = true;
 
-	// Milestone B Phase 1 (audio discovery): set IMIRROR_AUDIO_DISCOVERY=1 to re-advertise audio so the
-	// Mac sends the mirroring audio stream, and to verbosely log/dump non-video data-stream packets so
-	// we can identify the audio transport/type/codec. Product default stays video-only.
+	// Optional verbose discovery diagnostics. Set IMIRROR_AUDIO_DISCOVERY=1 to log non-video data-stream
+	// packets and full SETUP plists while investigating sender behavior.
 	private static readonly bool AudioDiscoveryEnabled = string.Equals(
 		Environment.GetEnvironmentVariable("IMIRROR_AUDIO_DISCOVERY"), "1", StringComparison.OrdinalIgnoreCase);
 
@@ -134,6 +129,8 @@ public sealed class AirPlayProbeService : IDisposable
 		_pairingId = Guid.NewGuid().ToString("D");
 		_airPlayInstanceName = _displayName + "." + AirPlayServiceType;
 		_raopInstanceName = _deviceId.Replace(":", "", StringComparison.Ordinal) + "@" + _displayName + "." + RaopServiceType;
+		_audioReceiver.StreamStarted += info => AudioStreamStarted?.Invoke(info.SampleRate, info.Channels, info.SamplesPerFrame);
+		_audioReceiver.AudioFrameReceived += (frame, timestamp, sequence) => AudioFrameReceived?.Invoke(frame, timestamp, sequence);
 		_setup = new AirPlaySetupContext(_timingClient, _audioReceiver, TryGetAudioCrypto);
 	}
 
@@ -173,6 +170,10 @@ public sealed class AirPlayProbeService : IDisposable
 	public event Action<StreamConfig>? StreamConfigReceived;
 
 	public event Action<byte[], ulong, long>? VideoPayloadReceived;
+
+	public event Action<int, int, int>? AudioStreamStarted;
+
+	public event Action<byte[], uint, ushort>? AudioFrameReceived;
 
 	public string StatusText { get; private set; } = "AirPlay receiver not started.";
 
