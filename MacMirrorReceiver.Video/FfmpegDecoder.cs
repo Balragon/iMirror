@@ -812,7 +812,7 @@ public sealed class FfmpegDecoder : IDisposable
 		}
 	}
 
-	private static string? FindFfmpeg()
+	internal static string? FindFfmpeg()
 	{
 		string text = Path.Combine(AppContext.BaseDirectory, "tools", "ffmpeg", "bin", "ffmpeg.exe");
 		if (File.Exists(text))
