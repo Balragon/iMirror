@@ -44,7 +44,14 @@ requirements and package smoke-test steps.
 
 ## Runtime Dependencies
 
-FFmpeg is intentionally not committed. Put a Windows FFmpeg build here:
+FFmpeg is intentionally not committed. Use **Gyan.FFmpeg.Essentials** (LGPL-compatible;
+do not use the `full_build` variant as it is GPLv3).
+
+```powershell
+winget install Gyan.FFmpeg.Essentials
+```
+
+Or place a Windows FFmpeg build manually here:
 
 ```text
 tools\ffmpeg\bin\ffmpeg.exe
