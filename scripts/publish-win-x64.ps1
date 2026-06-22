@@ -62,7 +62,7 @@ function Find-Ffmpeg([string]$RepoRoot, [string]$ExplicitPath)
 	$wingetPackages = Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)) "Microsoft\WinGet\Packages"
 	if (Test-Path -LiteralPath $wingetPackages -PathType Container)
 	{
-		# Prefer Gyan.FFmpeg.Essentials (LGPL-compatible) over Gyan.FFmpeg full_build (GPLv3).
+		# Prefer Gyan.FFmpeg.Essentials over the larger Gyan.FFmpeg full_build.
 		$wingetFfmpeg = Get-ChildItem -LiteralPath $wingetPackages -Filter "ffmpeg.exe" -Recurse -ErrorAction SilentlyContinue |
 			Where-Object { $_.FullName -like "*Gyan.FFmpeg.Essentials*" } |
 			Select-Object -First 1
@@ -70,18 +70,32 @@ function Find-Ffmpeg([string]$RepoRoot, [string]$ExplicitPath)
 		{
 			return $wingetFfmpeg.FullName
 		}
-		# Fall back to full_build — redistributing requires GPL compliance.
+		# Fall back to full_build; redistribution needs explicit license compliance review.
 		$wingetFfmpegFull = Get-ChildItem -LiteralPath $wingetPackages -Filter "ffmpeg.exe" -Recurse -ErrorAction SilentlyContinue |
 			Where-Object { $_.FullName -like "*Gyan.FFmpeg*" -and $_.FullName -notlike "*Gyan.FFmpeg.Essentials*" } |
 			Select-Object -First 1
 		if ($wingetFfmpegFull)
 		{
-			Write-Warning "Found Gyan.FFmpeg full_build (GPLv3). For redistribution use Gyan.FFmpeg.Essentials (LGPL). Install with: winget install Gyan.FFmpeg.Essentials"
+			Write-Warning "Found Gyan.FFmpeg full_build. For this package use Gyan.FFmpeg.Essentials instead. Install with: winget install Gyan.FFmpeg.Essentials"
 			return $wingetFfmpegFull.FullName
 		}
 	}
 
 	return $null
+}
+
+function Test-FfmpegBuild([string]$Path)
+{
+	$output = & $Path -version 2>&1
+	$versionText = $output -join "`n"
+	if ($versionText -match "full_build")
+	{
+		Write-Warning "Resolved FFmpeg is a full_build. Use Gyan.FFmpeg.Essentials for the release package."
+	}
+	elseif ($versionText -notmatch "essentials_build")
+	{
+		Write-Warning "Resolved FFmpeg build flavor was not recognized as Gyan essentials_build. Review licensing before redistribution."
+	}
 }
 
 $repoRoot = Resolve-RepoPath (Join-Path $PSScriptRoot "..")
@@ -140,6 +154,7 @@ try
 	$resolvedFfmpeg = Find-Ffmpeg $repoRoot $FfmpegPath
 	if ($resolvedFfmpeg)
 	{
+		Test-FfmpegBuild $resolvedFfmpeg
 		$packageFfmpegDir = Join-Path $packageDir "tools\ffmpeg\bin"
 		New-Item -ItemType Directory -Force -Path $packageFfmpegDir | Out-Null
 		Copy-Item -LiteralPath $resolvedFfmpeg -Destination (Join-Path $packageFfmpegDir "ffmpeg.exe") -Force

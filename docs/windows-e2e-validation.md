@@ -4,13 +4,13 @@ Use this checklist before merging `claude/magical-faraday-6ex3c7` into `main`.
 
 ## Current Status
 
-**Branch:** `claude/magical-faraday-6ex3c7` (11 commits ahead of `main`)
+**Branch:** `claude/magical-faraday-6ex3c7` (12 commits ahead of `main`)
 
 | Feature | Frontend | Backend | Static validation | Build | Real device |
 |---|---|---|---|---|---|
 | **P1.0 Settings UI** | Done | Done | Done | Done | Pending |
 | **P1.1 First-Run Diagnostics** | Done | Done | Done | Done | Pending |
-| **FFmpeg License (Essentials)** | N/A | Done | Done | N/A | Pending |
+| **FFmpeg Packaging (Essentials)** | N/A | Done | Done | N/A | Pending |
 
 Remaining gate: **one Windows real-device E2E validation run**.
 
@@ -18,7 +18,7 @@ Remaining gate: **one Windows real-device E2E validation run**.
 
 - [ ] `winget install Gyan.FFmpeg.Essentials`
 - [ ] `powershell -ExecutionPolicy Bypass -File .\scripts\publish-win-x64.ps1 -Version 0.2.0`
-- [ ] Confirm packaging log prints `Bundled FFmpeg: ...Gyan.FFmpeg.Essentials...`.
+- [ ] Confirm packaging log prints `Bundled FFmpeg: ...Gyan.FFmpeg.Essentials...` or a local `tools\ffmpeg\bin\ffmpeg.exe` verified as `essentials_build`.
 - [ ] Confirm no `full_build` warning is printed.
 - [ ] Extract the zip outside the repository and run from that folder to block source-tree dependency leaks.
 - [ ] Confirm `tools\ffmpeg\bin\ffmpeg.exe` is included in the package.

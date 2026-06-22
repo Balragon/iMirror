@@ -15,16 +15,18 @@ self-contained `win-x64` zip that can run without installing .NET.
 FFmpeg is required for AAC-ELD audio decode and for the software video fallback.
 A release package should bundle it.
 
-**Use `Gyan.FFmpeg.Essentials` (LGPL-compatible).** The `Gyan.FFmpeg` full_build
-includes GPL components and must not be redistributed without GPL compliance.
-Install the correct build:
+**Use `Gyan.FFmpeg.Essentials` for release packages.** Do not use the larger
+`Gyan.FFmpeg` full_build variant unless its redistribution obligations have been
+reviewed and accepted. Install the expected build:
 
 ```powershell
 winget install Gyan.FFmpeg.Essentials
 ```
 
-The publish script auto-detects and prefers Essentials; it warns and falls back
-to full_build if only that is installed.
+The publish script auto-detects and prefers Essentials; it warns if the resolved
+binary reports `full_build` or an unrecognized build flavor. Always confirm the
+exact FFmpeg license obligations from `ffmpeg -version` and the matching source
+package before redistribution.
 
 ## Build The Zip
 

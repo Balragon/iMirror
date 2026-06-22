@@ -44,8 +44,10 @@ requirements and package smoke-test steps.
 
 ## Runtime Dependencies
 
-FFmpeg is intentionally not committed. Use **Gyan.FFmpeg.Essentials** (LGPL-compatible;
-do not use the `full_build` variant as it is GPLv3).
+FFmpeg is intentionally not committed. Use **Gyan.FFmpeg.Essentials** for release
+packages, not the larger `full_build` variant. Confirm the exact FFmpeg license
+obligations from `ffmpeg -version` and the matching source package before
+redistribution.
 
 ```powershell
 winget install Gyan.FFmpeg.Essentials
