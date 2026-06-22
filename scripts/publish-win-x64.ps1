@@ -62,12 +62,22 @@ function Find-Ffmpeg([string]$RepoRoot, [string]$ExplicitPath)
 	$wingetPackages = Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)) "Microsoft\WinGet\Packages"
 	if (Test-Path -LiteralPath $wingetPackages -PathType Container)
 	{
+		# Prefer Gyan.FFmpeg.Essentials (LGPL-compatible) over Gyan.FFmpeg full_build (GPLv3).
 		$wingetFfmpeg = Get-ChildItem -LiteralPath $wingetPackages -Filter "ffmpeg.exe" -Recurse -ErrorAction SilentlyContinue |
-			Where-Object { $_.FullName -like "*Gyan.FFmpeg*" } |
+			Where-Object { $_.FullName -like "*Gyan.FFmpeg.Essentials*" } |
 			Select-Object -First 1
 		if ($wingetFfmpeg)
 		{
 			return $wingetFfmpeg.FullName
+		}
+		# Fall back to full_build — redistributing requires GPL compliance.
+		$wingetFfmpegFull = Get-ChildItem -LiteralPath $wingetPackages -Filter "ffmpeg.exe" -Recurse -ErrorAction SilentlyContinue |
+			Where-Object { $_.FullName -like "*Gyan.FFmpeg*" -and $_.FullName -notlike "*Gyan.FFmpeg.Essentials*" } |
+			Select-Object -First 1
+		if ($wingetFfmpegFull)
+		{
+			Write-Warning "Found Gyan.FFmpeg full_build (GPLv3). For redistribution use Gyan.FFmpeg.Essentials (LGPL). Install with: winget install Gyan.FFmpeg.Essentials"
+			return $wingetFfmpegFull.FullName
 		}
 	}
 
