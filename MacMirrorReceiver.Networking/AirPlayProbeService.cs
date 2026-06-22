@@ -83,6 +83,7 @@ public sealed class AirPlayProbeService : IDisposable
 	private readonly object _mirrorKeyGate = new object();
 
 	private UdpClient? _mdnsClient;
+	private bool _mdnsBound;
 	private TcpListener? _airPlayListener;
 	private TcpListener? _raopListener;
 	private TcpListener? _dataListener;
@@ -90,7 +91,10 @@ public sealed class AirPlayProbeService : IDisposable
 	private TcpListener? _timingListener;
 
 	// Expose bind results for startup diagnostics — read after StartAsync().
-	public bool IsMdnsBound => _mdnsClient != null;
+	// _mdnsClient is assigned before Bind(), so a bind failure (e.g. port 5353
+	// already held by Bonjour/iTunes) would leave it non-null; track success with
+	// a dedicated flag set only after the multicast join completes.
+	public bool IsMdnsBound => _mdnsBound;
 	public bool IsAirPlayListenerBound => _airPlayListener != null;
 	public bool IsRaopListenerBound => _raopListener != null;
 
@@ -202,6 +206,7 @@ public sealed class AirPlayProbeService : IDisposable
 			_mdnsClient.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, optionValue: true);
 			_mdnsClient.Client.Bind(new IPEndPoint(IPAddress.Any, MdnsPort));
 			_mdnsClient.JoinMulticastGroup(MulticastAddress);
+			_mdnsBound = true;
 
 			_airPlayListener = TryStartListener(AirPlayPort, "AirPlay");
 			_raopListener = TryStartListener(RaopPort, "RAOP");
