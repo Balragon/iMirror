@@ -204,6 +204,10 @@ public partial class MainWindow : Window
 
 	private int _connectionGeneration;
 
+	private int _airPlaySessionGeneration;
+
+	private readonly SemaphoreSlim _disconnectGate = new SemaphoreSlim(1, 1);
+
 	private int _autoReconnectAttempts;
 
 	private IPEndPoint? _lastEndpoint;
@@ -274,10 +278,14 @@ public partial class MainWindow : Window
 			}), DispatcherPriority.Background);
 		};
 		_airPlayProbe.MirrorSessionStarted += HandleAirPlayMirrorSessionStarted;
-		_airPlayProbe.StreamConfigReceived += HandleAirPlayStreamConfig;
-		_airPlayProbe.VideoPayloadReceived += HandleAirPlayVideoPayload;
-		_airPlayProbe.AudioStreamStarted += HandleAirPlayAudioStreamStarted;
-		_airPlayProbe.AudioFrameReceived += HandleAirPlayAudioFrame;
+		_airPlayProbe.MirrorSessionEnded += HandleAirPlayMirrorSessionEnded;
+		_airPlayProbe.StreamConfigReceived += config => HandleAirPlayStreamConfig(config, Volatile.Read(ref _airPlaySessionGeneration));
+		_airPlayProbe.VideoPayloadReceived += (payload, sourceTimestampNanos, receivedTick) =>
+			HandleAirPlayVideoPayload(payload, sourceTimestampNanos, receivedTick, Volatile.Read(ref _airPlaySessionGeneration));
+		_airPlayProbe.AudioStreamStarted += (sampleRate, channels, samplesPerFrame) =>
+			HandleAirPlayAudioStreamStarted(sampleRate, channels, samplesPerFrame, Volatile.Read(ref _airPlaySessionGeneration));
+		_airPlayProbe.AudioFrameReceived += (frame, rtpTimestamp, sequence) =>
+			HandleAirPlayAudioFrame(frame, rtpTimestamp, sequence, Volatile.Read(ref _airPlaySessionGeneration));
 		InitializeRenderModeSettingsUi();
 		InitializeReceiverSettingsUi();
 		RenderModeComboBox.SelectedIndex = 0;
@@ -389,9 +397,20 @@ public partial class MainWindow : Window
 
 	private async void Window_Closing(object? sender, CancelEventArgs e)
 	{
-		await DisconnectAsync(null, userRequested: true);
-		_airPlayProbe.Dispose();
-		_browser.Dispose();
+		try
+		{
+			// Phase 3 will extend this handler with tray hide-vs-exit behavior.
+			await DisconnectAsync(null, userRequested: true);
+		}
+		catch (Exception ex)
+		{
+			AppLog.Write("Window closing disconnect failed: " + ex);
+		}
+		finally
+		{
+			CleanupGuards.RunStep("AirPlay probe dispose", () => _airPlayProbe.Dispose());
+			CleanupGuards.RunStep("mDNS browser dispose", () => _browser.Dispose());
+		}
 	}
 
 	private static bool ResolveStartupAudioAdvertised()
@@ -438,27 +457,47 @@ public partial class MainWindow : Window
 	{
 		if (base.Dispatcher.CheckAccess())
 		{
-			ResetAirPlayMirrorSessionState();
+			ResetAirPlayMirrorSessionState(activeSession: true, "AirPlay session starting.", "AirPlay mirror session state reset for new sender/session.");
 			return;
 		}
 
-		base.Dispatcher.Invoke(new Action(ResetAirPlayMirrorSessionState), DispatcherPriority.Send);
+		base.Dispatcher.Invoke(new Action(delegate
+		{
+			ResetAirPlayMirrorSessionState(activeSession: true, "AirPlay session starting.", "AirPlay mirror session state reset for new sender/session.");
+		}), DispatcherPriority.Send);
 	}
 
-	private void ResetAirPlayMirrorSessionState()
+	private void HandleAirPlayMirrorSessionEnded()
 	{
-		Interlocked.Increment(ref _connectionGeneration);
-		StopVideoWatchdog();
-		_decoder?.Dispose();
+		if (base.Dispatcher.CheckAccess())
+		{
+			ResetAirPlayMirrorSessionState(activeSession: false, "AirPlay session ended.", "AirPlay mirror session state reset after sender ended the session.");
+			return;
+		}
+
+		base.Dispatcher.Invoke(new Action(delegate
+		{
+			ResetAirPlayMirrorSessionState(activeSession: false, "AirPlay session ended.", "AirPlay mirror session state reset after sender ended the session.");
+		}), DispatcherPriority.Send);
+	}
+
+	private void ResetAirPlayMirrorSessionState(bool activeSession, string statusMessage, string logMessage)
+	{
+		int generation = Interlocked.Increment(ref _connectionGeneration);
+		Volatile.Write(ref _airPlaySessionGeneration, activeSession ? generation : 0);
+		CleanupGuards.RunStep("video watchdog stop", StopVideoWatchdog);
+		FfmpegDecoder? decoder = _decoder;
 		_decoder = null;
+		CleanupGuards.RunStep("ffmpeg decoder dispose", () => decoder?.Dispose());
 #if HIGH_RESOLUTION_D3D
-		_mediaFoundationD3DDecoder?.Dispose();
+		MediaFoundationD3D11Decoder? mediaFoundationD3DDecoder = _mediaFoundationD3DDecoder;
 		_mediaFoundationD3DDecoder = null;
-		DisposeHighResolutionD3DPresenter();
-		ReleasePendingD3DFrame();
+		CleanupGuards.RunStep("Media Foundation D3D decoder dispose", () => mediaFoundationD3DDecoder?.Dispose());
+		CleanupGuards.RunStep("D3D presenter dispose", DisposeHighResolutionD3DPresenter);
+		CleanupGuards.RunStep("pending D3D frame release", ReleasePendingD3DFrame);
 #endif
-		ReleasePendingFrame();
-		StopAudioPipeline();
+		CleanupGuards.RunStep("pending frame release", ReleasePendingFrame);
+		CleanupGuards.RunStep("audio pipeline stop", StopAudioPipeline);
 		_bitmap = null;
 		VideoImage.Source = null;
 		VideoImage.Visibility = Visibility.Visible;
@@ -466,15 +505,20 @@ public partial class MainWindow : Window
 		_decoderOutputFps = 0;
 		_decoderMaxRenderWidth = RealtimeMaxRenderWidth;
 		ResetStreamStateForNewConnection();
-		SetStatus("AirPlay session starting.");
-		AppLog.Write("AirPlay mirror session state reset for new sender/session.");
+		SetStatus(statusMessage);
+		AppLog.Write(logMessage);
 		UpdateDiagnostics();
 	}
 
-	private void HandleAirPlayStreamConfig(StreamConfig config)
+	private void HandleAirPlayStreamConfig(StreamConfig config, int generation)
 	{
 		base.Dispatcher.BeginInvoke(new Action(delegate
 		{
+			if (!IsCurrentGeneration(generation, Volatile.Read(ref _connectionGeneration)))
+			{
+				return;
+			}
+
 			bool sameStreamConfig = _streamConfig != null
 				&& (_decoder != null
 #if HIGH_RESOLUTION_D3D
@@ -524,13 +568,23 @@ public partial class MainWindow : Window
 		}), DispatcherPriority.Background);
 	}
 
-	private void HandleAirPlayVideoPayload(byte[] payload, ulong sourceTimestampNanos, long receivedTick)
+	private void HandleAirPlayVideoPayload(byte[] payload, ulong sourceTimestampNanos, long receivedTick, int generation)
 	{
+		if (!IsCurrentGeneration(generation, Volatile.Read(ref _connectionGeneration)))
+		{
+			return;
+		}
+
 		ProcessVideoPayload(payload, sourceTimestampNanos, receivedTick, countReceived: true, allowPreSinkBuffer: true);
 	}
 
-	private void HandleAirPlayAudioStreamStarted(int sampleRate, int channels, int samplesPerFrame)
+	private void HandleAirPlayAudioStreamStarted(int sampleRate, int channels, int samplesPerFrame, int generation)
 	{
+		if (!IsCurrentGeneration(generation, Volatile.Read(ref _connectionGeneration)))
+		{
+			return;
+		}
+
 		lock (_audioGate)
 		{
 			bool formatChanged = _audioDecoder != null
@@ -546,8 +600,13 @@ public partial class MainWindow : Window
 		}
 	}
 
-	private void HandleAirPlayAudioFrame(byte[] frame, uint rtpTimestamp, ushort sequence)
+	private void HandleAirPlayAudioFrame(byte[] frame, uint rtpTimestamp, ushort sequence, int generation)
 	{
+		if (!IsCurrentGeneration(generation, Volatile.Read(ref _connectionGeneration)))
+		{
+			return;
+		}
+
 		Interlocked.Increment(ref _audioFramesReceived);
 		long receivedTick = Stopwatch.GetTimestamp();
 		FfmpegAudioDecoder? decoder;
@@ -571,6 +630,11 @@ public partial class MainWindow : Window
 			Interlocked.Increment(ref _audioFramesQueued);
 		}
 		QueueDiagnosticsUpdate();
+	}
+
+	internal static bool IsCurrentGeneration(int payloadGeneration, int currentGeneration)
+	{
+		return payloadGeneration != 0 && payloadGeneration == currentGeneration;
 	}
 
 	private void StartAudioPipelineLocked(string reason)
@@ -714,7 +778,7 @@ public partial class MainWindow : Window
 			ResetStreamStateForNewConnection();
 			SetConnectedUi(connected: true);
 			string verb = isReconnect ? "Reconnecting" : "Connecting";
-				SetStatus($"{verb} to legacy sender...");
+			SetStatus($"{verb} to legacy sender...");
 			AppLog.Write($"{verb} to {endpoint.Address}:{endpoint.Port}.");
 
 			var client = new MirrorClient();
@@ -724,6 +788,11 @@ public partial class MainWindow : Window
 				string message2 = message;
 				base.Dispatcher.Invoke(delegate
 				{
+					if (!ReferenceEquals(_client, client))
+					{
+						return;
+					}
+
 					SetStatus(message2);
 					AppLog.Write("Client status: " + message2);
 					UpdateDiagnostics();
@@ -739,30 +808,40 @@ public partial class MainWindow : Window
 					}
 				}));
 			};
-				_client.ConfigReceived += delegate(StreamConfig config)
+			_client.ConfigReceived += delegate(StreamConfig config)
+			{
+				StreamConfig config2 = config;
+				base.Dispatcher.BeginInvoke(new Action(delegate
 				{
-					StreamConfig config2 = config;
-					base.Dispatcher.BeginInvoke(new Action(delegate
+					if (ReferenceEquals(_client, client))
 					{
-						if (ReferenceEquals(_client, client))
-						{
-							StartDecoder(config2);
-						}
-					}));
-				};
-					_client.VideoReceived += delegate(byte[] payload, ulong sourceTimestampNanos, long receivedTick)
+						StartDecoder(config2);
+					}
+				}));
+			};
+			_client.VideoReceived += delegate(byte[] payload, ulong sourceTimestampNanos, long receivedTick)
+			{
+				if (!ReferenceEquals(_client, client) || generation != Volatile.Read(ref _connectionGeneration))
+				{
+					return;
+				}
+
+				HandleVideoPayload(payload, sourceTimestampNanos, receivedTick);
+			};
+			if (SyntheticCursorOverlayEnabled)
+			{
+				_client.CursorReceived += delegate(CursorState cursorState, ulong sourceTimestampNanos, long receivedTick)
+				{
+					if (!ReferenceEquals(_client, client) || generation != Volatile.Read(ref _connectionGeneration))
 					{
-						HandleVideoPayload(payload, sourceTimestampNanos, receivedTick);
-					};
-					if (SyntheticCursorOverlayEnabled)
-					{
-						_client.CursorReceived += delegate(CursorState cursorState, ulong sourceTimestampNanos, long receivedTick)
-						{
-							HandleCursorState(cursorState, sourceTimestampNanos, receivedTick);
-						};
+						return;
 					}
 
-				await _client.ConnectAsync(endpoint, pin);
+					HandleCursorState(cursorState, sourceTimestampNanos, receivedTick);
+				};
+			}
+
+			await _client.ConnectAsync(endpoint, pin);
 			return true;
 		}
 		catch (Exception ex)
@@ -1786,15 +1865,29 @@ public partial class MainWindow : Window
 		_decoder.Start();
 		_decoderStatus = "started";
 		FlushPendingVideoToSink();
-		AppLog.Write("Decoder started for " + reason + ".");
+		AppLog.Write("FFmpeg software decoder started for " + reason + ".");
 		StartVideoWatchdog(config, _connectionGeneration);
 	}
 
 #if HIGH_RESOLUTION_D3D
 	private static bool ShouldUseHighResolutionD3DPath(StreamConfig config)
 	{
-		return QualityRenderModeEnabled
-			&& GpuQualityRequested
+		return ShouldUseHighResolutionD3DPath(
+			config,
+			ReceiverSettings.Load().Effective.VideoEngine,
+			QualityRenderModeEnabled,
+			GpuQualityRequested);
+	}
+
+	internal static bool ShouldUseHighResolutionD3DPath(
+		StreamConfig config,
+		ReceiverVideoEngineSetting videoEngine,
+		bool qualityRenderModeEnabled,
+		bool gpuQualityRequested)
+	{
+		return videoEngine != ReceiverVideoEngineSetting.Software
+			&& qualityRenderModeEnabled
+			&& gpuQualityRequested
 			&& config.Width > ResponsiveMaxRenderWidth
 			&& config.Height > 1080;
 	}
@@ -2418,40 +2511,58 @@ public partial class MainWindow : Window
 			_manualDisconnectRequested = true;
 			_autoReconnectAttempts = 0;
 			Interlocked.Increment(ref _connectionGeneration);
+			Volatile.Write(ref _airPlaySessionGeneration, 0);
 		}
-			if (_client != null)
+
+		await _disconnectGate.WaitAsync();
+
+		try
+		{
+			MirrorClient? client = _client;
+			_client = null;
+			await CleanupGuards.RunStepAsync("legacy client dispose", async delegate
 			{
-				await _client.DisposeAsync();
-				_client = null;
-			}
-				StopVideoWatchdog();
-				_decoder?.Dispose();
-				_decoder = null;
-				StopAudioPipeline();
+				if (client != null)
+				{
+					await client.DisposeAsync();
+				}
+			});
+
+			CleanupGuards.RunStep("video watchdog stop", StopVideoWatchdog);
+			FfmpegDecoder? decoder = _decoder;
+			_decoder = null;
+			CleanupGuards.RunStep("ffmpeg decoder dispose", () => decoder?.Dispose());
+			CleanupGuards.RunStep("audio pipeline stop", StopAudioPipeline);
 #if HIGH_RESOLUTION_D3D
-			_mediaFoundationD3DDecoder?.Dispose();
+			MediaFoundationD3D11Decoder? mediaFoundationD3DDecoder = _mediaFoundationD3DDecoder;
 			_mediaFoundationD3DDecoder = null;
+			CleanupGuards.RunStep("Media Foundation D3D decoder dispose", () => mediaFoundationD3DDecoder?.Dispose());
 #endif
 #if HIGH_RESOLUTION_D3D
-			DisposeHighResolutionD3DPresenter();
+			CleanupGuards.RunStep("D3D presenter dispose", DisposeHighResolutionD3DPresenter);
 #endif
 			_bitmap = null;
 			VideoImage.Source = null;
 			VideoImage.Visibility = Visibility.Visible;
 			ResetRemoteCursorState();
 			EmptyStatePanel.Visibility = Visibility.Visible;
-		ReleasePendingFrame();
+			CleanupGuards.RunStep("pending frame release", ReleasePendingFrame);
 #if HIGH_RESOLUTION_D3D
-		ReleasePendingD3DFrame();
+			CleanupGuards.RunStep("pending D3D frame release", ReleasePendingD3DFrame);
 #endif
-		_streamConfig = null;
-		_decoderStatus = "not started";
-		_decoderOutputFps = 0;
-		_decoderMaxRenderWidth = RealtimeMaxRenderWidth;
+			_streamConfig = null;
+			_decoderStatus = "not started";
+			_decoderOutputFps = 0;
+			_decoderMaxRenderWidth = RealtimeMaxRenderWidth;
 			ResetH264Gate();
 			SetConnectedUi(connected: false, finalStatus, revealPanel);
 			UpdateDiagnostics();
 		}
+		finally
+		{
+			_disconnectGate.Release();
+		}
+	}
 
 #if HIGH_RESOLUTION_D3D
 	private void DisposeHighResolutionD3DPresenter()

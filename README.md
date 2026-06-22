@@ -101,6 +101,7 @@ Private diagnostic capture is opt-in:
 $env:IMIRROR_WRITE_DIAGNOSTICS = "1"
 $env:IMIRROR_DUMP_H264 = "1"
 $env:IMIRROR_DUMP_AUDIO = "1"
+$env:IMIRROR_AUDIO_DISCOVERY = "1"  # verbose data-stream logging only
 ```
 
 Generated logs, H.264 dumps, audio dumps, and diagnostic snapshots can contain private screen content or key material. They are ignored by git and should stay local.

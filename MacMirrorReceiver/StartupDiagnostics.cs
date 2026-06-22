@@ -75,7 +75,18 @@ internal static class StartupDiagnostics
 			}
 			if (!airPlayBound)
 			{
-				missing.Add("AirPlay TCP 7000");
+				missing.Add($"AirPlay TCP {probe.AirPlayListenerPort}");
+			}
+
+			if (!airPlayBound && probe.AirPlayListenerBindError != null)
+			{
+				return new PreflightCheck(
+					"listeners",
+					"Firewall / discovery",
+					PreflightStatus.Blocked,
+					$"Port {probe.AirPlayListenerPort} is unavailable. iMirror is not discoverable.",
+					$"AirPlay TCP {probe.AirPlayListenerPort} could not bind: {probe.AirPlayListenerBindError}. " +
+					"Close other AirPlay receivers, then press Re-check.");
 			}
 
 			return new PreflightCheck(
@@ -94,8 +105,10 @@ internal static class StartupDiagnostics
 				"listeners",
 				"Firewall / discovery",
 				PreflightStatus.Warning,
-				"Legacy audio port unavailable (TCP 5000). Mirroring still works.",
-				null);
+				$"Legacy audio port unavailable (TCP {probe.RaopListenerPort}). Mirroring still works.",
+				probe.RaopListenerBindError != null
+					? $"RAOP TCP {probe.RaopListenerPort} could not bind: {probe.RaopListenerBindError}. Close other receivers, then press Re-check."
+					: null);
 		}
 
 		return new PreflightCheck(
