@@ -2,6 +2,9 @@
 
 Use this page as the product validation checklist before promoting work to `main`.
 
+For the current v0.2 Windows real-device gate, use
+`docs/windows-e2e-validation.md`.
+
 ## Build Gate
 
 ```powershell
