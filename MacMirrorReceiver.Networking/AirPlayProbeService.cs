@@ -88,6 +88,12 @@ public sealed class AirPlayProbeService : IDisposable
 	private TcpListener? _dataListener;
 	private TcpListener? _eventListener;
 	private TcpListener? _timingListener;
+
+	// Expose bind results for startup diagnostics — read after StartAsync().
+	public bool IsMdnsBound => _mdnsClient != null;
+	public bool IsAirPlayListenerBound => _airPlayListener != null;
+	public bool IsRaopListenerBound => _raopListener != null;
+
 	private Task? _receiveTask;
 	private Task? _announceTask;
 	private Task? _airPlayAcceptTask;
