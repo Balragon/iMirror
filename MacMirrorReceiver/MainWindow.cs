@@ -311,6 +311,80 @@ public partial class MainWindow : Window
 		AppLog.Write("MainWindow Loaded entered.");
 		await _browser.StartAsync();
 		await _airPlayProbe.StartAsync();
+		PreflightReport report = await StartupDiagnostics.RunAsync(_airPlayProbe);
+		AppLog.Write($"Preflight: {report.Worst} — " +
+			string.Join("; ", System.Linq.Enumerable.Select(report.Checks, check => $"{check.Id}={check.Status}")));
+		BindReadinessStrip(report);
+	}
+
+	private void BindReadinessStrip(PreflightReport report)
+	{
+		if (report.Worst == PreflightStatus.Ok)
+		{
+			ReadinessStripBorder.Visibility = Visibility.Collapsed;
+			return;
+		}
+
+		ReadinessStripBorder.Visibility = Visibility.Visible;
+
+		bool hasBlocked = report.Worst == PreflightStatus.Blocked;
+		ReadinessStripHeaderText.Text = hasBlocked
+			? "Setup needs attention"
+			: "Minor setup notes";
+		ReadinessStripHeaderText.Foreground = hasBlocked
+			? (Brush)FindResource("DangerBrush")
+			: (Brush)FindResource("WarningBrush");
+
+		foreach (PreflightCheck check in report.Checks)
+		{
+			switch (check.Id)
+			{
+			case "ffmpeg":
+				FfmpegCheckRow.Visibility = check.Status == PreflightStatus.Ok ? Visibility.Collapsed : Visibility.Visible;
+				FfmpegCheckText.Text = check.Message;
+				FfmpegCheckDetail.Text = check.Detail ?? string.Empty;
+				FfmpegCheckDetail.Visibility = check.Detail != null ? Visibility.Visible : Visibility.Collapsed;
+				FfmpegCheckRow.Tag = check.Status;
+				break;
+			case "listeners":
+				ListenersCheckRow.Visibility = check.Status == PreflightStatus.Ok ? Visibility.Collapsed : Visibility.Visible;
+				ListenersCheckText.Text = check.Message;
+				ListenersCheckDetail.Text = check.Detail ?? string.Empty;
+				ListenersCheckDetail.Visibility = check.Detail != null ? Visibility.Visible : Visibility.Collapsed;
+				break;
+			case "network":
+				NetworkCheckRow.Visibility = check.Status == PreflightStatus.Ok ? Visibility.Collapsed : Visibility.Visible;
+				NetworkCheckText.Text = check.Message;
+				NetworkCheckDetail.Text = check.Detail ?? string.Empty;
+				NetworkCheckDetail.Visibility = check.Detail != null ? Visibility.Visible : Visibility.Collapsed;
+				break;
+			}
+		}
+	}
+
+	private async void ReadinessRecheckButton_Click(object sender, RoutedEventArgs e)
+	{
+		ReadinessRecheckButton.IsEnabled = false;
+		ReadinessRecheckButton.Content = "Checking…";
+		PreflightReport report = await StartupDiagnostics.RunAsync(_airPlayProbe);
+		BindReadinessStrip(report);
+		ReadinessRecheckButton.IsEnabled = true;
+		ReadinessRecheckButton.Content = "Re-check";
+	}
+
+	private void FirewallHelpButton_Click(object sender, RoutedEventArgs e)
+	{
+		try
+		{
+			Process.Start(new ProcessStartInfo
+			{
+				FileName = "ms-settings:windowsdefender",
+				UseShellExecute = true
+			});
+		}
+		catch
+		{
+		}
 	}
 
 	private async void Window_Closing(object? sender, CancelEventArgs e)

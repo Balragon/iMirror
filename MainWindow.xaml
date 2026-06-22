@@ -235,6 +235,84 @@
                             </StackPanel>
                         </Border>
 
+                        <!-- Readiness strip — collapsed when all preflight checks pass -->
+                        <Border x:Name="ReadinessStripBorder"
+                                Visibility="Collapsed"
+                                Background="#FFF9F0"
+                                BorderBrush="#FFDDA0"
+                                BorderThickness="1"
+                                CornerRadius="8"
+                                Padding="12"
+                                Margin="0,0,0,16">
+                            <StackPanel>
+                                <Grid Margin="0,0,0,8">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock x:Name="ReadinessStripHeaderText"
+                                               Text="Setup needs attention"
+                                               FontWeight="SemiBold"
+                                               FontSize="13"
+                                               Foreground="{StaticResource DangerBrush}" />
+                                    <Button x:Name="ReadinessRecheckButton"
+                                            Grid.Column="1"
+                                            Content="Re-check"
+                                            Click="ReadinessRecheckButton_Click"
+                                            Style="{StaticResource SecondaryButtonStyle}"
+                                            Padding="8,3"
+                                            FontSize="11" />
+                                </Grid>
+
+                                <StackPanel x:Name="FfmpegCheckRow" Margin="0,0,0,8" Visibility="Collapsed">
+                                    <TextBlock x:Name="FfmpegCheckText"
+                                               TextWrapping="Wrap"
+                                               FontSize="12"
+                                               Foreground="{StaticResource MutedTextBrush}" />
+                                    <TextBlock x:Name="FfmpegCheckDetail"
+                                               TextWrapping="Wrap"
+                                               FontSize="11"
+                                               Foreground="{StaticResource MutedTextBrush}"
+                                               Margin="0,3,0,0"
+                                               Visibility="Collapsed" />
+                                </StackPanel>
+
+                                <StackPanel x:Name="ListenersCheckRow" Margin="0,0,0,8" Visibility="Collapsed">
+                                    <TextBlock x:Name="ListenersCheckText"
+                                               TextWrapping="Wrap"
+                                               FontSize="12"
+                                               Foreground="{StaticResource MutedTextBrush}" />
+                                    <TextBlock x:Name="ListenersCheckDetail"
+                                               TextWrapping="Wrap"
+                                               FontSize="11"
+                                               Foreground="{StaticResource MutedTextBrush}"
+                                               Margin="0,3,0,0"
+                                               Visibility="Collapsed" />
+                                    <Button x:Name="FirewallHelpButton"
+                                            Content="Open Windows Firewall settings"
+                                            Click="FirewallHelpButton_Click"
+                                            Style="{StaticResource SecondaryButtonStyle}"
+                                            HorizontalAlignment="Left"
+                                            Margin="0,6,0,0"
+                                            Padding="8,3"
+                                            FontSize="11" />
+                                </StackPanel>
+
+                                <StackPanel x:Name="NetworkCheckRow" Visibility="Collapsed">
+                                    <TextBlock x:Name="NetworkCheckText"
+                                               TextWrapping="Wrap"
+                                               FontSize="12"
+                                               Foreground="{StaticResource MutedTextBrush}" />
+                                    <TextBlock x:Name="NetworkCheckDetail"
+                                               TextWrapping="Wrap"
+                                               FontSize="11"
+                                               Foreground="{StaticResource MutedTextBrush}"
+                                               Margin="0,3,0,0"
+                                               Visibility="Collapsed" />
+                                </StackPanel>
+                            </StackPanel>
+                        </Border>
+
                         <Border Background="#F6F6F8"
                                 BorderBrush="#E5E5EA"
                                 BorderThickness="1"
