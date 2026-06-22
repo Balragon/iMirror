@@ -51,7 +51,7 @@ internal static class ReceiverSettings
 	public const int MaxReceiverNameLength = 32;
 
 	public const string VideoEngineEnvironmentVariableName = RenderModeSettings.ForceSoftwareVideoEnvironmentVariableName;
-	public const string AudioEnabledEnvironmentVariableName = "IMIRROR_AUDIO_DISCOVERY";
+	public const string AudioEnabledEnvironmentVariableName = "IMIRROR_AUDIO_ENABLED";
 	public const string AudioSyncOffsetEnvironmentVariableName = "IMIRROR_AUDIO_SYNC_OFFSET_MS";
 	public const string WriteDiagnosticsEnvironmentVariableName = "IMIRROR_WRITE_DIAGNOSTICS";
 	public const string DumpH264EnvironmentVariableName = "IMIRROR_DUMP_H264";

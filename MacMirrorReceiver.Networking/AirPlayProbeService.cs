@@ -50,6 +50,7 @@ public sealed class AirPlayProbeService : IDisposable
 
 	// Optional verbose discovery diagnostics. Set IMIRROR_AUDIO_DISCOVERY=1 to log non-video data-stream
 	// packets and full SETUP plists while investigating sender behavior.
+	// Diagnostic-only: verbose AirPlay audio/data-stream logging, never audio behavior.
 	private static readonly bool AudioDiscoveryLogging = string.Equals(
 		Environment.GetEnvironmentVariable("IMIRROR_AUDIO_DISCOVERY"), "1", StringComparison.OrdinalIgnoreCase);
 
@@ -86,6 +87,8 @@ public sealed class AirPlayProbeService : IDisposable
 	private bool _mdnsBound;
 	private TcpListener? _airPlayListener;
 	private TcpListener? _raopListener;
+	private string? _airPlayListenerBindError;
+	private string? _raopListenerBindError;
 	private TcpListener? _dataListener;
 	private TcpListener? _eventListener;
 	private TcpListener? _timingListener;
@@ -97,6 +100,10 @@ public sealed class AirPlayProbeService : IDisposable
 	public bool IsMdnsBound => _mdnsBound;
 	public bool IsAirPlayListenerBound => _airPlayListener != null;
 	public bool IsRaopListenerBound => _raopListener != null;
+	public int AirPlayListenerPort => AirPlayPort;
+	public int RaopListenerPort => RaopPort;
+	public string? AirPlayListenerBindError => _airPlayListenerBindError;
+	public string? RaopListenerBindError => _raopListenerBindError;
 
 	private Task? _receiveTask;
 	private Task? _announceTask;
@@ -145,6 +152,10 @@ public sealed class AirPlayProbeService : IDisposable
 		_audioReceiver.StreamStarted += info => AudioStreamStarted?.Invoke(info.SampleRate, info.Channels, info.SamplesPerFrame);
 		_audioReceiver.AudioFrameReceived += (frame, timestamp, sequence) => AudioFrameReceived?.Invoke(frame, timestamp, sequence);
 		_setup = new AirPlaySetupContext(_timingClient, _audioReceiver, TryGetAudioCrypto, _dumpAudio);
+		if (AudioDiscoveryLogging)
+		{
+			AppLog.Write("IMIRROR_AUDIO_DISCOVERY enabled: verbose data-stream logging only.");
+		}
 	}
 
 	// Provides the FairPlay-unwrapped session AES key + eiv to the audio receiver. The audio
@@ -181,6 +192,8 @@ public sealed class AirPlayProbeService : IDisposable
 	public event Action<string>? StatusChanged;
 
 	public event Action? MirrorSessionStarted;
+
+	public event Action? MirrorSessionEnded;
 
 	public event Action<StreamConfig>? StreamConfigReceived;
 
@@ -238,13 +251,28 @@ public sealed class AirPlayProbeService : IDisposable
 		{
 			var listener = new TcpListener(IPAddress.Any, port);
 			listener.Start();
+			SetListenerBindError(port, null);
 			AppLog.Write($"{label} receiver listener started on port {port}.");
 			return listener;
 		}
 		catch (Exception ex)
 		{
+			SetListenerBindError(port, ex.Message);
 			AppLog.Write($"{label} receiver listener unavailable on port {port}: {ex.Message}");
 			return null;
+		}
+	}
+
+	private void SetListenerBindError(int port, string? error)
+	{
+		switch (port)
+		{
+		case AirPlayPort:
+			_airPlayListenerBindError = error;
+			break;
+		case RaopPort:
+			_raopListenerBindError = error;
+			break;
 		}
 	}
 
@@ -304,8 +332,13 @@ public sealed class AirPlayProbeService : IDisposable
 					if (request == null)
 					{
 						AppLog.Write($"{label} control connection closed by peer ({client.Client.RemoteEndPoint}) after {servedRequests} request(s).");
+						if (IsMirrorControlLabel(label))
+						{
+							EndMirrorSessionIfAnnounced($"{label} control connection closed by peer");
+						}
 						break;
 					}
+
 					servedRequests++;
 					AppLog.Write($"{label} request from {client.Client.RemoteEndPoint}: {request.FirstLine}");
 					SetStatus($"{label}: {request.Method} {request.Target}");
@@ -316,6 +349,10 @@ public sealed class AirPlayProbeService : IDisposable
 						connection.Contains("close", StringComparison.OrdinalIgnoreCase))
 					{
 						AppLog.Write($"{label} control connection closed on request (Connection: close) after {servedRequests} request(s).");
+						if (IsMirrorControlLabel(label))
+						{
+							EndMirrorSessionIfAnnounced($"{label} control connection close requested");
+						}
 						break;
 					}
 				}
@@ -323,8 +360,17 @@ public sealed class AirPlayProbeService : IDisposable
 			catch (Exception ex) when (ex is IOException or SocketException or OperationCanceledException or ObjectDisposedException)
 			{
 				AppLog.Write($"{label} receiver client closed: {ex.Message}");
+				if (IsMirrorControlLabel(label))
+				{
+					EndMirrorSessionIfAnnounced($"{label} receiver client closed");
+				}
 			}
 		}
+	}
+
+	private static bool IsMirrorControlLabel(string label)
+	{
+		return string.Equals(label, "AirPlay", StringComparison.OrdinalIgnoreCase);
 	}
 
 	private async Task HandleDataClientAsync(TcpClient client)
@@ -1489,6 +1535,49 @@ public sealed class AirPlayProbeService : IDisposable
 		}
 	}
 
+	private void EndMirrorSessionIfAnnounced(string reason)
+	{
+		if (!ResetMirrorSessionState())
+		{
+			return;
+		}
+
+		AppLog.Write("AirPlay mirror session ended: " + reason + ".");
+		MirrorSessionEnded?.Invoke();
+	}
+
+	private bool ResetMirrorSessionState()
+	{
+		bool hadAnnouncedSession;
+		lock (_mirrorKeyGate)
+		{
+			hadAnnouncedSession =
+				_announcedMirrorRtspTargetSessionId != null ||
+				_announcedMirrorStreamConnectionId != null ||
+				_announcedIdentitylessMirrorSession;
+			if (!hadAnnouncedSession)
+			{
+				return false;
+			}
+
+			_rtspTargetSessionId = null;
+			_announcedMirrorRtspTargetSessionId = null;
+			_announcedMirrorStreamConnectionId = null;
+			_announcedIdentitylessMirrorSession = false;
+		}
+
+		try
+		{
+			_audioReceiver.Stop();
+		}
+		catch (Exception ex)
+		{
+			AppLog.Write("AirPlay audio receiver stop failed during session reset: " + ex);
+		}
+
+		return true;
+	}
+
 	private void TryInitializeMirrorDecryptor()
 	{
 		byte[]? encryptedKey;
@@ -1764,7 +1853,12 @@ public sealed class AirPlayProbeService : IDisposable
 					: new Dictionary<string, string>();
 				return BuildRtspResponse(request, 200, "OK", Array.Empty<byte>(), "text/plain", recordHeaders);
 			}
-			if (method is "FLUSH" or "TEARDOWN" or "SET_PARAMETER" || target.Contains("feedback", StringComparison.OrdinalIgnoreCase))
+			if (method == "TEARDOWN")
+			{
+				EndMirrorSessionIfAnnounced("TEARDOWN");
+				return BuildRtspResponse(request, 200, "OK", Array.Empty<byte>(), "text/plain");
+			}
+			if (method is "FLUSH" or "SET_PARAMETER" || target.Contains("feedback", StringComparison.OrdinalIgnoreCase))
 			{
 				return BuildRtspResponse(request, 200, "OK", Array.Empty<byte>(), "text/plain");
 			}
