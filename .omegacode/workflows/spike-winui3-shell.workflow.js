@@ -58,12 +58,13 @@ Return JSON.`,
 
 log(`Branch: ${pre.currentBranch} | cut from main: ${pre.cutFromMain} | dirty: ${pre.dirty}`)
 if (pre.currentBranch !== 'spike/winui3-shell') {
-  log(`WARNING: expected 'spike/winui3-shell' but on '${pre.currentBranch}'. ` +
-      `Run: git checkout main && git checkout -b spike/winui3-shell  — then re-run.`)
+  throw new Error(`Run this workflow only on spike/winui3-shell; current branch is ${pre.currentBranch}.`)
+}
+if (pre.dirty) {
+  throw new Error('Working tree must be clean before running spike-winui3-shell.')
 }
 if (!pre.cutFromMain) {
-  log('WARNING: this branch does not appear to descend from main. The spike must NOT be cut ' +
-      'from ui/wpf-fluent-refresh. Recreate it from main.')
+  throw new Error('The spike branch must be cut from main.')
 }
 
 // ── Phase 2: Scout ───────────────────────────────────────────────────────────

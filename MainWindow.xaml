@@ -37,8 +37,8 @@
             </Style>
 
             <Style x:Key="DangerButtonStyle" TargetType="Button" BasedOn="{StaticResource BaseButtonStyle}">
-                <Setter Property="Background" Value="#FFF4F3" />
-                <Setter Property="BorderBrush" Value="#FFD0CC" />
+                <Setter Property="Background" Value="#3A1717" />
+                <Setter Property="BorderBrush" Value="#7A3030" />
                 <Setter Property="Foreground" Value="{StaticResource DangerBrush}" />
             </Style>
         </ResourceDictionary>
@@ -50,7 +50,8 @@
             <RowDefinition Height="*" />
         </Grid.RowDefinitions>
 
-        <ui:TitleBar Title="iMirror"
+        <ui:TitleBar x:Name="MainTitleBar"
+                     Title="iMirror"
                      Grid.Row="0" />
 
         <Grid Grid.Row="1"
@@ -162,15 +163,18 @@
                                    Margin="8,0,0,0"
                                    VerticalAlignment="Center" />
                     </StackPanel>
-                    <TextBlock x:Name="RecheckDiagLink"
-                               Text="Re-check"
+                    <ui:Button x:Name="RecheckDiagLink"
+                               Content="Re-check"
+                               Appearance="Transparent"
                                Foreground="{StaticResource AccentBrush}"
                                FontSize="13"
                                FontWeight="SemiBold"
-                               Cursor="Hand"
+                               Padding="8,0"
+                               MinHeight="30"
                                HorizontalAlignment="Center"
-                               Margin="0,8,0,0"
-                               MouseLeftButtonUp="RecheckDiagLink_Click" />
+                               Margin="0,6,0,0"
+                               AutomationProperties.Name="Re-check readiness"
+                               Click="RecheckDiagLink_Click" />
                     <TextBlock x:Name="EmptyStateDetailTextBlock"
                                Text="Open Control Center, tap Screen Mirroring, then choose iMirror."
                                AutomationProperties.LiveSetting="Polite"
