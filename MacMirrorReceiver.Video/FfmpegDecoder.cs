@@ -744,12 +744,35 @@ public sealed class FfmpegDecoder : IDisposable
 	{
 		try
 		{
-			await Task.Delay(FirstFrameTimeout, _cts.Token);
-			if (_cts.IsCancellationRequested || Interlocked.Read(ref _decodedOutputFrames) > 0)
+			bool loggedNoKeyframe = false;
+			while (true)
 			{
+				await Task.Delay(FirstFrameTimeout, _cts.Token);
+				if (_cts.IsCancellationRequested || Interlocked.Read(ref _decodedOutputFrames) > 0)
+				{
+					return;
+				}
+				// A first-frame timeout with zero bytes written to FFmpeg means the upstream Annex B
+				// gate has not forwarded a keyframe yet, so the decoder has been fed nothing. AirPlay
+				// mirror streams emit a single IDR at session start (no periodic keyframes, and there
+				// is no receiver-side keyframe request), so a missed keyframe never self-heals. Tearing
+				// the process down and cascading through the hwaccel candidates cannot help here -- every
+				// fresh process would also sit idle -- and it only resets the gate and emits misleading
+				// "Output file does not contain any stream" errors. Keep waiting and report the real
+				// cause instead of churning decoders.
+				if (Interlocked.Read(ref _writtenInputPackets) == 0)
+				{
+					if (!loggedNoKeyframe)
+					{
+						loggedNoKeyframe = true;
+						this.StatusChanged?.Invoke($"No decoded frame within {FirstFrameTimeout.TotalSeconds:N0}s and no input written: upstream has not forwarded a keyframe; awaiting keyframe (no decoder fallback).");
+					}
+					continue;
+				}
+				// Input was fed but produced no decoded frame: a genuine decoder problem worth a fallback.
+				TryFallbackDecoder(process, $"no decoded frame within {FirstFrameTimeout.TotalSeconds:N0}s");
 				return;
 			}
-			TryFallbackDecoder(process, $"no decoded frame within {FirstFrameTimeout.TotalSeconds:N0}s");
 		}
 		catch (OperationCanceledException)
 		{
