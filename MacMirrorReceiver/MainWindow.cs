@@ -1207,6 +1207,13 @@ public partial class MainWindow : Window
 
 	private void Window_KeyDown(object sender, KeyEventArgs e)
 	{
+		if (e.Key == Key.Escape && SettingsOverlay.Visibility == Visibility.Visible)
+		{
+			e.Handled = true;
+			CloseSettingsPanel();
+			return;
+		}
+
 		if (e.Key == Key.Escape && _isFullscreen)
 		{
 			e.Handled = true;
@@ -1580,13 +1587,19 @@ public partial class MainWindow : Window
 
 	private void SettingsButton_Click(object sender, RoutedEventArgs e)
 	{
+		SetSidebarCollapsed(collapsed: false);
 		SettingsOverlay.Visibility = Visibility.Visible;
 	}
 
 	private void SettingsCloseButton_Click(object sender, RoutedEventArgs e)
 	{
+		CloseSettingsPanel();
+	}
+
+	private void CloseSettingsPanel()
+	{
 		// Audio sync offset applies live and is not part of the restart banner, so
-		// persist it when the overlay closes to avoid writing the file on every tick.
+		// persist it when Settings closes to avoid writing the file on every tick.
 		PersistLiveAudioSyncOffset();
 		SettingsOverlay.Visibility = Visibility.Collapsed;
 	}
