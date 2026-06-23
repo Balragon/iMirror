@@ -54,10 +54,11 @@ jobs:
       - name: Download Gyan FFmpeg Essentials
         shell: pwsh
         run: |
-          # Pin to a specific Gyan.FFmpeg.Essentials release for reproducible packages.
-          # Update this URL and the SHA256 below when upgrading FFmpeg.
-          $ffmpegUrl = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
-          $expectedSha256 = ""  # TODO: fill in after pinning to a specific release (see docs/specs/v02-phase4-ci.md)
+          # Pinned to a specific Gyan.FFmpeg.Essentials release for reproducible packages.
+          # Source: https://github.com/GyanD/codexffmpeg/releases (permanent versioned assets).
+          # To upgrade: bump the URL version and replace $expectedSha256 with the new zip hash.
+          $ffmpegUrl = "https://github.com/GyanD/codexffmpeg/releases/download/8.1.1/ffmpeg-8.1.1-essentials_build.zip"
+          $expectedSha256 = "6F58CE889F59C311410F7D2B18895B33C03456463486F3B1EBC93D97A0F54541"
 
           $zipPath = "$env:RUNNER_TEMP\ffmpeg-essentials.zip"
           $extractPath = "$env:RUNNER_TEMP\ffmpeg-essentials"

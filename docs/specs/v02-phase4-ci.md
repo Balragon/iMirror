@@ -19,12 +19,23 @@ The following were completed directly before this handoff:
 
 ## Tasks for Codex
 
-### Task 1 — `unify-ffmpeg-resolution`: pin FFmpeg with a checksum (M)
+### Task 1 — `unify-ffmpeg-resolution`: pin FFmpeg with a checksum (M) — DONE
+
+**Completed directly.** `.github/workflows/release.yml` is now pinned to:
+- URL: `https://github.com/GyanD/codexffmpeg/releases/download/8.1.1/ffmpeg-8.1.1-essentials_build.zip`
+  (GitHub permanent versioned asset, not the floating `ffmpeg-release-essentials.zip`)
+- SHA-256: `6F58CE889F59C311410F7D2B18895B33C03456463486F3B1EBC93D97A0F54541`
+
+Verified: the zip contains `ffmpeg-8.1.1-essentials_build/bin/ffmpeg.exe`
+(essentials flavor), and the workflow's recursive `ffmpeg.exe` search resolves it.
+To upgrade FFmpeg later, bump the URL version and replace the hash.
+
+The original task description (kept for reference):
 
 **File:** `.github/workflows/release.yml`, section "Download Gyan FFmpeg Essentials"
 
 The `$expectedSha256 = ""` placeholder must be filled with a real pinned
-release. The current URL (`ffmpeg-release-essentials.zip`) always points to
+release. The floating URL (`ffmpeg-release-essentials.zip`) always points to
 the latest Gyan build, which is **not reproducible** — a silent upstream change
 could bundle different binaries.
 
