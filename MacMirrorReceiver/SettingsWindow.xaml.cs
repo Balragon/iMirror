@@ -334,7 +334,7 @@ public partial class SettingsWindow : Window
 		}
 
 		int offset = _host.LiveAudioSyncOffsetMilliseconds;
-		if (offset == _host.StartupReceiverSettings.Persisted.AudioSyncOffsetMs)
+		if (offset == ReceiverSettings.Load().Persisted.AudioSyncOffsetMs)
 		{
 			return;
 		}
