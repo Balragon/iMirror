@@ -210,16 +210,37 @@
                               VerticalScrollBarVisibility="Auto"
                               HorizontalScrollBarVisibility="Disabled">
                     <StackPanel>
-                        <Border Background="#EEF7FF"
-                                BorderBrush="#D6E9FF"
+                        <Border x:Name="ReceiverCardBorder"
+                                Background="#FFFFFF"
+                                BorderBrush="#E5E5EA"
                                 BorderThickness="1"
                                 CornerRadius="8"
                                 Padding="12"
                                 Margin="0,0,0,16">
                             <StackPanel>
-                                <TextBlock Text="Ready to receive"
-                                           FontWeight="SemiBold"
-                                           FontSize="15" />
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock x:Name="ReceiverCardTitleTextBlock"
+                                               Text="Ready to receive"
+                                               FontWeight="SemiBold"
+                                               FontSize="15"
+                                               VerticalAlignment="Center" />
+                                    <Border x:Name="ReceiverStateBadge"
+                                            Grid.Column="1"
+                                            Background="{StaticResource AccentBrush}"
+                                            CornerRadius="8"
+                                            Padding="8,3"
+                                            VerticalAlignment="Center">
+                                        <TextBlock x:Name="ReceiverStateBadgeTextBlock"
+                                                   Text="READY"
+                                                   Foreground="#FFFFFF"
+                                                   FontSize="10"
+                                                   FontWeight="SemiBold" />
+                                    </Border>
+                                </Grid>
                                 <TextBlock x:Name="ReceiverStatusTextBlock"
                                            Text="Waiting for iPhone or iPad..."
                                            Foreground="{StaticResource MutedTextBrush}"
@@ -313,7 +334,8 @@
                             </StackPanel>
                         </Border>
 
-                        <Border Background="#F6F6F8"
+                        <Border x:Name="HowToMirrorCard"
+                                Background="#F6F6F8"
                                 BorderBrush="#E5E5EA"
                                 BorderThickness="1"
                                 CornerRadius="8"
@@ -474,12 +496,14 @@
                             </Border>
                         </Expander>
 
-                        <TextBlock Text="Status" Style="{StaticResource LabelTextStyle}" Margin="0,18,0,7" />
-                        <TextBlock x:Name="StatusTextBlock"
-                                   Text="Waiting for iPhone or iPad..."
-                                   TextWrapping="Wrap"
-                                   Foreground="{StaticResource TextBrush}"
-                                   LineHeight="20" />
+                        <StackPanel x:Name="StatusSummaryPanel" Margin="0,18,0,0">
+                            <TextBlock Text="Status" Style="{StaticResource LabelTextStyle}" />
+                            <TextBlock x:Name="StatusTextBlock"
+                                       Text="Waiting for iPhone or iPad..."
+                                       TextWrapping="Wrap"
+                                       Foreground="{StaticResource TextBrush}"
+                                       LineHeight="20" />
+                        </StackPanel>
 
                         <Expander Header="Diagnostics"
                                   IsExpanded="False"
