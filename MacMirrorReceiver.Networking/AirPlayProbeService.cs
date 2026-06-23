@@ -1855,7 +1855,8 @@ public sealed class AirPlayProbeService : IDisposable
 			}
 			if (method == "TEARDOWN")
 			{
-				EndMirrorSessionIfAnnounced("TEARDOWN");
+				// Some senders keep posting feedback after RTSP TEARDOWN on the shared RAOP
+				// control session. Acknowledge it without tearing down the active mirror path.
 				return BuildRtspResponse(request, 200, "OK", Array.Empty<byte>(), "text/plain");
 			}
 			if (method is "FLUSH" or "SET_PARAMETER" || target.Contains("feedback", StringComparison.OrdinalIgnoreCase))
