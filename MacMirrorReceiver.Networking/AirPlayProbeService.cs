@@ -121,6 +121,13 @@ public sealed class AirPlayProbeService : IDisposable
 	private ulong? _decryptorStreamConnectionId;
 	private ulong? _announcedMirrorRtspTargetSessionId;
 	private ulong? _announcedMirrorStreamConnectionId;
+
+	// Last-connected-sender arbitration: the receiver has a single mirror decode pipeline, so two
+	// senders streaming at once interleave and starve the gate (decrypt keyed to one stream, one
+	// gate, one decoder). Track the active data connection and a monotonically increasing
+	// generation; a newer data connection supersedes older ones so only the latest sender feeds it.
+	private int _activeDataGeneration;
+	private TcpClient? _activeDataClient;
 	private bool _announcedIdentitylessMirrorSession;
 	private AirPlayMirrorDecryptor? _mirrorDecryptor;
 	private List<AirPlayMirrorDecryptor>? _mirrorDecryptorProbePool;
@@ -131,6 +138,14 @@ public sealed class AirPlayProbeService : IDisposable
 
 	private readonly Dictionary<int, long> _audioDiscoveryPacketCounts = new Dictionary<int, long>();
 	private bool _loggedDecryptorInUse;
+	// Instrumentation for the decryptor warm-up keyframe-loss race. A mirror stream sends a single IDR
+	// at session start, so if it arrives while the FairPlay stream decryptor is still being selected it
+	// cannot be decrypted and is dropped, and the decoder then never receives a keyframe. These track,
+	// per warm-up, how many video packets were dropped before the first decodable frame and whether that
+	// first surviving frame was actually a keyframe.
+	private bool _loggedFirstDecodableVideoFrame;
+	private long _droppedVideoBeforeFirstFrame;
+	private long _firstEncryptedWaitTick;
 	private bool _mirrorDiagnosticWritten;
 	private long _lastVideoDataStatusTick;
 
@@ -383,6 +398,23 @@ public sealed class AirPlayProbeService : IDisposable
 		SetStatus("AirPlay data stream connected.");
 		EndPoint? remote = client.Client.RemoteEndPoint;
 		AppLog.Write("AirPlay data stream connected from " + remote);
+
+		// Supersede any previous sender's data connection so only the newest one feeds the pipeline.
+		// The pipeline itself is reset for the new session by the SETUP path (MirrorSessionStarted).
+		int myDataGeneration;
+		TcpClient? superseded;
+		lock (_mirrorKeyGate)
+		{
+			myDataGeneration = ++_activeDataGeneration;
+			superseded = _activeDataClient;
+			_activeDataClient = client;
+		}
+		if (superseded != null && !ReferenceEquals(superseded, client))
+		{
+			AppLog.Write("AirPlay: newer sender connected; closing the previous data connection.");
+			try { superseded.Close(); } catch { }
+		}
+
 		using NetworkStream stream = client.GetStream();
 		byte[] buffer = new byte[64 * 1024];
 		List<byte> pending = new List<byte>();
@@ -392,6 +424,12 @@ public sealed class AirPlayProbeService : IDisposable
 
 		while (!_cts.IsCancellationRequested)
 		{
+			if (Volatile.Read(ref _activeDataGeneration) != myDataGeneration)
+			{
+				AppLog.Write($"AirPlay data stream from {remote} superseded by a newer sender; stopping.");
+				break;
+			}
+
 			int count = await stream.ReadAsync(buffer, _cts.Token);
 			if (count <= 0)
 			{
@@ -422,6 +460,14 @@ public sealed class AirPlayProbeService : IDisposable
 			if (pending.Count > 1024 * 1024)
 			{
 				pending.RemoveRange(0, pending.Count - 128 * 1024);
+			}
+		}
+
+		lock (_mirrorKeyGate)
+		{
+			if (ReferenceEquals(_activeDataClient, client))
+			{
+				_activeDataClient = null;
 			}
 		}
 	}
@@ -471,6 +517,11 @@ public sealed class AirPlayProbeService : IDisposable
 				else if (!_loggedWaitingForMirrorDecryptor)
 				{
 					_loggedWaitingForMirrorDecryptor = true;
+					// Start of a decryptor warm-up window: reset the keyframe-loss instrumentation so it
+					// reports once per session (this branch re-fires after each session resets the flag).
+					_firstEncryptedWaitTick = Stopwatch.GetTimestamp();
+					_loggedFirstDecodableVideoFrame = false;
+					_droppedVideoBeforeFirstFrame = 0;
 					AppLog.Write("AirPlay mirror video payload is encrypted; waiting for FairPlay stream decryptor.");
 				}
 
@@ -494,9 +545,18 @@ public sealed class AirPlayProbeService : IDisposable
 							AppLog.Write($"AirPlay mirror video type={payloadType} decrypted with candidate '{selectedName}' ({selectedFormat}).");
 						emitted++;
 					}
-					else if (ShouldLogDecryptPayloadFailure(payloadType))
+					else
 					{
-						AppLog.Write($"AirPlay mirror video type={payloadType} payload could not be converted after decrypt attempt: size={payloadSize}, probe={DescribeH264Probe(videoPayload)}.");
+						// This type=0 video packet could not be decrypted/normalized and is dropped. Count
+						// drops before the first decodable frame to quantify keyframe loss during warm-up.
+						if (!_loggedFirstDecodableVideoFrame)
+						{
+							_droppedVideoBeforeFirstFrame++;
+						}
+						if (ShouldLogDecryptPayloadFailure(payloadType))
+						{
+							AppLog.Write($"AirPlay mirror video type={payloadType} payload could not be converted after decrypt attempt: size={payloadSize}, probe={DescribeH264Probe(videoPayload)}.");
+						}
 					}
 				continue;
 			}
@@ -1094,6 +1154,20 @@ public sealed class AirPlayProbeService : IDisposable
 					break;
 			}
 			offset = nalOffset + 1;
+		}
+
+		if (!_loggedFirstDecodableVideoFrame)
+		{
+			_loggedFirstDecodableVideoFrame = true;
+			long warmupMs = _firstEncryptedWaitTick == 0
+				? 0L
+				: (long)((Stopwatch.GetTimestamp() - _firstEncryptedWaitTick) * 1000.0 / Stopwatch.Frequency);
+			AppLog.Write(
+				$"AirPlay mirror first decodable video frame: keyframe(IDR)={hasIdr}, " +
+				$"droppedBeforeFirst={_droppedVideoBeforeFirstFrame}, decryptorWarmup={warmupMs}ms." +
+				(hasIdr
+					? string.Empty
+					: " WARNING: first surviving frame is not a keyframe; the single initial IDR was lost during decryptor warm-up and AirPlay mirror streams send no further keyframes, so the decoder stays starved."));
 		}
 
 		string? summary = null;
