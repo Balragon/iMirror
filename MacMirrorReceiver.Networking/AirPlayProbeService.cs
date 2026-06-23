@@ -131,6 +131,14 @@ public sealed class AirPlayProbeService : IDisposable
 
 	private readonly Dictionary<int, long> _audioDiscoveryPacketCounts = new Dictionary<int, long>();
 	private bool _loggedDecryptorInUse;
+	// Instrumentation for the decryptor warm-up keyframe-loss race. A mirror stream sends a single IDR
+	// at session start, so if it arrives while the FairPlay stream decryptor is still being selected it
+	// cannot be decrypted and is dropped, and the decoder then never receives a keyframe. These track,
+	// per warm-up, how many video packets were dropped before the first decodable frame and whether that
+	// first surviving frame was actually a keyframe.
+	private bool _loggedFirstDecodableVideoFrame;
+	private long _droppedVideoBeforeFirstFrame;
+	private long _firstEncryptedWaitTick;
 	private bool _mirrorDiagnosticWritten;
 	private long _lastVideoDataStatusTick;
 
@@ -471,6 +479,11 @@ public sealed class AirPlayProbeService : IDisposable
 				else if (!_loggedWaitingForMirrorDecryptor)
 				{
 					_loggedWaitingForMirrorDecryptor = true;
+					// Start of a decryptor warm-up window: reset the keyframe-loss instrumentation so it
+					// reports once per session (this branch re-fires after each session resets the flag).
+					_firstEncryptedWaitTick = Stopwatch.GetTimestamp();
+					_loggedFirstDecodableVideoFrame = false;
+					_droppedVideoBeforeFirstFrame = 0;
 					AppLog.Write("AirPlay mirror video payload is encrypted; waiting for FairPlay stream decryptor.");
 				}
 
@@ -494,9 +507,18 @@ public sealed class AirPlayProbeService : IDisposable
 							AppLog.Write($"AirPlay mirror video type={payloadType} decrypted with candidate '{selectedName}' ({selectedFormat}).");
 						emitted++;
 					}
-					else if (ShouldLogDecryptPayloadFailure(payloadType))
+					else
 					{
-						AppLog.Write($"AirPlay mirror video type={payloadType} payload could not be converted after decrypt attempt: size={payloadSize}, probe={DescribeH264Probe(videoPayload)}.");
+						// This type=0 video packet could not be decrypted/normalized and is dropped. Count
+						// drops before the first decodable frame to quantify keyframe loss during warm-up.
+						if (!_loggedFirstDecodableVideoFrame)
+						{
+							_droppedVideoBeforeFirstFrame++;
+						}
+						if (ShouldLogDecryptPayloadFailure(payloadType))
+						{
+							AppLog.Write($"AirPlay mirror video type={payloadType} payload could not be converted after decrypt attempt: size={payloadSize}, probe={DescribeH264Probe(videoPayload)}.");
+						}
 					}
 				continue;
 			}
@@ -1094,6 +1116,20 @@ public sealed class AirPlayProbeService : IDisposable
 					break;
 			}
 			offset = nalOffset + 1;
+		}
+
+		if (!_loggedFirstDecodableVideoFrame)
+		{
+			_loggedFirstDecodableVideoFrame = true;
+			long warmupMs = _firstEncryptedWaitTick == 0
+				? 0L
+				: (long)((Stopwatch.GetTimestamp() - _firstEncryptedWaitTick) * 1000.0 / Stopwatch.Frequency);
+			AppLog.Write(
+				$"AirPlay mirror first decodable video frame: keyframe(IDR)={hasIdr}, " +
+				$"droppedBeforeFirst={_droppedVideoBeforeFirstFrame}, decryptorWarmup={warmupMs}ms." +
+				(hasIdr
+					? string.Empty
+					: " WARNING: first surviving frame is not a keyframe; the single initial IDR was lost during decryptor warm-up and AirPlay mirror streams send no further keyframes, so the decoder stays starved."));
 		}
 
 		string? summary = null;
