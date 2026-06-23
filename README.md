@@ -14,6 +14,10 @@ The product path is now centered on native GPU video: AirPlay control and media 
 
 ## Repository Layout
 
+The solution contains one SDK-style application project, `MacMirrorReceiver.csproj`,
+which compiles the `MacMirrorReceiver*` source folders into the `iMirror` assembly.
+The only other project is `MacMirrorReceiver.Tests`.
+
 - `MacMirrorReceiver/` - WPF application shell, app logging, settings, and main session orchestration.
 - `MacMirrorReceiver.Networking/` - AirPlay RTSP/RAOP, mDNS, pairing, FairPlay, mirror data, timing, and audio RTP receive paths.
 - `MacMirrorReceiver.Video/` - H.264 stream gate, FFmpeg fallback decoder, Media Foundation/D3D11 decoder, GPU presenters, and latency windows.
