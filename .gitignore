@@ -19,3 +19,5 @@ artifacts/
 Diagnostics/
 tools/ffmpeg/
 tools/mpv/
+experiments/winui3-shell/.dotnet/
+experiments/winui3-shell/.templateengine/
