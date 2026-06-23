@@ -3,134 +3,125 @@ name: Release
 on:
   push:
     tags:
-      - 'v[0-9]+.[0-9]+.[0-9]+'
+      - 'v*.*.*'
 
 jobs:
   release:
-    name: Package and publish release
+    name: Build and package
     runs-on: windows-latest
+
     permissions:
       contents: write
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Setup .NET
+      - name: Setup .NET 8
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '8.0.x'
 
-      - name: Restore
-        run: dotnet restore iMirror.sln
-
-      - name: Build
-        run: dotnet build iMirror.sln -c Release --no-restore
-
       - name: Test
-        run: dotnet test iMirror.sln -c Release --no-build
+        run: dotnet test MacMirrorReceiver.Tests/MacMirrorReceiver.Tests.csproj -c Release
 
-      - name: Extract version from tag
-        id: version
+      - name: Publish Windows x64 package
+        shell: pwsh
+        run: |
+          $version = "${{ github.ref_name }}".TrimStart("v")
+
+          $pathWithoutFfmpeg = foreach ($entry in ($env:PATH -split ";")) {
+            if ([string]::IsNullOrWhiteSpace($entry)) {
+              continue
+            }
+
+            try {
+              if (-not (Test-Path -LiteralPath (Join-Path $entry "ffmpeg.exe") -PathType Leaf)) {
+                $entry
+              }
+            }
+            catch {
+              $entry
+            }
+          }
+          $env:PATH = ($pathWithoutFfmpeg -join ";")
+
+          .\scripts\publish-win-x64.ps1 -Version $version -AllowMissingFfmpeg
+
+      - name: Verify package zip
+        shell: pwsh
+        run: |
+          $zips = @(Get-ChildItem -LiteralPath artifacts -Filter "*.zip" -File)
+          if ($zips.Count -ne 1) {
+            throw "Expected exactly one zip in artifacts, found $($zips.Count)."
+          }
+
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $zip = [IO.Compression.ZipFile]::OpenRead($zips[0].FullName)
+          try {
+            $bundledFfmpeg = $zip.Entries | Where-Object {
+              $_.FullName -replace "\\", "/" -match "(^|/)tools/ffmpeg/bin/ffmpeg\.exe$"
+            }
+            if ($bundledFfmpeg) {
+              throw "FFmpeg must not be bundled in release packages."
+            }
+          }
+          finally {
+            $zip.Dispose()
+          }
+
+      - name: Upload package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: iMirror-windows-x64
+          path: artifacts/*.zip
+          if-no-files-found: error
+
+      - name: Prepare release body
         shell: pwsh
         run: |
           $tag = "${{ github.ref_name }}"
-          $version = $tag.TrimStart('v')
-          echo "version=$version" >> $env:GITHUB_OUTPUT
-          echo "tag=$tag" >> $env:GITHUB_OUTPUT
+          $version = $tag.TrimStart("v")
+          $bodyPath = "release-body.md"
+          $body = ""
 
-      - name: Stamp InformationalVersion
-        shell: pwsh
-        run: |
-          $sha = (git rev-parse --short HEAD).Trim()
-          $version = "${{ steps.version.outputs.version }}"
-          $infoVersion = "$version+$sha"
-          $file = "Properties\AssemblyInfo.cs"
-          (Get-Content $file) -replace 'AssemblyInformationalVersion\("[^"]*"\)', "AssemblyInformationalVersion(`"$infoVersion`")" |
-            Set-Content $file
-          Write-Host "InformationalVersion set to $infoVersion"
-
-      - name: Download Gyan FFmpeg Essentials
-        shell: pwsh
-        run: |
-          # Pinned to a specific Gyan.FFmpeg.Essentials release for reproducible packages.
-          # Source: https://github.com/GyanD/codexffmpeg/releases (permanent versioned assets).
-          # To upgrade: bump the URL version and replace $expectedSha256 with the new zip hash.
-          $ffmpegUrl = "https://github.com/GyanD/codexffmpeg/releases/download/8.1.1/ffmpeg-8.1.1-essentials_build.zip"
-          $expectedSha256 = "6F58CE889F59C311410F7D2B18895B33C03456463486F3B1EBC93D97A0F54541"
-
-          $zipPath = "$env:RUNNER_TEMP\ffmpeg-essentials.zip"
-          $extractPath = "$env:RUNNER_TEMP\ffmpeg-essentials"
-
-          Write-Host "Downloading FFmpeg Essentials..."
-          Invoke-WebRequest -Uri $ffmpegUrl -OutFile $zipPath
-
-          if ($expectedSha256 -ne "") {
-            $actual = (Get-FileHash $zipPath -Algorithm SHA256).Hash
-            if ($actual -ne $expectedSha256.ToUpper()) {
-              throw "FFmpeg checksum mismatch. Expected: $expectedSha256  Got: $actual"
-            }
-            Write-Host "FFmpeg checksum verified."
-          } else {
-            Write-Warning "FFmpeg checksum not pinned — verify manually before shipping."
+          $objectType = (& git cat-file -t "refs/tags/$tag" 2>$null) -join "`n"
+          if ($objectType.Trim() -eq "tag") {
+            $subject = (& git for-each-ref "refs/tags/$tag" "--format=%(contents:subject)") -join "`n"
+            $annotationBody = (& git for-each-ref "refs/tags/$tag" "--format=%(contents:body)") -join "`n"
+            $body = (@($subject.Trim(), "", $annotationBody.Trim()) -join "`n").Trim()
           }
 
-          Expand-Archive -LiteralPath $zipPath -DestinationPath $extractPath -Force
-          $ffmpegExe = Get-ChildItem -Path $extractPath -Filter "ffmpeg.exe" -Recurse | Select-Object -First 1
-          if (-not $ffmpegExe) { throw "ffmpeg.exe not found in extracted archive." }
+          if ([string]::IsNullOrWhiteSpace($body)) {
+            $body = @"
+          ## iMirror $tag
 
-          $destDir = "tools\ffmpeg\bin"
-          New-Item -ItemType Directory -Force -Path $destDir | Out-Null
-          Copy-Item -LiteralPath $ffmpegExe.FullName -Destination "$destDir\ffmpeg.exe" -Force
-          Write-Host "FFmpeg placed at $destDir\ffmpeg.exe"
+          Windows x64 package for iMirror $version.
 
-      - name: Package
-        shell: pwsh
-        run: |
-          $version = "${{ steps.version.outputs.version }}"
-          powershell -ExecutionPolicy Bypass -File .\scripts\publish-win-x64.ps1 -Version $version
+          ### Installation
 
-      - name: Compute checksums
-        id: checksums
-        shell: pwsh
-        run: |
-          $version = "${{ steps.version.outputs.version }}"
-          $zip = "artifacts\iMirror-$version-win-x64.zip"
-          $sha256 = (Get-FileHash $zip -Algorithm SHA256).Hash
-          echo "sha256=$sha256" >> $env:GITHUB_OUTPUT
-          Write-Host "SHA256: $sha256"
+          1. Download the `iMirror-$version-win-x64.zip` asset.
+          2. Extract the zip.
+          3. Install FFmpeg: `winget install Gyan.FFmpeg.Essentials`
+          4. Run `iMirror.exe`.
+
+          ### Notes
+
+          - This package is unsigned; Windows SmartScreen may show a warning.
+          - FFmpeg is not bundled.
+          - The app is self-contained for .NET 8.
+          "@
+          }
+
+          Set-Content -LiteralPath $bodyPath -Value $body -Encoding UTF8
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.version.outputs.tag }}
-          name: iMirror ${{ steps.version.outputs.tag }}
-          body: |
-            ## iMirror ${{ steps.version.outputs.tag }}
-
-            ### Installation
-
-            1. Download `iMirror-${{ steps.version.outputs.version }}-win-x64.zip`
-            2. Extract to any folder
-            3. Run `iMirror.exe`
-
-            **Note:** Windows may show a SmartScreen warning because this release is unsigned.
-            Click **"More info → Run anyway"** to proceed.
-            This is expected for an unsigned public preview.
-
-            ### SHA-256
-
-            ```
-            ${{ steps.checksums.outputs.sha256 }}  iMirror-${{ steps.version.outputs.version }}-win-x64.zip
-            ```
-
-            ### Requirements
-
-            - Windows 10 22H2 or later (x64)
-            - No .NET installation required (self-contained)
-
-          files: |
-            artifacts/iMirror-${{ steps.version.outputs.version }}-win-x64.zip
-          draft: false
-          prerelease: false
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          body_path: release-body.md
+          files: artifacts/*.zip
+          prerelease: ${{ contains(github.ref_name, '-') }}
