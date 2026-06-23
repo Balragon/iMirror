@@ -19,7 +19,7 @@ internal interface ISettingsHost
 	void SetStatusMessage(string message);
 }
 
-public partial class SettingsWindow : Window
+public partial class SettingsWindow : Wpf.Ui.Controls.FluentWindow
 {
 	private readonly ISettingsHost _host;
 
@@ -305,11 +305,6 @@ public partial class SettingsWindow : Window
 			|| (!overrides.DumpAudio && _pendingDumpAudio != persisted.DumpAudio);
 
 		SettingsRestartPanel.Visibility = restartRequired ? Visibility.Visible : Visibility.Collapsed;
-	}
-
-	private void SettingsCloseButton_Click(object sender, RoutedEventArgs e)
-	{
-		Close();
 	}
 
 	private void UpdatesHyperlink_RequestNavigate(object sender, RequestNavigateEventArgs e)
