@@ -257,7 +257,6 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 	{
 		AppLog.Write("MainWindow constructor entered.");
 		InitializeComponent();
-		Wpf.Ui.Appearance.ApplicationThemeManager.Apply(this);
 		AppLog.Write("MainWindow InitializeComponent returned.");
 #if HIGH_RESOLUTION_D3D
 		VideoStage.SizeChanged += VideoStage_SizeChanged;
@@ -425,7 +424,7 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 		await RecheckReadinessAsync();
 	}
 
-	private async void RecheckDiagLink_Click(object sender, MouseButtonEventArgs e)
+	private async void RecheckDiagLink_Click(object sender, RoutedEventArgs e)
 	{
 		e.Handled = true;
 		await RecheckReadinessAsync();
@@ -435,7 +434,8 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 	{
 		ReadinessRecheckButton.IsEnabled = false;
 		RecheckDiagLink.IsEnabled = false;
-		ReadinessRecheckButton.Content = "Checking…";
+		ReadinessRecheckButton.Content = "Checking...";
+		RecheckDiagLink.Content = "Checking...";
 		SetEmptyStateDiagnosticRechecking();
 
 		try
@@ -448,6 +448,7 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 			ReadinessRecheckButton.IsEnabled = true;
 			RecheckDiagLink.IsEnabled = true;
 			ReadinessRecheckButton.Content = "Re-check";
+			RecheckDiagLink.Content = "Re-check";
 		}
 	}
 
@@ -477,12 +478,17 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 			return;
 		}
 
-		// Closing the window exits the app. The tray icon is only a running-status
-		// affordance and a Settings/Exit menu; it never keeps the app alive after
-		// the user closes the main window.
-		AppLog.Write("Close requested; shutting down the application.");
 		e.Cancel = true;
-		_ = ShutdownApplicationAsync();
+		Hide();
+		AppLog.Write("Close requested; hiding main window to tray.");
+		if (_lifecycle.ConsumeFirstHideNotification())
+		{
+			_trayIcon?.ShowBalloonTip(
+				3000,
+				"iMirror is still running",
+				"Right-click the tray icon to exit.",
+				Forms.ToolTipIcon.Info);
+		}
 	}
 
 	private void InitializeTrayIcon()
@@ -739,14 +745,37 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 		_bitmap = null;
 		VideoImage.Source = null;
 		VideoImage.Visibility = Visibility.Visible;
-		VideoStage.Background = Brushes.Transparent;
-		EmptyStatePanel.Visibility = Visibility.Visible;
+		ShowEmptyStateSurface();
 		_decoderOutputFps = 0;
 		_decoderMaxRenderWidth = RealtimeMaxRenderWidth;
 		ResetStreamStateForNewConnection();
 		SetStatus(statusMessage);
 		AppLog.Write(logMessage);
 		UpdateDiagnostics();
+	}
+
+	private void ShowVideoSurface()
+	{
+		if (VideoStage.Background != Brushes.Black)
+		{
+			VideoStage.Background = Brushes.Black;
+		}
+		if (EmptyStatePanel.Visibility != Visibility.Collapsed)
+		{
+			EmptyStatePanel.Visibility = Visibility.Collapsed;
+		}
+	}
+
+	private void ShowEmptyStateSurface()
+	{
+		if (VideoStage.Background != Brushes.Transparent)
+		{
+			VideoStage.Background = Brushes.Transparent;
+		}
+		if (EmptyStatePanel.Visibility != Visibility.Visible)
+		{
+			EmptyStatePanel.Visibility = Visibility.Visible;
+		}
 	}
 
 	private void HandleAirPlayStreamConfig(StreamConfig config, int generation)
@@ -1486,22 +1515,24 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 		{
 			_previousWindowStyle = base.WindowStyle;
 			_previousWindowState = base.WindowState;
-				base.WindowStyle = WindowStyle.None;
-				base.WindowState = WindowState.Maximized;
-				_isFullscreen = true;
-				FullscreenButton.Content = "Windowed";
-				CompactFullscreenButton.Content = "W";
-				CompactFullscreenButton.ToolTip = "Exit fullscreen";
-			}
-			else
-			{
-				base.WindowStyle = _previousWindowStyle;
-				base.WindowState = _previousWindowState;
-				_isFullscreen = false;
-				FullscreenButton.Content = "Fullscreen";
-				CompactFullscreenButton.Content = "F";
-				CompactFullscreenButton.ToolTip = "Fullscreen";
-			}
+			base.WindowStyle = WindowStyle.None;
+			base.WindowState = WindowState.Maximized;
+			_isFullscreen = true;
+			MainTitleBar.Visibility = Visibility.Collapsed;
+			FullscreenButton.Content = "Windowed";
+			CompactFullscreenButton.Content = "W";
+			CompactFullscreenButton.ToolTip = "Exit fullscreen";
+		}
+		else
+		{
+			base.WindowStyle = _previousWindowStyle;
+			base.WindowState = _previousWindowState;
+			_isFullscreen = false;
+			MainTitleBar.Visibility = Visibility.Visible;
+			FullscreenButton.Content = "Fullscreen";
+			CompactFullscreenButton.Content = "F";
+			CompactFullscreenButton.ToolTip = "Fullscreen";
+		}
 		base.Dispatcher.BeginInvoke(new Action(delegate
 		{
 			RestartDecoderIfRenderWidthChanged("display mode changed");
@@ -1796,6 +1827,7 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 		ReleasePendingD3DFrame();
 #endif
 		ReleasePendingFrame();
+		ShowVideoSurface();
 		// Restart the latency warmup grace so decoder/renderer spin-up and reconnect/session-refresh
 		// catch-up are excluded from steady-state percentiles instead of inflating the first window.
 		_receiveToPresentLatencyWindow.BeginWarmup();
@@ -2031,8 +2063,7 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 		{
 			SetStatus("GPU decode failed.");
 			VideoImage.Source = null;
-			VideoStage.Background = Brushes.Transparent;
-			EmptyStatePanel.Visibility = Visibility.Visible;
+			ShowEmptyStateSurface();
 		}
 		UpdateDiagnostics();
 	}
@@ -2256,8 +2287,6 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 			{
 				Interlocked.Exchange(ref _latestDecodeToRenderMs, ElapsedMilliseconds(frame.DecodedTick, renderDoneTick));
 			}
-			VideoStage.Background = Brushes.Black;
-			EmptyStatePanel.Visibility = Visibility.Collapsed;
 			LogRenderLatencyThrottled(renderStartTick, renderDoneTick, renderedFrames);
 			QueueDiagnosticsUpdate();
 		}
@@ -2553,8 +2582,7 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 			VideoImage.Source = null;
 			VideoImage.Visibility = Visibility.Visible;
 			ResetRemoteCursorState();
-			VideoStage.Background = Brushes.Transparent;
-			EmptyStatePanel.Visibility = Visibility.Visible;
+			ShowEmptyStateSurface();
 			RestoreDefaultWindowSize();
 			CleanupGuards.RunStep("pending frame release", ReleasePendingFrame);
 #if HIGH_RESOLUTION_D3D
@@ -2849,8 +2877,6 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 			{
 				Interlocked.Exchange(ref _latestDecodeToRenderMs, ElapsedMilliseconds(frame.DecodedTick, renderDoneTick));
 			}
-			VideoStage.Background = Brushes.Black;
-			EmptyStatePanel.Visibility = Visibility.Collapsed;
 			LogRenderLatencyThrottled(renderStartTick, renderDoneTick, renderedFrames);
 			QueueDiagnosticsUpdate();
 		}

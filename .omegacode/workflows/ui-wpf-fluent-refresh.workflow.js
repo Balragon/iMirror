@@ -70,11 +70,13 @@ Return JSON.`,
 
 log(`Branch: ${pre.currentBranch} | dirty: ${pre.dirty}`)
 if (pre.currentBranch !== 'ui/wpf-fluent-refresh') {
-  log(`WARNING: expected branch 'ui/wpf-fluent-refresh' but on '${pre.currentBranch}'. ` +
-      `Stop and run: git checkout -b ui/wpf-fluent-refresh  — then re-run this workflow.`)
+  throw new Error(`Run this workflow only on ui/wpf-fluent-refresh; current branch is ${pre.currentBranch}.`)
+}
+if (pre.dirty) {
+  throw new Error('Working tree must be clean before running ui-wpf-fluent-refresh.')
 }
 if (!pre.guardrailFilesPresent) {
-  log('WARNING: a guardrail-sensitive file is missing; the repo layout may have changed.')
+  throw new Error('A guardrail-sensitive file is missing; the repo layout may have changed.')
 }
 
 // ── Phase 2: Scout ───────────────────────────────────────────────────────────
@@ -154,7 +156,7 @@ CONTEXT
 TASKS (edit ONLY MacMirrorReceiver.csproj and MacMirrorReceiver/App.cs):
 
 1. In MacMirrorReceiver.csproj, add a PackageReference to the WPF-UI library:
-       <PackageReference Include="WPF-UI" Version="3.0.5" />
+       <PackageReference Include="WPF-UI" Version="4.3.0" />
    Add it inside an existing <ItemGroup> that holds PackageReferences (or a new one).
    Do NOT change any other package, the TargetFramework, PlatformTarget, DefineConstants,
    or the HIGH_RESOLUTION_D3D constant.
@@ -165,11 +167,11 @@ TASKS (edit ONLY MacMirrorReceiver.csproj and MacMirrorReceiver/App.cs):
    line, or at the very top of OnStartup BEFORE the MainWindow is created. Use a dark theme
    with Mica:
 
-       Resources.MergedDictionaries.Add(new Wpf.Ui.Markup.ControlsDictionary());
        Resources.MergedDictionaries.Add(new Wpf.Ui.Markup.ThemesDictionary
        {
            Theme = Wpf.Ui.Appearance.ApplicationTheme.Dark,
        });
+       Resources.MergedDictionaries.Add(new Wpf.Ui.Markup.ControlsDictionary());
 
    Add the necessary using or use fully-qualified names. Keep ShutdownMode,
    the SharpDX assembly resolver, the unhandled-exception handlers, the
@@ -229,8 +231,8 @@ REQUIRED CHANGES
      Wpf.Ui.Controls.FluentWindow (keep ISettingsHost and any other interfaces).
      Current line: ${scout.mainWindowClassDecl}
    - Add "using Wpf.Ui.Controls;" if helpful, or fully-qualify.
-   - In the constructor, after InitializeComponent(), call
-     Wpf.Ui.Appearance.ApplicationThemeManager.Apply(this); so the Mica backdrop is applied.
+   - Do not call Wpf.Ui.Appearance.ApplicationThemeManager.Apply(this) from each window;
+     App.cs owns the global WPF-UI theme dictionaries.
    - Do NOT change anything else in the code-behind except, in #4 below, the SAFE
      background swap at the existing connect/disconnect hooks.
 
@@ -292,8 +294,8 @@ REQUIRED CHANGES
 2. Code-behind:
    - Change base type from Window to Wpf.Ui.Controls.FluentWindow (keep any interfaces).
      Current line: ${scout.settingsWindowClassDecl}
-   - In the constructor after InitializeComponent(), call
-     Wpf.Ui.Appearance.ApplicationThemeManager.Apply(this);
+   - Do not call Wpf.Ui.Appearance.ApplicationThemeManager.Apply(this) from the window;
+     App.cs owns the global WPF-UI theme dictionaries.
    - Preserve EVERY existing x:Name and EVERY event-handler wiring. The code-behind reads/writes
      these controls (e.g. ReceiverNameTextBox, AudioSyncOffsetSlider, the render-mode radios,
      the audio + diagnostics checkboxes). If you change a control's TYPE, update the matching

@@ -152,17 +152,17 @@ In MacMirrorReceiver/MainWindow.cs, find the FirewallHelpButton_Click handler (i
 2. Call the existing preflight / startup diagnostics re-run method (look for ReadinessRecheckButton_Click or a similar method that re-runs StartupDiagnostics) on a short delay (500ms) so the user has time to return from the Firewall window.
 3. If no existing re-run method is found, call BindEmptyStateDiagnosticStatus with a stub report that shows "Re-checking…" — do not invent new diagnostics logic.
 
-Also: in the DiagStatusText area (in MainWindow.xaml), if DiagStatusPanel does not already have a Button for re-checking, add a small hyperlink-style TextBlock BELOW DiagStatusPanel with:
+Also: in the DiagStatusText area (in MainWindow.xaml), if DiagStatusPanel does not already have a Button for re-checking, add a small hyperlink-style ui:Button BELOW DiagStatusPanel with:
   x:Name="RecheckDiagLink"
-  Text="Re-check"
+  Content="Re-check"
+  Appearance="Transparent"
   Foreground="{StaticResource AccentBrush}"
   FontSize="12"
-  Cursor="Hand"
   HorizontalAlignment="Center"
   Margin="0,6,0,0"
-  MouseLeftButtonUp="RecheckDiagLink_Click"
+  Click="RecheckDiagLink_Click"
 
-And in MainWindow.cs add the RecheckDiagLink_Click handler that triggers a re-run of the preflight checks (re-use the existing recheck logic).
+And in MainWindow.cs add the RecheckDiagLink_Click handler with RoutedEventArgs that triggers a re-run of the preflight checks (re-use the existing recheck logic).
 
 Edit MacMirrorReceiver/MainWindow.cs and MainWindow.xaml.`,
     { sandbox: 'workspace-write' }

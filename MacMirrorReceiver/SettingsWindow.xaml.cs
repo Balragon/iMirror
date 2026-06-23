@@ -45,7 +45,6 @@ public partial class SettingsWindow : Wpf.Ui.Controls.FluentWindow
 		_pendingDumpAudio = _host.StartupReceiverSettings.Persisted.DumpAudio;
 
 		InitializeComponent();
-		Wpf.Ui.Appearance.ApplicationThemeManager.Apply(this);
 		VersionTextBlock.Text = AppVersionInfo.DisplayText;
 		InitializeRenderModeSettingsUi();
 		InitializeReceiverSettingsUi();

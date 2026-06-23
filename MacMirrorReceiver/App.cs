@@ -17,11 +17,11 @@ public class App : Application
 	{
 		InstallSharpDxAssemblyResolver();
 		AppLog.Write("App constructed.");
-		Resources.MergedDictionaries.Add(new Wpf.Ui.Markup.ControlsDictionary());
 		Resources.MergedDictionaries.Add(new Wpf.Ui.Markup.ThemesDictionary
 		{
 			Theme = Wpf.Ui.Appearance.ApplicationTheme.Dark,
 		});
+		Resources.MergedDictionaries.Add(new Wpf.Ui.Markup.ControlsDictionary());
 		base.DispatcherUnhandledException += OnDispatcherUnhandledException;
 		AppDomain.CurrentDomain.UnhandledException += delegate(object _, UnhandledExceptionEventArgs args)
 		{
