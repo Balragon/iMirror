@@ -171,7 +171,7 @@ public partial class SettingsWindow : Window
 		AudioEnabledCheckBox.IsEnabled = !overrides.AudioEnabled;
 		SetOverrideNote(AudioEnabledOverrideTextBlock, overrides.AudioEnabled, ReceiverSettings.AudioEnabledEnvironmentVariableName);
 
-		int offset = overrides.AudioSyncOffsetMs ? effective.AudioSyncOffsetMs : persisted.AudioSyncOffsetMs;
+		int offset = overrides.AudioSyncOffsetMs ? effective.AudioSyncOffsetMs : _host.LiveAudioSyncOffsetMilliseconds;
 		_host.SetLiveAudioSyncOffsetMilliseconds(offset);
 		AudioSyncOffsetSlider.Minimum = ReceiverSettings.MinAudioSyncOffsetMs;
 		AudioSyncOffsetSlider.Maximum = ReceiverSettings.MaxAudioSyncOffsetMs;
