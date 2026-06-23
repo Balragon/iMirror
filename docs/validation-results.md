@@ -90,3 +90,20 @@ is sound.
 - The first-frame-timeout guard and warm-up instrumentation landed in
   `fix/software-fallback-keyframe` and are verified above; they remain useful as a
   safety net and will capture any future keyframe-starvation automatically.
+
+---
+
+## Run: 2026-06-24 (cont.) — last-connected-sender fix verified
+
+**Setup:** default GPU path build with the last-connected-sender arbitration
+(`feat/last-connected-sender`), diagnostics on. iPhone and Mac connected with
+overlap.
+
+**Result: PASS.** A sender (`192.168.0.10`) was mirroring when a second sender
+(`192.168.0.22`) connected. The build logged `newer sender connected; closing the
+previous data connection`, the new sender produced a clean keyframe
+(`keyframe(IDR)=True, droppedBeforeFirst=0`), and decode/render climbed steadily
+(998 decoded / 891 rendered, ~0 drops, `gate=forwarded NAL 1`) with **no
+starvation and no `awaiting keyframe`**. The concurrent-sender black-screen
+reproduced earlier in the day is resolved: the receiver now switches cleanly to the
+most recently connected sender.
