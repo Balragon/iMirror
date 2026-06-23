@@ -1,0 +1,135 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+
+jobs:
+  release:
+    name: Package and publish release
+    runs-on: windows-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Restore
+        run: dotnet restore iMirror.sln
+
+      - name: Build
+        run: dotnet build iMirror.sln -c Release --no-restore
+
+      - name: Test
+        run: dotnet test iMirror.sln -c Release --no-build
+
+      - name: Extract version from tag
+        id: version
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $version = $tag.TrimStart('v')
+          echo "version=$version" >> $env:GITHUB_OUTPUT
+          echo "tag=$tag" >> $env:GITHUB_OUTPUT
+
+      - name: Stamp InformationalVersion
+        shell: pwsh
+        run: |
+          $sha = (git rev-parse --short HEAD).Trim()
+          $version = "${{ steps.version.outputs.version }}"
+          $infoVersion = "$version+$sha"
+          $file = "Properties\AssemblyInfo.cs"
+          (Get-Content $file) -replace 'AssemblyInformationalVersion\("[^"]*"\)', "AssemblyInformationalVersion(`"$infoVersion`")" |
+            Set-Content $file
+          Write-Host "InformationalVersion set to $infoVersion"
+
+      - name: Download Gyan FFmpeg Essentials
+        shell: pwsh
+        run: |
+          # Pin to a specific Gyan.FFmpeg.Essentials release for reproducible packages.
+          # Update this URL and the SHA256 below when upgrading FFmpeg.
+          $ffmpegUrl = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
+          $expectedSha256 = ""  # TODO: fill in after pinning to a specific release (see docs/specs/v02-phase4-ci.md)
+
+          $zipPath = "$env:RUNNER_TEMP\ffmpeg-essentials.zip"
+          $extractPath = "$env:RUNNER_TEMP\ffmpeg-essentials"
+
+          Write-Host "Downloading FFmpeg Essentials..."
+          Invoke-WebRequest -Uri $ffmpegUrl -OutFile $zipPath
+
+          if ($expectedSha256 -ne "") {
+            $actual = (Get-FileHash $zipPath -Algorithm SHA256).Hash
+            if ($actual -ne $expectedSha256.ToUpper()) {
+              throw "FFmpeg checksum mismatch. Expected: $expectedSha256  Got: $actual"
+            }
+            Write-Host "FFmpeg checksum verified."
+          } else {
+            Write-Warning "FFmpeg checksum not pinned — verify manually before shipping."
+          }
+
+          Expand-Archive -LiteralPath $zipPath -DestinationPath $extractPath -Force
+          $ffmpegExe = Get-ChildItem -Path $extractPath -Filter "ffmpeg.exe" -Recurse | Select-Object -First 1
+          if (-not $ffmpegExe) { throw "ffmpeg.exe not found in extracted archive." }
+
+          $destDir = "tools\ffmpeg\bin"
+          New-Item -ItemType Directory -Force -Path $destDir | Out-Null
+          Copy-Item -LiteralPath $ffmpegExe.FullName -Destination "$destDir\ffmpeg.exe" -Force
+          Write-Host "FFmpeg placed at $destDir\ffmpeg.exe"
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $version = "${{ steps.version.outputs.version }}"
+          powershell -ExecutionPolicy Bypass -File .\scripts\publish-win-x64.ps1 -Version $version
+
+      - name: Compute checksums
+        id: checksums
+        shell: pwsh
+        run: |
+          $version = "${{ steps.version.outputs.version }}"
+          $zip = "artifacts\iMirror-$version-win-x64.zip"
+          $sha256 = (Get-FileHash $zip -Algorithm SHA256).Hash
+          echo "sha256=$sha256" >> $env:GITHUB_OUTPUT
+          Write-Host "SHA256: $sha256"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: iMirror ${{ steps.version.outputs.tag }}
+          body: |
+            ## iMirror ${{ steps.version.outputs.tag }}
+
+            ### Installation
+
+            1. Download `iMirror-${{ steps.version.outputs.version }}-win-x64.zip`
+            2. Extract to any folder
+            3. Run `iMirror.exe`
+
+            **Note:** Windows may show a SmartScreen warning because this release is unsigned.
+            Click **"More info → Run anyway"** to proceed.
+            This is expected for an unsigned public preview.
+
+            ### SHA-256
+
+            ```
+            ${{ steps.checksums.outputs.sha256 }}  iMirror-${{ steps.version.outputs.version }}-win-x64.zip
+            ```
+
+            ### Requirements
+
+            - Windows 10 22H2 or later (x64)
+            - No .NET installation required (self-contained)
+
+          files: |
+            artifacts/iMirror-${{ steps.version.outputs.version }}-win-x64.zip
+          draft: false
+          prerelease: false
