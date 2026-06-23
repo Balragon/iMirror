@@ -1,95 +1,97 @@
-# Release Packaging
+# v0.2 Public Release
 
-This page describes the Windows user package flow. The package target is a
-self-contained `win-x64` zip that can run without installing .NET.
+This page describes the v0.2 Windows public release process.
+
+## Overview
+
+The public artifact is a self-contained `win-x64` zip built from
+`MacMirrorReceiver.csproj` in `Release` mode.
+
+- No .NET runtime install is required.
+- The zip is unsigned.
+- There is no installer or auto-updater.
+- Users extract the zip and run `iMirror.exe`.
 
 ## Prerequisites
 
-- Windows x64
-- .NET 8 SDK for building
-- FFmpeg available from one of these locations:
+- Windows x64 build machine.
+- .NET 8 SDK.
+- FFmpeg Essentials available for local validation or private packages:
   - `tools\ffmpeg\bin\ffmpeg.exe`
   - `ffmpeg.exe` on `PATH`
-  - an explicit `-FfmpegPath C:\path\to\ffmpeg.exe`
+  - `-FfmpegPath C:\path\to\ffmpeg.exe`
 
-FFmpeg is required for AAC-ELD audio decode and for the software video fallback.
-A release package should bundle it.
-
-**Use `Gyan.FFmpeg.Essentials` for release packages.** Do not use the larger
-`Gyan.FFmpeg` full_build variant unless its redistribution obligations have been
-reviewed and accepted. Install the expected build:
+Install FFmpeg Essentials with:
 
 ```powershell
 winget install Gyan.FFmpeg.Essentials
 ```
 
-The publish script auto-detects and prefers Essentials; it warns if the resolved
-binary reports `full_build` or an unrecognized build flavor. Always confirm the
-exact FFmpeg license obligations from `ffmpeg -version` and the matching source
-package before redistribution.
-
-## Build The Zip
+## Building The Release Zip
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\publish-win-x64.ps1
 ```
 
-Optional versioned package name:
+Output is written under `artifacts\`.
+
+The publish script:
+
+- publishes `MacMirrorReceiver.csproj` as a self-contained `win-x64` Release build
+- copies publish output into an artifacts package folder
+- removes debug, log, and capture files
+- bundles FFmpeg when found
+- validates required files
+- writes `README.txt`
+- creates a zip unless `-NoZip` is passed
+
+For the public v0.2 zip, do not include FFmpeg in the uploaded artifact. Users
+install FFmpeg separately with `winget`.
+
+## Tagging A Release
+
+Tag the release from the commit that should be published:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\publish-win-x64.ps1 -Version 0.1.0
+git tag v0.2.0 -m "v0.2.0"
+git push origin v0.2.0
 ```
 
-Outputs:
+CI publishes the tagged release automatically.
 
-- `artifacts\package\iMirror-<version>-win-x64\`
-- `artifacts\iMirror-<version>-win-x64.zip`
+## Manual Smoke Test Checklist
 
-The zip contains only the runnable app payload, bundled FFmpeg, FairPlay table
-files, runtime dependencies, and a short `README.txt`.
-Intermediate publish output is removed by default; pass `-KeepPublishOutput` if
-you need to inspect it.
+Use `docs/validation.md` as the source checklist. At minimum:
 
-## Package Smoke Test
+1. Build the release zip.
+2. Extract the zip outside the repository.
+3. Launch the extracted `iMirror.exe`.
+4. Confirm a sender discovers `iMirror`.
+5. Start mirroring from an iPhone or Mac.
+6. Confirm video appears and audio plays when the sender provides audio.
+7. Disconnect and confirm the UI returns to the ready state.
+8. Confirm `iMirror.log` has no decoder fault loop, H.264 corruption loop, or repeated reconnect loop.
 
-Test the zip from a folder outside the repository so the app cannot accidentally
-read source-tree files.
+## SmartScreen / Trust
+
+The v0.2 public zip is unsigned, so Windows SmartScreen warnings are expected on
+first launch or download. No publisher action is required for v0.2.
+
+## FFmpeg Note
+
+FFmpeg is not bundled in the public v0.2 release artifact. Users should install
+FFmpeg Essentials:
 
 ```powershell
-$zip = Resolve-Path .\artifacts\iMirror-<version>-win-x64.zip
-$testRoot = Join-Path $env:TEMP "imirror-package-smoke"
-Remove-Item -LiteralPath $testRoot -Recurse -Force -ErrorAction SilentlyContinue
-Expand-Archive -LiteralPath $zip -DestinationPath $testRoot -Force
-Start-Process -FilePath (Join-Path $testRoot "iMirror-<version>-win-x64\iMirror.exe")
+winget install Gyan.FFmpeg.Essentials
 ```
 
-Expected result:
+## Checksums
 
-- `iMirror.exe` starts without requiring .NET installation.
-- The package folder contains `ThirdParty\playfair\*.c` and `*.h`.
-- The package folder contains `tools\ffmpeg\bin\ffmpeg.exe`.
-- A sender discovers `iMirror` on the local network.
-- Mirroring starts, video appears, and audio plays when the sender provides audio.
-- `iMirror.log` is written next to `iMirror.exe`.
-
-For product validation, run the latency report from the source tree against the
-package log after an active mirroring session:
+Generate a SHA-256 checksum after packaging:
 
 ```powershell
-dotnet run --project .\tools\LatencyAcceptanceReport\LatencyAcceptanceReport.csproj -c Release -- C:\path\to\package\iMirror.log 150 10
+Get-FileHash .\artifacts\iMirror-v0.2.0-win-x64.zip -Algorithm SHA256
 ```
 
-## Release Hygiene
-
-Do not include these in a user zip:
-
-- `.git\`
-- source files
-- `docs\`
-- validation `tools\` projects
-- `bin\`, `obj\`, or `artifacts\publish\`
-- `*.pdb`
-- `*.log`
-- `*.h264`
-- `*.bgra`
-- diagnostic snapshots
+Publish the checksum alongside the release zip.
