@@ -2666,40 +2666,83 @@ public partial class MainWindow : Window
 
 	private void UpdateReceiverChrome()
 	{
-		bool connected = _client != null;
+		bool connected = IsMirroringActive();
 		int deviceCount = _devices.Count;
 
 		HeaderSubtitleTextBlock.Text = ResolveReceiverSubtitle(connected, deviceCount);
 		DeviceSummaryTextBlock.Text = ResolveDeviceSummary(deviceCount);
+		ReceiverCardTitleTextBlock.Text = ResolveReceiverCardTitle(connected);
+		ReceiverStateBadgeTextBlock.Text = ResolveReceiverBadgeText(connected, deviceCount);
 		ReceiverStatusTextBlock.Text = _statusText;
 		EmptyStateStatusTextBlock.Text = _statusText;
 		EmptyStateTextBlock.Text = ResolveEmptyStateTitle(connected, deviceCount);
 		EmptyStateDetailTextBlock.Text = ResolveEmptyStateDetail(connected, deviceCount);
+		HowToMirrorCard.Visibility = connected || _isConnecting ? Visibility.Collapsed : Visibility.Visible;
+		StatusSummaryPanel.Visibility = connected || _isConnecting ? Visibility.Collapsed : Visibility.Visible;
 
 		Brush statusBrush = ResolveReceiverStatusBrush(connected, deviceCount);
 		SidebarStatusDot.Fill = statusBrush;
 		EmptyStateStatusDot.Fill = statusBrush;
+		ReceiverStateBadge.Background = statusBrush;
+	}
+
+	private bool IsMirroringActive()
+	{
+		return _client != null ||
+			Volatile.Read(ref _airPlaySessionGeneration) != 0 ||
+			_streamConfig != null ||
+			_decoder != null
+#if HIGH_RESOLUTION_D3D
+			|| _mediaFoundationD3DDecoder != null
+#endif
+			;
+	}
+
+	private string ResolveReceiverCardTitle(bool connected)
+	{
+		if (connected)
+		{
+			return "Mirroring";
+		}
+		if (_isConnecting)
+		{
+			return "Connecting";
+		}
+		return "Ready to receive";
+	}
+
+	private string ResolveReceiverBadgeText(bool connected, int deviceCount)
+	{
+		if (connected)
+		{
+			return "LIVE";
+		}
+		if (_isConnecting)
+		{
+			return "LINKING";
+		}
+		return deviceCount > 0 ? "LEGACY" : "READY";
 	}
 
 	private string ResolveReceiverSubtitle(bool connected, int deviceCount)
 	{
 		if (connected)
 		{
-				return "Mirroring";
+			return "Mirroring";
 		}
 		if (_isConnecting)
 		{
 			return "Connecting";
 		}
-			return deviceCount > 0 ? "Legacy sender available" : "Ready for AirPlay";
+		return deviceCount > 0 ? "Legacy sender available" : "Ready for AirPlay";
 	}
 
 	private string ResolveDeviceSummary(int deviceCount)
 	{
 		return deviceCount switch
 		{
-				0 => "No legacy sender found yet. iPhone mirroring does not need this field.",
-				1 => "1 legacy sender is ready. Enter its PIN to use the old path.",
+			0 => "No legacy sender found yet. iPhone mirroring does not need this field.",
+			1 => "1 legacy sender is ready. Enter its PIN to use the old path.",
 			_ => $"{deviceCount} senders are available. Choose one, then enter its PIN."
 		};
 	}
@@ -2714,7 +2757,7 @@ public partial class MainWindow : Window
 		{
 			return "Connecting";
 		}
-			return deviceCount > 0 ? "Legacy sender found" : "Ready to mirror";
+		return deviceCount > 0 ? "Legacy sender found" : "Ready to mirror";
 	}
 
 	private string ResolveEmptyStateDetail(bool connected, int deviceCount)
@@ -2728,8 +2771,8 @@ public partial class MainWindow : Window
 			return "Keep both devices on the same network while the secure session starts.";
 		}
 		return deviceCount > 0
-				? "Enter the sender PIN, then press Connect Sender."
-				: "Open Control Center, tap Screen Mirroring, then choose iMirror.";
+			? "Enter the sender PIN, then press Connect Sender."
+			: "Open Control Center, tap Screen Mirroring, then choose iMirror.";
 	}
 
 	private Brush ResolveReceiverStatusBrush(bool connected, int deviceCount)
