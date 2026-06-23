@@ -345,6 +345,11 @@ public sealed class AirPlayProbeService : IDisposable
 
 					byte[] response = BuildResponse(request, client.Client.RemoteEndPoint);
 					await stream.WriteAsync(response, _cts.Token);
+					if (request.Method == "TEARDOWN" && IsMirrorControlLabel(label))
+					{
+						EndMirrorSessionIfAnnounced("TEARDOWN");
+						break;
+					}
 					if (request.Headers.TryGetValue("Connection", out string? connection) &&
 						connection.Contains("close", StringComparison.OrdinalIgnoreCase))
 					{
