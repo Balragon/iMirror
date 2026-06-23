@@ -947,7 +947,7 @@ public partial class MainWindow : Window, ISettingsHost
 		UpdateConnectionButtons(connected: false);
 		try
 		{
-			await DisconnectAsync(null, revealPanel: !isReconnect);
+			await DisconnectAsync(null);
 			if (generation != _connectionGeneration)
 			{
 				return false;
@@ -1027,7 +1027,7 @@ public partial class MainWindow : Window, ISettingsHost
 			string verb = isReconnect ? "Reconnect" : "Connect";
 			if (generation == _connectionGeneration)
 			{
-				await DisconnectAsync($"{verb} failed: " + ex.Message, revealPanel: !isReconnect);
+				await DisconnectAsync($"{verb} failed: " + ex.Message);
 			}
 			return false;
 		}
@@ -1303,7 +1303,7 @@ public partial class MainWindow : Window, ISettingsHost
 			return;
 		}
 
-		await DisconnectAsync("Connection lost. Reconnecting...", revealPanel: false);
+		await DisconnectAsync("Connection lost. Reconnecting...");
 		_ = ScheduleAutoReconnectAsync(generation);
 	}
 
@@ -1408,19 +1408,19 @@ public partial class MainWindow : Window, ISettingsHost
 		}
 	}
 
-	private void HidePanelButton_Click(object sender, RoutedEventArgs e)
-	{
-		SetSidebarCollapsed(collapsed: true);
-	}
-
-	private void ShowPanelButton_Click(object sender, RoutedEventArgs e)
-	{
-		SetSidebarCollapsed(collapsed: false);
-	}
-
 	private void CompactFullscreenButton_Click(object sender, RoutedEventArgs e)
 	{
 		FullscreenButton_Click(sender, e);
+	}
+
+	private void MinimizeWindowButton_Click(object sender, RoutedEventArgs e)
+	{
+		base.WindowState = WindowState.Minimized;
+	}
+
+	private void CloseWindowButton_Click(object sender, RoutedEventArgs e)
+	{
+		Close();
 	}
 
 	private void FullscreenButton_Click(object sender, RoutedEventArgs e)
@@ -1506,7 +1506,6 @@ public partial class MainWindow : Window, ISettingsHost
 
 	private void SettingsButton_Click(object sender, RoutedEventArgs e)
 	{
-		SetSidebarCollapsed(collapsed: false);
 		ShowSettingsWindow();
 	}
 
@@ -2407,7 +2406,7 @@ public partial class MainWindow : Window, ISettingsHost
 			$"gate={GetH264GateLastDecision()}");
 	}
 
-	private async Task DisconnectAsync(string? finalStatus = "Disconnected.", bool userRequested = false, bool revealPanel = true)
+	private async Task DisconnectAsync(string? finalStatus = "Disconnected.", bool userRequested = false)
 	{
 		if (userRequested)
 		{
@@ -2458,7 +2457,7 @@ public partial class MainWindow : Window, ISettingsHost
 			_decoderOutputFps = 0;
 			_decoderMaxRenderWidth = RealtimeMaxRenderWidth;
 			ResetH264Gate();
-			SetConnectedUi(connected: false, finalStatus, revealPanel);
+			SetConnectedUi(connected: false, finalStatus);
 			UpdateDiagnostics();
 		}
 		finally
@@ -2494,7 +2493,7 @@ public partial class MainWindow : Window, ISettingsHost
 	}
 #endif
 
-	private void SetConnectedUi(bool connected, string? disconnectedStatus = "Disconnected.", bool revealPanel = true)
+	private void SetConnectedUi(bool connected, string? disconnectedStatus = "Disconnected.")
 	{
 		UpdateConnectionButtons(connected);
 		DeviceComboBox.IsEnabled = !connected;
@@ -2507,14 +2506,6 @@ public partial class MainWindow : Window, ISettingsHost
 			{
 				SetStatus(disconnectedStatus);
 			}
-			if (revealPanel)
-			{
-				SetSidebarCollapsed(collapsed: false);
-			}
-		}
-		else
-		{
-			SetSidebarCollapsed(collapsed: true);
 		}
 	}
 
@@ -2527,13 +2518,6 @@ public partial class MainWindow : Window, ISettingsHost
 		CompactDisconnectButton.IsEnabled = connected || _isConnecting;
 		CompactReconnectButton.IsEnabled = canReconnect;
 		UpdateReceiverChrome();
-	}
-
-	private void SetSidebarCollapsed(bool collapsed)
-	{
-		SidebarColumn.Width = (collapsed ? new GridLength(48.0) : new GridLength(340.0));
-		SidebarPanel.Visibility = (collapsed ? Visibility.Collapsed : Visibility.Visible);
-		CompactControlBar.Visibility = (collapsed ? Visibility.Visible : Visibility.Collapsed);
 	}
 
 	private void SetStatus(string message)
