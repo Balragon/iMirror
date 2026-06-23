@@ -19,7 +19,7 @@ internal interface ISettingsHost
 	void SetStatusMessage(string message);
 }
 
-public partial class SettingsWindow : Window
+public partial class SettingsWindow : Wpf.Ui.Controls.FluentWindow
 {
 	private readonly ISettingsHost _host;
 
@@ -45,6 +45,7 @@ public partial class SettingsWindow : Window
 		_pendingDumpAudio = _host.StartupReceiverSettings.Persisted.DumpAudio;
 
 		InitializeComponent();
+		Wpf.Ui.Appearance.ApplicationThemeManager.Apply(this);
 		VersionTextBlock.Text = AppVersionInfo.DisplayText;
 		InitializeRenderModeSettingsUi();
 		InitializeReceiverSettingsUi();

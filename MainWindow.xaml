@@ -1,13 +1,14 @@
-<Window x:Class="MacMirrorReceiver.MainWindow"
+<ui:FluentWindow x:Class="MacMirrorReceiver.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
         Title="iMirror"
         Width="1180"
         Height="760"
         MinWidth="820"
         MinHeight="620"
         WindowStartupLocation="CenterScreen"
-        Background="#000000"
+        Background="Transparent"
         FontFamily="Segoe UI Variable Text, Segoe UI"
         FontSize="13"
         Foreground="{DynamicResource TextBrush}"
@@ -16,8 +17,10 @@
         SizeChanged="Window_SizeChanged"
         KeyDown="Window_KeyDown"
         UseLayoutRounding="True"
-        SnapsToDevicePixels="True">
-    <Window.Resources>
+        SnapsToDevicePixels="True"
+        ExtendsContentIntoTitleBar="True"
+        WindowBackdropType="Mica">
+    <ui:FluentWindow.Resources>
         <ResourceDictionary>
             <ResourceDictionary.MergedDictionaries>
                 <ResourceDictionary Source="/MacMirrorReceiver/SharedResources.xaml" />
@@ -39,12 +42,22 @@
                 <Setter Property="Foreground" Value="{StaticResource DangerBrush}" />
             </Style>
         </ResourceDictionary>
-    </Window.Resources>
+    </ui:FluentWindow.Resources>
 
-    <Grid Background="#000000">
-        <Grid x:Name="VideoStage"
-              Background="#000000"
-              MouseLeftButtonDown="VideoStage_MouseLeftButtonDown">
+    <Grid Background="Transparent">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <ui:TitleBar Title="iMirror"
+                     Grid.Row="0" />
+
+        <Grid Grid.Row="1"
+              Background="Transparent">
+            <Grid x:Name="VideoStage"
+                  Background="Transparent"
+                  MouseLeftButtonDown="VideoStage_MouseLeftButtonDown">
             <Image x:Name="VideoImage"
                    Stretch="Uniform"
                    RenderOptions.BitmapScalingMode="HighQuality" />
@@ -76,60 +89,67 @@
                   VerticalAlignment="Stretch">
                 <StackPanel HorizontalAlignment="Center"
                             VerticalAlignment="Center"
-                            MaxWidth="480"
-                            Margin="32">
-                    <Grid Width="132"
-                          Height="176"
+                            MaxWidth="520"
+                            Margin="40">
+                    <Grid Width="150"
+                          Height="192"
                           HorizontalAlignment="Center">
-                        <Border CornerRadius="30"
-                                BorderBrush="#34343A"
-                                BorderThickness="1.5">
+                        <Border CornerRadius="34"
+                                BorderBrush="#55FFFFFF"
+                                BorderThickness="1"
+                                Opacity="0.94">
                             <Border.Background>
                                 <LinearGradientBrush StartPoint="0,0"
                                                      EndPoint="1,1">
-                                    <GradientStop Color="#101014"
+                                    <GradientStop Color="#42FFFFFF"
                                                   Offset="0" />
-                                    <GradientStop Color="#34343A"
-                                                  Offset="0.58" />
-                                    <GradientStop Color="#303037"
+                                    <GradientStop Color="#24FFFFFF"
+                                                  Offset="0.54" />
+                                    <GradientStop Color="#0EFFFFFF"
                                                   Offset="1" />
                                 </LinearGradientBrush>
                             </Border.Background>
                         </Border>
                         <Border Margin="9"
-                                CornerRadius="23"
-                                BorderBrush="#303037"
+                                CornerRadius="27"
+                                BorderBrush="#2BFFFFFF"
                                 BorderThickness="1"
-                                Background="#101014" />
+                                Background="#2213181F" />
+                        <Border Margin="24,46,24,54"
+                                CornerRadius="16"
+                                BorderBrush="#20FFFFFF"
+                                BorderThickness="1"
+                                Background="#1AFFFFFF" />
                         <Border Width="42"
                                 Height="4"
                                 CornerRadius="2"
-                                Background="#34343A"
+                                Background="#9AFFFFFF"
                                 HorizontalAlignment="Center"
                                 VerticalAlignment="Top"
-                                Margin="0,15,0,0" />
-                        <Border Width="74"
-                                Height="2"
-                                CornerRadius="1"
-                                Background="#303037"
+                                Margin="0,17,0,0" />
+                        <Border Width="70"
+                                Height="3"
+                                CornerRadius="1.5"
+                                Background="#66FFFFFF"
                                 HorizontalAlignment="Center"
                                 VerticalAlignment="Bottom"
-                                Margin="0,0,0,15" />
+                                Margin="0,0,0,17" />
                     </Grid>
 
                     <TextBlock x:Name="EmptyStateTextBlock"
                                Text="Ready to mirror"
                                AutomationProperties.LiveSetting="Polite"
-                               FontSize="32"
+                               FontSize="30"
                                FontWeight="SemiBold"
-                               Foreground="{StaticResource LightTextBrush}"
+                               Foreground="#F7F8FA"
                                TextAlignment="Center"
                                HorizontalAlignment="Center"
-                               Margin="0,28,0,0" />
+                               Margin="0,30,0,0" />
                     <StackPanel x:Name="DiagStatusPanel"
                                 Orientation="Horizontal"
                                 HorizontalAlignment="Center"
-                                Margin="0,16,0,0">
+                                Opacity="0.94"
+                                Margin="0,14,0,0">
                         <Ellipse x:Name="DiagStatusDot"
                                  Width="8"
                                  Height="8"
@@ -137,7 +157,7 @@
                                  VerticalAlignment="Center" />
                         <TextBlock x:Name="DiagStatusText"
                                    Text="Checking&#x2026;"
-                                   Foreground="{StaticResource MutedTextBrush}"
+                                   Foreground="#D6D8DE"
                                    FontSize="13"
                                    Margin="8,0,0,0"
                                    VerticalAlignment="Center" />
@@ -145,20 +165,21 @@
                     <TextBlock x:Name="RecheckDiagLink"
                                Text="Re-check"
                                Foreground="{StaticResource AccentBrush}"
-                               FontSize="12"
+                               FontSize="13"
+                               FontWeight="SemiBold"
                                Cursor="Hand"
                                HorizontalAlignment="Center"
-                               Margin="0,6,0,0"
+                               Margin="0,8,0,0"
                                MouseLeftButtonUp="RecheckDiagLink_Click" />
                     <TextBlock x:Name="EmptyStateDetailTextBlock"
                                Text="Open Control Center, tap Screen Mirroring, then choose iMirror."
                                AutomationProperties.LiveSetting="Polite"
-                               Foreground="{StaticResource MutedTextBrush}"
+                               Foreground="#C8CAD0"
                                FontSize="15"
                                TextAlignment="Center"
                                TextWrapping="Wrap"
-                               LineHeight="22"
-                               Margin="0,10,0,0" />
+                               LineHeight="23"
+                               Margin="0,14,0,0" />
                 </StackPanel>
             </Grid>
         </Grid>
@@ -166,12 +187,12 @@
         <Border x:Name="ReceiverCardBorder"
                 HorizontalAlignment="Center"
                 VerticalAlignment="Top"
-                Margin="0,12,0,0"
-                Padding="12,7"
-                Background="#EEF5F5F7"
-                BorderBrush="#88FFFFFF"
+                Margin="0,10,0,0"
+                Padding="14,8"
+                Background="#E6FFFFFF"
+                BorderBrush="#66FFFFFF"
                 BorderThickness="1"
-                CornerRadius="14"
+                CornerRadius="8"
                 Panel.ZIndex="20">
             <StackPanel Orientation="Horizontal"
                         AutomationProperties.LiveSetting="Polite">
@@ -182,7 +203,7 @@
                          VerticalAlignment="Center" />
                 <TextBlock x:Name="HeaderSubtitleTextBlock"
                            Text="Waiting on this network"
-                           Foreground="{StaticResource TextBrush}"
+                           Foreground="#1F2329"
                            FontSize="12"
                            FontWeight="SemiBold"
                            Margin="8,0,0,0"
@@ -318,4 +339,5 @@
             </Border>
         </Grid>
     </Grid>
-</Window>
+    </Grid>
+</ui:FluentWindow>

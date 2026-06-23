@@ -23,10 +23,11 @@ using MacMirrorReceiver.Networking;
 using MacMirrorReceiver.Protocol;
 using MacMirrorReceiver.Video;
 using Forms = System.Windows.Forms;
+using Wpf.Ui.Controls;
 
 namespace MacMirrorReceiver;
 
-public partial class MainWindow : Window, ISettingsHost
+public partial class MainWindow : FluentWindow, ISettingsHost
 {
 	private enum RenderMode
 	{
@@ -256,6 +257,7 @@ public partial class MainWindow : Window, ISettingsHost
 	{
 		AppLog.Write("MainWindow constructor entered.");
 		InitializeComponent();
+		Wpf.Ui.Appearance.ApplicationThemeManager.Apply(this);
 		AppLog.Write("MainWindow InitializeComponent returned.");
 #if HIGH_RESOLUTION_D3D
 		VideoStage.SizeChanged += VideoStage_SizeChanged;
@@ -737,6 +739,7 @@ public partial class MainWindow : Window, ISettingsHost
 		_bitmap = null;
 		VideoImage.Source = null;
 		VideoImage.Visibility = Visibility.Visible;
+		VideoStage.Background = Brushes.Transparent;
 		EmptyStatePanel.Visibility = Visibility.Visible;
 		_decoderOutputFps = 0;
 		_decoderMaxRenderWidth = RealtimeMaxRenderWidth;
@@ -2028,6 +2031,7 @@ public partial class MainWindow : Window, ISettingsHost
 		{
 			SetStatus("GPU decode failed.");
 			VideoImage.Source = null;
+			VideoStage.Background = Brushes.Transparent;
 			EmptyStatePanel.Visibility = Visibility.Visible;
 		}
 		UpdateDiagnostics();
@@ -2252,6 +2256,7 @@ public partial class MainWindow : Window, ISettingsHost
 			{
 				Interlocked.Exchange(ref _latestDecodeToRenderMs, ElapsedMilliseconds(frame.DecodedTick, renderDoneTick));
 			}
+			VideoStage.Background = Brushes.Black;
 			EmptyStatePanel.Visibility = Visibility.Collapsed;
 			LogRenderLatencyThrottled(renderStartTick, renderDoneTick, renderedFrames);
 			QueueDiagnosticsUpdate();
@@ -2548,6 +2553,7 @@ public partial class MainWindow : Window, ISettingsHost
 			VideoImage.Source = null;
 			VideoImage.Visibility = Visibility.Visible;
 			ResetRemoteCursorState();
+			VideoStage.Background = Brushes.Transparent;
 			EmptyStatePanel.Visibility = Visibility.Visible;
 			RestoreDefaultWindowSize();
 			CleanupGuards.RunStep("pending frame release", ReleasePendingFrame);
@@ -2843,6 +2849,7 @@ public partial class MainWindow : Window, ISettingsHost
 			{
 				Interlocked.Exchange(ref _latestDecodeToRenderMs, ElapsedMilliseconds(frame.DecodedTick, renderDoneTick));
 			}
+			VideoStage.Background = Brushes.Black;
 			EmptyStatePanel.Visibility = Visibility.Collapsed;
 			LogRenderLatencyThrottled(renderStartTick, renderDoneTick, renderedFrames);
 			QueueDiagnosticsUpdate();
