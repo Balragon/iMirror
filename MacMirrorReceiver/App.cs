@@ -50,6 +50,7 @@ public class App : Application
 	protected override void OnStartup(StartupEventArgs e)
 	{
 		AppLog.Write("OnStartup entered.");
+		ShutdownMode = ShutdownMode.OnExplicitShutdown;
 		AppLog.Write($"WPF render tier: {System.Windows.Media.RenderCapability.Tier >> 16} (2=full hardware, 1=partial, 0=software).");
 		HighResolutionPipelineProbe.RunIfEnabled();
 		base.OnStartup(e);

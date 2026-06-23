@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Diagnostics;
+using DrawingIcon = System.Drawing.Icon;
 using System.Linq;
 using System.Net;
 using System.Net.Sockets;
@@ -21,10 +22,11 @@ using MacMirrorReceiver.Models;
 using MacMirrorReceiver.Networking;
 using MacMirrorReceiver.Protocol;
 using MacMirrorReceiver.Video;
+using Forms = System.Windows.Forms;
 
 namespace MacMirrorReceiver;
 
-public partial class MainWindow : Window
+public partial class MainWindow : Window, ISettingsHost
 {
 	private enum RenderMode
 	{
@@ -234,23 +236,17 @@ public partial class MainWindow : Window
 
 	private bool _manualDisconnectRequested = true;
 
-	private ReceiverRenderModeSetting _pendingRenderModeSetting = StartupRenderModeSettings.PersistedMode;
+	private readonly WindowLifecycleState _lifecycle = new WindowLifecycleState();
 
-	private bool _renderModeSettingsUiReady;
+	private SettingsWindow? _settingsWindow;
 
-	private bool _receiverSettingsUiReady;
+	private Forms.NotifyIcon? _trayIcon;
 
-	private string _pendingReceiverName = StartupReceiverSettings.Persisted.ReceiverName;
+	private Forms.ContextMenuStrip? _trayMenu;
 
-	private ReceiverVideoEngineSetting _pendingVideoEngine = StartupReceiverSettings.Persisted.VideoEngine;
+	private DrawingIcon? _trayIconImage;
 
-	private bool _pendingAudioEnabled = StartupReceiverSettings.Persisted.AudioEnabled;
-
-	private bool _pendingWriteDiagnostics = StartupReceiverSettings.Persisted.WriteDiagnostics;
-
-	private bool _pendingDumpH264 = StartupReceiverSettings.Persisted.DumpH264;
-
-	private bool _pendingDumpAudio = StartupReceiverSettings.Persisted.DumpAudio;
+	private bool _shutdownStarted;
 
 	private WindowStyle _previousWindowStyle;
 
@@ -286,8 +282,7 @@ public partial class MainWindow : Window
 			HandleAirPlayAudioStreamStarted(sampleRate, channels, samplesPerFrame, Volatile.Read(ref _airPlaySessionGeneration));
 		_airPlayProbe.AudioFrameReceived += (frame, rtpTimestamp, sequence) =>
 			HandleAirPlayAudioFrame(frame, rtpTimestamp, sequence, Volatile.Read(ref _airPlaySessionGeneration));
-		InitializeRenderModeSettingsUi();
-		InitializeReceiverSettingsUi();
+		InitializeTrayIcon();
 		RenderModeComboBox.SelectedIndex = 0;
 		UpdateRenderModeDetail();
 		UpdateRenderScalingMode();
@@ -395,22 +390,195 @@ public partial class MainWindow : Window
 		}
 	}
 
-	private async void Window_Closing(object? sender, CancelEventArgs e)
+	private void Window_Closing(object? sender, CancelEventArgs e)
+	{
+		if (!_lifecycle.ShouldHideOnClose())
+		{
+			return;
+		}
+
+		e.Cancel = true;
+		HideToTray();
+	}
+
+	private void InitializeTrayIcon()
 	{
 		try
 		{
-			// Phase 3 will extend this handler with tray hide-vs-exit behavior.
+			_trayIconImage = CreateTrayIconImage();
+			_trayMenu = new Forms.ContextMenuStrip();
+			var showItem = new Forms.ToolStripMenuItem("Show iMirror");
+			showItem.Click += delegate
+			{
+				RestoreFromTray();
+			};
+			var exitItem = new Forms.ToolStripMenuItem("Exit");
+			exitItem.Click += async delegate
+			{
+				await ShutdownApplicationAsync();
+			};
+			_trayMenu.Items.Add(showItem);
+			_trayMenu.Items.Add(new Forms.ToolStripSeparator());
+			_trayMenu.Items.Add(exitItem);
+
+			_trayIcon = new Forms.NotifyIcon
+			{
+				ContextMenuStrip = _trayMenu,
+				Icon = _trayIconImage,
+				Text = "iMirror",
+				Visible = true
+			};
+			_trayIcon.MouseUp += TrayIcon_MouseUp;
+			_trayIcon.DoubleClick += delegate
+			{
+				RestoreFromTray();
+			};
+		}
+		catch (Exception ex)
+		{
+			AppLog.Write("Tray icon initialization failed: " + ex);
+			DisposeTrayIcon();
+		}
+	}
+
+	private static DrawingIcon CreateTrayIconImage()
+	{
+		try
+		{
+			string? executablePath = Environment.ProcessPath;
+			if (!string.IsNullOrWhiteSpace(executablePath))
+			{
+				DrawingIcon? icon = DrawingIcon.ExtractAssociatedIcon(executablePath);
+				if (icon != null)
+				{
+					return icon;
+				}
+			}
+		}
+		catch (Exception ex)
+		{
+			AppLog.Write("App icon extraction failed: " + ex.Message);
+		}
+
+		return (DrawingIcon)System.Drawing.SystemIcons.Application.Clone();
+	}
+
+	private void TrayIcon_MouseUp(object? sender, Forms.MouseEventArgs e)
+	{
+		if (e.Button == Forms.MouseButtons.Left)
+		{
+			RestoreFromTray();
+		}
+	}
+
+	private void HideToTray()
+	{
+		if (_trayIcon == null)
+		{
+			AppLog.Write("Close requested, but tray icon is unavailable; keeping the window visible.");
+			SetStatus("Tray icon is unavailable; use the window controls to keep iMirror open.");
+			return;
+		}
+
+		_settingsWindow?.Close();
+		Hide();
+		if (_lifecycle.ConsumeFirstHideNotification())
+		{
+			_trayIcon.ShowBalloonTip(
+				5000,
+				"iMirror",
+				"iMirror is still running. Right-click the tray icon to exit.",
+				Forms.ToolTipIcon.Info);
+		}
+	}
+
+	private void RestoreFromTray()
+	{
+		if (_shutdownStarted)
+		{
+			return;
+		}
+
+		Show();
+		if (base.WindowState == WindowState.Minimized)
+		{
+			base.WindowState = WindowState.Normal;
+		}
+		Activate();
+	}
+
+	private async Task ShutdownApplicationAsync()
+	{
+		if (_shutdownStarted)
+		{
+			return;
+		}
+
+		_shutdownStarted = true;
+		_lifecycle.MarkExplicitExit();
+		try
+		{
+			_settingsWindow?.Close();
 			await DisconnectAsync(null, userRequested: true);
 		}
 		catch (Exception ex)
 		{
-			AppLog.Write("Window closing disconnect failed: " + ex);
+			AppLog.Write("Application shutdown disconnect failed: " + ex);
 		}
 		finally
 		{
 			CleanupGuards.RunStep("AirPlay probe dispose", () => _airPlayProbe.Dispose());
 			CleanupGuards.RunStep("mDNS browser dispose", () => _browser.Dispose());
+			CleanupGuards.RunStep("tray icon dispose", DisposeTrayIcon);
+			Application.Current.Shutdown();
 		}
+	}
+
+	private void DisposeTrayIcon()
+	{
+		Forms.NotifyIcon? trayIcon = _trayIcon;
+		_trayIcon = null;
+		if (trayIcon != null)
+		{
+			trayIcon.MouseUp -= TrayIcon_MouseUp;
+			trayIcon.Visible = false;
+			trayIcon.Dispose();
+		}
+
+		Forms.ContextMenuStrip? trayMenu = _trayMenu;
+		_trayMenu = null;
+		trayMenu?.Dispose();
+
+		DrawingIcon? trayIconImage = _trayIconImage;
+		_trayIconImage = null;
+		trayIconImage?.Dispose();
+	}
+
+	ReceiverSettingsSnapshot ISettingsHost.StartupReceiverSettings => StartupReceiverSettings;
+
+	RenderModeSettingsSnapshot ISettingsHost.StartupRenderModeSettings => StartupRenderModeSettings;
+
+	bool ISettingsHost.GpuQualityRequested => GpuQualityRequested;
+
+	bool ISettingsHost.QualityPathAvailable => QualityPathAvailable;
+
+	int ISettingsHost.LiveAudioSyncOffsetMilliseconds => Volatile.Read(ref _audioSyncOffsetMilliseconds);
+
+	void ISettingsHost.SetLiveAudioSyncOffsetMilliseconds(int value)
+	{
+		Volatile.Write(ref _audioSyncOffsetMilliseconds, ReceiverSettings.ClampAudioOffset(value));
+		WasapiAudioOutput? output = _audioOutput;
+		output?.SetSyncTargetLatencyMilliseconds(ResolveAudioSyncTargetLatencyMilliseconds());
+	}
+
+	Task ISettingsHost.RestartApplicationAsync()
+	{
+		return RestartApplicationAsync();
+	}
+
+	void ISettingsHost.SetStatusMessage(string message)
+	{
+		SetStatus(message);
 	}
 
 	private static bool ResolveStartupAudioAdvertised()
@@ -1207,10 +1375,10 @@ public partial class MainWindow : Window
 
 	private void Window_KeyDown(object sender, KeyEventArgs e)
 	{
-		if (e.Key == Key.Escape && SettingsOverlay.Visibility == Visibility.Visible)
+		if (e.Key == Key.Escape && _settingsWindow?.IsVisible == true)
 		{
 			e.Handled = true;
-			CloseSettingsPanel();
+			_settingsWindow.Close();
 			return;
 		}
 
@@ -1326,354 +1494,66 @@ public partial class MainWindow : Window
 		}
 	}
 
-	private void InitializeRenderModeSettingsUi()
+	private void SettingsButton_Click(object sender, RoutedEventArgs e)
 	{
-		_renderModeSettingsUiReady = false;
-		ReceiverRenderModeSetting displayedMode = StartupRenderModeSettings.HasEnvironmentOverride
-			? StartupRenderModeSettings.EffectiveMode
-			: StartupRenderModeSettings.PersistedMode;
-		if (!StartupRenderModeSettings.HasEnvironmentOverride
-			&& !QualityPathAvailable
-			&& displayedMode == ReceiverRenderModeSetting.Quality)
-		{
-			displayedMode = ReceiverRenderModeSetting.Stable;
-		}
-
-		_pendingRenderModeSetting = displayedMode;
-		StableRenderModeRadioButton.IsChecked = displayedMode == ReceiverRenderModeSetting.Stable;
-		QualityRenderModeRadioButton.IsChecked = displayedMode == ReceiverRenderModeSetting.Quality;
-		bool canEditSetting = !StartupRenderModeSettings.HasEnvironmentOverride;
-		StableRenderModeRadioButton.IsEnabled = canEditSetting;
-		QualityRenderModeRadioButton.IsEnabled = canEditSetting && QualityPathAvailable;
-		RenderModeOverrideTextBlock.Visibility = StartupRenderModeSettings.HasEnvironmentOverride
-			? Visibility.Visible
-			: Visibility.Collapsed;
-		if (StartupRenderModeSettings.HasEnvironmentOverride)
-		{
-			RenderModeOverrideTextBlock.Text = $"{RenderModeSettings.EnvironmentVariableName}={StartupRenderModeSettings.EnvironmentOverrideValue} is overriding this setting.";
-		}
-		_renderModeSettingsUiReady = true;
-		UpdateRenderModeSettingsUi();
+		SetSidebarCollapsed(collapsed: false);
+		ShowSettingsWindow();
 	}
 
-	private void RenderModeSettingRadioButton_Checked(object sender, RoutedEventArgs e)
+	private void ShowSettingsWindow()
 	{
-		if (!_renderModeSettingsUiReady || StartupRenderModeSettings.HasEnvironmentOverride)
+		if (_settingsWindow != null)
 		{
+			if (_settingsWindow.WindowState == WindowState.Minimized)
+			{
+				_settingsWindow.WindowState = WindowState.Normal;
+			}
+			_settingsWindow.Activate();
 			return;
 		}
 
-		_pendingRenderModeSetting = QualityRenderModeRadioButton.IsChecked == true
-			? ReceiverRenderModeSetting.Quality
-			: ReceiverRenderModeSetting.Stable;
-		UpdateRenderModeSettingsUi();
+		var settingsWindow = new SettingsWindow(this)
+		{
+			Owner = this
+		};
+		settingsWindow.Closed += delegate
+		{
+			if (ReferenceEquals(_settingsWindow, settingsWindow))
+			{
+				_settingsWindow = null;
+			}
+		};
+		_settingsWindow = settingsWindow;
+		settingsWindow.Show();
+		settingsWindow.Activate();
 	}
 
-	private void UpdateRenderModeSettingsUi()
+	private async Task RestartApplicationAsync()
 	{
-		bool qualitySelected = _pendingRenderModeSetting == ReceiverRenderModeSetting.Quality;
-		if (!qualitySelected)
-		{
-			RenderModeSettingDetailTextBlock.Text = "Compatibility mode advertises a 1080p AirPlay display.";
-			RenderModeNoteTextBlock.Visibility = Visibility.Collapsed;
-		}
-		else if (GpuQualityRequested)
-		{
-#if HIGH_RESOLUTION_D3D
-			RenderModeSettingDetailTextBlock.Text = "Native GPU mode uses Media Foundation/D3D11 decode and present.";
-			RenderModeNoteTextBlock.Text = "Falls back to the software decoder if GPU startup fails.";
-#else
-			RenderModeSettingDetailTextBlock.Text = "Native GPU mode requires a HIGH_RESOLUTION_D3D build.";
-			RenderModeNoteTextBlock.Text = "This build will use the 1080p compatibility path.";
-#endif
-			RenderModeNoteTextBlock.Visibility = Visibility.Visible;
-		}
-		else
-		{
-			RenderModeSettingDetailTextBlock.Text = "GPU native mode is unavailable; iMirror will advertise 1080p.";
-#if HIGH_RESOLUTION_D3D
-			RenderModeNoteTextBlock.Text = "Set IMIRROR_EXPERIMENTAL_QUALITY=1 to force the GPU path for local validation.";
-#else
-			RenderModeNoteTextBlock.Text = "Build with HIGH_RESOLUTION_D3D to enable the GPU path.";
-#endif
-			RenderModeNoteTextBlock.Visibility = Visibility.Visible;
-		}
-		UpdateSettingsDirtyState();
-	}
-
-	private static void RestartApplication()
-	{
-		string? executablePath = Environment.ProcessPath;
-		if (string.IsNullOrWhiteSpace(executablePath))
-		{
-			executablePath = Process.GetCurrentProcess().MainModule?.FileName;
-		}
-		if (string.IsNullOrWhiteSpace(executablePath))
-		{
-			throw new InvalidOperationException("Could not find the iMirror executable path.");
-		}
-
+		string executablePath = ResolveExecutablePath();
 		Process.Start(new ProcessStartInfo
 		{
 			FileName = executablePath,
 			WorkingDirectory = AppContext.BaseDirectory,
 			UseShellExecute = true
 		});
-		Application.Current.Shutdown();
+		await ShutdownApplicationAsync();
 	}
 
-	private void InitializeReceiverSettingsUi()
+	private static string ResolveExecutablePath()
 	{
-		_receiverSettingsUiReady = false;
-
-		ReceiverSettingsValues persisted = StartupReceiverSettings.Persisted;
-		ReceiverSettingsValues effective = StartupReceiverSettings.Effective;
-		ReceiverSettingsOverrides overrides = StartupReceiverSettings.Overrides;
-
-		// Receiver name has no environment override; the persisted value is editable.
-		_pendingReceiverName = persisted.ReceiverName;
-		ReceiverNameTextBox.Text = persisted.ReceiverName;
-		ReceiverNameTextBox.MaxLength = ReceiverSettings.MaxReceiverNameLength;
-
-		_pendingVideoEngine = overrides.VideoEngine ? effective.VideoEngine : persisted.VideoEngine;
-		AutoVideoEngineRadioButton.IsChecked = _pendingVideoEngine == ReceiverVideoEngineSetting.Auto;
-		SoftwareVideoEngineRadioButton.IsChecked = _pendingVideoEngine == ReceiverVideoEngineSetting.Software;
-		AutoVideoEngineRadioButton.IsEnabled = !overrides.VideoEngine;
-		SoftwareVideoEngineRadioButton.IsEnabled = !overrides.VideoEngine;
-		SetOverrideNote(VideoEngineOverrideTextBlock, overrides.VideoEngine, ReceiverSettings.VideoEngineEnvironmentVariableName);
-
-		_pendingAudioEnabled = overrides.AudioEnabled ? effective.AudioEnabled : persisted.AudioEnabled;
-		AudioEnabledCheckBox.IsChecked = _pendingAudioEnabled;
-		AudioEnabledCheckBox.IsEnabled = !overrides.AudioEnabled;
-		SetOverrideNote(AudioEnabledOverrideTextBlock, overrides.AudioEnabled, ReceiverSettings.AudioEnabledEnvironmentVariableName);
-
-		int offset = overrides.AudioSyncOffsetMs ? effective.AudioSyncOffsetMs : persisted.AudioSyncOffsetMs;
-		Volatile.Write(ref _audioSyncOffsetMilliseconds, offset);
-		AudioSyncOffsetSlider.Minimum = ReceiverSettings.MinAudioSyncOffsetMs;
-		AudioSyncOffsetSlider.Maximum = ReceiverSettings.MaxAudioSyncOffsetMs;
-		AudioSyncOffsetSlider.Value = offset;
-		AudioSyncOffsetSlider.IsEnabled = !overrides.AudioSyncOffsetMs;
-		AudioSyncOffsetValueText.Text = $"{offset} ms";
-		SetOverrideNote(AudioSyncOffsetOverrideTextBlock, overrides.AudioSyncOffsetMs, ReceiverSettings.AudioSyncOffsetEnvironmentVariableName);
-
-		_pendingWriteDiagnostics = overrides.WriteDiagnostics ? effective.WriteDiagnostics : persisted.WriteDiagnostics;
-		_pendingDumpH264 = overrides.DumpH264 ? effective.DumpH264 : persisted.DumpH264;
-		_pendingDumpAudio = overrides.DumpAudio ? effective.DumpAudio : persisted.DumpAudio;
-		WriteDiagnosticsCheckBox.IsChecked = _pendingWriteDiagnostics;
-		DumpH264CheckBox.IsChecked = _pendingDumpH264;
-		DumpAudioCheckBox.IsChecked = _pendingDumpAudio;
-		WriteDiagnosticsCheckBox.IsEnabled = !overrides.WriteDiagnostics;
-		DumpH264CheckBox.IsEnabled = !overrides.DumpH264;
-		DumpAudioCheckBox.IsEnabled = !overrides.DumpAudio;
-		DiagnosticsOverrideTextBlock.Visibility = (overrides.WriteDiagnostics || overrides.DumpH264 || overrides.DumpAudio)
-			? Visibility.Visible
-			: Visibility.Collapsed;
-
-		_receiverSettingsUiReady = true;
-		UpdateSettingsDirtyState();
-	}
-
-	private static void SetOverrideNote(TextBlock textBlock, bool overridden, string environmentVariableName)
-	{
-		if (overridden)
+		string? executablePath = Environment.ProcessPath;
+		if (string.IsNullOrWhiteSpace(executablePath))
 		{
-			textBlock.Text = $"{environmentVariableName} is overriding this setting.";
-			textBlock.Visibility = Visibility.Visible;
-		}
-		else
-		{
-			textBlock.Visibility = Visibility.Collapsed;
-		}
-	}
-
-	private void ReceiverNameTextBox_TextChanged(object sender, TextChangedEventArgs e)
-	{
-		if (!_receiverSettingsUiReady)
-		{
-			return;
+			executablePath = Process.GetCurrentProcess().MainModule?.FileName;
 		}
 
-		_pendingReceiverName = ReceiverSettings.NormalizeReceiverName(ReceiverNameTextBox.Text);
-		UpdateSettingsDirtyState();
-	}
-
-	private void VideoEngineRadioButton_Checked(object sender, RoutedEventArgs e)
-	{
-		if (!_receiverSettingsUiReady || StartupReceiverSettings.Overrides.VideoEngine)
+		if (string.IsNullOrWhiteSpace(executablePath))
 		{
-			return;
+			throw new InvalidOperationException("Could not find the iMirror executable path.");
 		}
 
-		_pendingVideoEngine = SoftwareVideoEngineRadioButton.IsChecked == true
-			? ReceiverVideoEngineSetting.Software
-			: ReceiverVideoEngineSetting.Auto;
-		UpdateSettingsDirtyState();
-	}
-
-	private void AudioEnabledCheckBox_Changed(object sender, RoutedEventArgs e)
-	{
-		if (!_receiverSettingsUiReady || StartupReceiverSettings.Overrides.AudioEnabled)
-		{
-			return;
-		}
-
-		_pendingAudioEnabled = AudioEnabledCheckBox.IsChecked == true;
-		UpdateSettingsDirtyState();
-	}
-
-	private void AudioSyncOffsetSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
-	{
-		int value = ReceiverSettings.ClampAudioOffset((int)Math.Round(e.NewValue));
-		if (AudioSyncOffsetValueText != null)
-		{
-			AudioSyncOffsetValueText.Text = $"{value} ms";
-		}
-
-		if (!_receiverSettingsUiReady || StartupReceiverSettings.Overrides.AudioSyncOffsetMs)
-		{
-			return;
-		}
-
-		// Live: update the value the audio thread reads and re-tune any active output.
-		Volatile.Write(ref _audioSyncOffsetMilliseconds, value);
-		WasapiAudioOutput? output = _audioOutput;
-		output?.SetSyncTargetLatencyMilliseconds(ResolveAudioSyncTargetLatencyMilliseconds());
-	}
-
-	private void DiagnosticsCheckBox_Changed(object sender, RoutedEventArgs e)
-	{
-		if (!_receiverSettingsUiReady)
-		{
-			return;
-		}
-
-		ReceiverSettingsOverrides overrides = StartupReceiverSettings.Overrides;
-		if (!overrides.WriteDiagnostics)
-		{
-			_pendingWriteDiagnostics = WriteDiagnosticsCheckBox.IsChecked == true;
-		}
-		if (!overrides.DumpH264)
-		{
-			_pendingDumpH264 = DumpH264CheckBox.IsChecked == true;
-		}
-		if (!overrides.DumpAudio)
-		{
-			_pendingDumpAudio = DumpAudioCheckBox.IsChecked == true;
-		}
-		UpdateSettingsDirtyState();
-	}
-
-	private void UpdateSettingsDirtyState()
-	{
-		if (!_receiverSettingsUiReady)
-		{
-			return;
-		}
-
-		ReceiverSettingsValues persisted = StartupReceiverSettings.Persisted;
-		ReceiverSettingsOverrides overrides = StartupReceiverSettings.Overrides;
-
-		bool restartRequired =
-			(!StartupRenderModeSettings.HasEnvironmentOverride && _pendingRenderModeSetting != StartupRenderModeSettings.PersistedMode)
-			|| !string.Equals(_pendingReceiverName, persisted.ReceiverName, StringComparison.Ordinal)
-			|| (!overrides.VideoEngine && _pendingVideoEngine != persisted.VideoEngine)
-			|| (!overrides.AudioEnabled && _pendingAudioEnabled != persisted.AudioEnabled)
-			|| (!overrides.WriteDiagnostics && _pendingWriteDiagnostics != persisted.WriteDiagnostics)
-			|| (!overrides.DumpH264 && _pendingDumpH264 != persisted.DumpH264)
-			|| (!overrides.DumpAudio && _pendingDumpAudio != persisted.DumpAudio);
-
-		SettingsRestartPanel.Visibility = restartRequired ? Visibility.Visible : Visibility.Collapsed;
-	}
-
-	private void SettingsButton_Click(object sender, RoutedEventArgs e)
-	{
-		SetSidebarCollapsed(collapsed: false);
-		SettingsOverlay.Visibility = Visibility.Visible;
-	}
-
-	private void SettingsCloseButton_Click(object sender, RoutedEventArgs e)
-	{
-		CloseSettingsPanel();
-	}
-
-	private void CloseSettingsPanel()
-	{
-		// Audio sync offset applies live and is not part of the restart banner, so
-		// persist it when Settings closes to avoid writing the file on every tick.
-		PersistLiveAudioSyncOffset();
-		SettingsOverlay.Visibility = Visibility.Collapsed;
-	}
-
-	private void PersistLiveAudioSyncOffset()
-	{
-		if (StartupReceiverSettings.Overrides.AudioSyncOffsetMs)
-		{
-			return;
-		}
-
-		int offset = Volatile.Read(ref _audioSyncOffsetMilliseconds);
-		if (offset == StartupReceiverSettings.Persisted.AudioSyncOffsetMs)
-		{
-			return;
-		}
-
-		try
-		{
-			ReceiverSettings.UpdateDto(dto => dto.AudioSyncOffsetMs = offset);
-		}
-		catch (Exception ex)
-		{
-			AppLog.Write("Audio sync offset could not be saved: " + ex.Message);
-		}
-	}
-
-	private void SettingsRestartButton_Click(object sender, RoutedEventArgs e)
-	{
-		try
-		{
-			ReceiverSettingsOverrides overrides = StartupReceiverSettings.Overrides;
-			ReceiverSettings.UpdateDto(dto =>
-			{
-				dto.ReceiverName = _pendingReceiverName;
-
-				if (!StartupRenderModeSettings.HasEnvironmentOverride)
-				{
-					dto.RenderMode = RenderModeSettings.ToSettingValue(_pendingRenderModeSetting);
-				}
-				if (!overrides.VideoEngine)
-				{
-					dto.VideoEngine = ReceiverSettings.ToVideoEngineValue(_pendingVideoEngine);
-				}
-				if (!overrides.AudioEnabled)
-				{
-					dto.AudioEnabled = _pendingAudioEnabled;
-				}
-
-				dto.AudioSyncOffsetMs = Volatile.Read(ref _audioSyncOffsetMilliseconds);
-
-				dto.Diagnostics ??= new ReceiverDiagnosticsDto();
-				if (!overrides.WriteDiagnostics)
-				{
-					dto.Diagnostics.WriteDiagnostics = _pendingWriteDiagnostics;
-				}
-				if (!overrides.DumpH264)
-				{
-					dto.Diagnostics.DumpH264 = _pendingDumpH264;
-				}
-				if (!overrides.DumpAudio)
-				{
-					dto.Diagnostics.DumpAudio = _pendingDumpAudio;
-				}
-			});
-
-			AppLog.Write("Settings saved; restarting.");
-			RestartApplication();
-		}
-		catch (Exception ex)
-		{
-			AppLog.Write("Settings restart failed: " + ex);
-			SetStatus("Could not restart iMirror: " + ex.Message);
-		}
+		return executablePath;
 	}
 
 	private RenderMode CurrentRenderMode
