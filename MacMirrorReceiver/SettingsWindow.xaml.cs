@@ -3,6 +3,7 @@ using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
+using System.Windows.Navigation;
 
 namespace MacMirrorReceiver;
 
@@ -44,6 +45,7 @@ public partial class SettingsWindow : Window
 		_pendingDumpAudio = _host.StartupReceiverSettings.Persisted.DumpAudio;
 
 		InitializeComponent();
+		VersionTextBlock.Text = AppVersionInfo.DisplayText;
 		InitializeRenderModeSettingsUi();
 		InitializeReceiverSettingsUi();
 	}
@@ -308,6 +310,20 @@ public partial class SettingsWindow : Window
 	private void SettingsCloseButton_Click(object sender, RoutedEventArgs e)
 	{
 		Close();
+	}
+
+	private void UpdatesHyperlink_RequestNavigate(object sender, RequestNavigateEventArgs e)
+	{
+		e.Handled = true;
+		try
+		{
+			AppVersionInfo.OpenReleasesPage();
+		}
+		catch (Exception ex)
+		{
+			AppLog.Write("Could not open releases page: " + ex.Message);
+			_host.SetStatusMessage("Could not open updates page: " + ex.Message);
+		}
 	}
 
 	private void PersistLiveAudioSyncOffset()

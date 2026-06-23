@@ -373,7 +373,7 @@ public sealed class AirPlayProbeService : IDisposable
 		}
 	}
 
-	private static bool IsMirrorControlLabel(string label)
+	internal static bool IsMirrorControlLabel(string label)
 	{
 		return string.Equals(label, "AirPlay", StringComparison.OrdinalIgnoreCase);
 	}

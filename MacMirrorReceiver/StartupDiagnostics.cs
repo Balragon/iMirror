@@ -20,13 +20,35 @@ internal sealed record PreflightReport(
 	IReadOnlyList<PreflightCheck> Checks,
 	PreflightStatus Worst);
 
+internal sealed record StartupListenerState(
+	bool IsMdnsBound,
+	bool IsAirPlayListenerBound,
+	bool IsRaopListenerBound,
+	int AirPlayListenerPort,
+	int RaopListenerPort,
+	string? AirPlayListenerBindError,
+	string? RaopListenerBindError)
+{
+	public static StartupListenerState FromProbe(AirPlayProbeService probe)
+	{
+		return new StartupListenerState(
+			probe.IsMdnsBound,
+			probe.IsAirPlayListenerBound,
+			probe.IsRaopListenerBound,
+			probe.AirPlayListenerPort,
+			probe.RaopListenerPort,
+			probe.AirPlayListenerBindError,
+			probe.RaopListenerBindError);
+	}
+}
+
 internal static class StartupDiagnostics
 {
 	public static async Task<PreflightReport> RunAsync(AirPlayProbeService probe)
 	{
 		Task<PreflightCheck> ffmpegTask = Task.Run(CheckFfmpeg);
 		Task<PreflightCheck> networkTask = Task.Run(CheckNetwork);
-		PreflightCheck listeners = CheckListeners(probe);
+		PreflightCheck listeners = CheckListeners(StartupListenerState.FromProbe(probe));
 
 		PreflightCheck ffmpeg = await ffmpegTask;
 		PreflightCheck network = await networkTask;
@@ -60,11 +82,11 @@ internal static class StartupDiagnostics
 			"Place ffmpeg.exe at tools\\ffmpeg\\bin\\ffmpeg.exe or add it to PATH.");
 	}
 
-	private static PreflightCheck CheckListeners(AirPlayProbeService probe)
+	internal static PreflightCheck CheckListeners(StartupListenerState listeners)
 	{
-		bool mdnsBound = probe.IsMdnsBound;
-		bool airPlayBound = probe.IsAirPlayListenerBound;
-		bool raopBound = probe.IsRaopListenerBound;
+		bool mdnsBound = listeners.IsMdnsBound;
+		bool airPlayBound = listeners.IsAirPlayListenerBound;
+		bool raopBound = listeners.IsRaopListenerBound;
 
 		if (!mdnsBound || !airPlayBound)
 		{
@@ -75,17 +97,17 @@ internal static class StartupDiagnostics
 			}
 			if (!airPlayBound)
 			{
-				missing.Add($"AirPlay TCP {probe.AirPlayListenerPort}");
+				missing.Add($"AirPlay TCP {listeners.AirPlayListenerPort}");
 			}
 
-			if (!airPlayBound && probe.AirPlayListenerBindError != null)
+			if (!airPlayBound && listeners.AirPlayListenerBindError != null)
 			{
 				return new PreflightCheck(
 					"listeners",
 					"Firewall / discovery",
 					PreflightStatus.Blocked,
-					$"Port {probe.AirPlayListenerPort} is unavailable. iMirror is not discoverable.",
-					$"AirPlay TCP {probe.AirPlayListenerPort} could not bind: {probe.AirPlayListenerBindError}. " +
+					$"Port {listeners.AirPlayListenerPort} is unavailable. iMirror is not discoverable.",
+					$"AirPlay TCP {listeners.AirPlayListenerPort} could not bind: {listeners.AirPlayListenerBindError}. " +
 					"Close other AirPlay receivers, then press Re-check.");
 			}
 
@@ -105,9 +127,9 @@ internal static class StartupDiagnostics
 				"listeners",
 				"Firewall / discovery",
 				PreflightStatus.Warning,
-				$"Legacy audio port unavailable (TCP {probe.RaopListenerPort}). Mirroring still works.",
-				probe.RaopListenerBindError != null
-					? $"RAOP TCP {probe.RaopListenerPort} could not bind: {probe.RaopListenerBindError}. Close other receivers, then press Re-check."
+				$"Legacy audio port unavailable (TCP {listeners.RaopListenerPort}). Mirroring still works.",
+				listeners.RaopListenerBindError != null
+					? $"RAOP TCP {listeners.RaopListenerPort} could not bind: {listeners.RaopListenerBindError}. Close other receivers, then press Re-check."
 					: null);
 		}
 
