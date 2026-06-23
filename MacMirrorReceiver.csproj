@@ -26,6 +26,7 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Remove="tools\**\*.cs" />
+    <Compile Remove="MacMirrorReceiver.Tests\**\*.cs" />
   </ItemGroup>
   <ItemGroup>
     <Content Include="ThirdParty\playfair\LICENSE.md" CopyToOutputDirectory="PreserveNewest" />
