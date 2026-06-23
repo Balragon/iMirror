@@ -23,10 +23,11 @@ using MacMirrorReceiver.Networking;
 using MacMirrorReceiver.Protocol;
 using MacMirrorReceiver.Video;
 using Forms = System.Windows.Forms;
+using Wpf.Ui.Controls;
 
 namespace MacMirrorReceiver;
 
-public partial class MainWindow : Window, ISettingsHost
+public partial class MainWindow : FluentWindow, ISettingsHost
 {
 	private enum RenderMode
 	{
@@ -325,6 +326,7 @@ public partial class MainWindow : Window, ISettingsHost
 		if (report.Worst == PreflightStatus.Ok)
 		{
 			ReadinessStripBorder.Visibility = Visibility.Collapsed;
+			BindEmptyStateDiagnosticStatus(report);
 			return;
 		}
 
@@ -363,19 +365,94 @@ public partial class MainWindow : Window, ISettingsHost
 				break;
 			}
 		}
+
+		BindEmptyStateDiagnosticStatus(report);
+	}
+
+	private void BindEmptyStateDiagnosticStatus(PreflightReport report)
+	{
+		SolidColorBrush brush = (SolidColorBrush)FindResource("WarningBrush");
+		string text = "Checking network…";
+
+		if (report.Worst == PreflightStatus.Ok)
+		{
+			brush = (SolidColorBrush)FindResource("SuccessBrush");
+			text = "Ready on this network";
+		}
+		else if (HasDiagnosticIssue(report, "ffmpeg"))
+		{
+			brush = (SolidColorBrush)FindResource("DangerBrush");
+			text = "FFmpeg not found — video decode unavailable";
+		}
+		else if (HasDiagnosticIssue(report, "listeners", PreflightStatus.Blocked))
+		{
+			brush = (SolidColorBrush)FindResource("WarningBrush");
+			text = "Firewall may be blocking AirPlay — check Windows Firewall";
+		}
+		else if (HasDiagnosticIssue(report, "network"))
+		{
+			brush = (SolidColorBrush)FindResource("WarningBrush");
+			text = "No suitable network interface found";
+		}
+
+		DiagStatusDot.Fill = brush;
+		DiagStatusText.Text = text;
+	}
+
+	private void SetEmptyStateDiagnosticRechecking()
+	{
+		DiagStatusDot.Fill = (SolidColorBrush)FindResource("WarningBrush");
+		DiagStatusText.Text = "Re-checking…";
+	}
+
+	private static bool HasDiagnosticIssue(PreflightReport report, string id)
+	{
+		return report.Checks.Any(check =>
+			string.Equals(check.Id, id, StringComparison.OrdinalIgnoreCase) &&
+			check.Status != PreflightStatus.Ok);
+	}
+
+	private static bool HasDiagnosticIssue(PreflightReport report, string id, PreflightStatus status)
+	{
+		return report.Checks.Any(check =>
+			string.Equals(check.Id, id, StringComparison.OrdinalIgnoreCase) &&
+			check.Status == status);
 	}
 
 	private async void ReadinessRecheckButton_Click(object sender, RoutedEventArgs e)
 	{
-		ReadinessRecheckButton.IsEnabled = false;
-		ReadinessRecheckButton.Content = "Checking…";
-		PreflightReport report = await StartupDiagnostics.RunAsync(_airPlayProbe);
-		BindReadinessStrip(report);
-		ReadinessRecheckButton.IsEnabled = true;
-		ReadinessRecheckButton.Content = "Re-check";
+		await RecheckReadinessAsync();
 	}
 
-	private void FirewallHelpButton_Click(object sender, RoutedEventArgs e)
+	private async void RecheckDiagLink_Click(object sender, RoutedEventArgs e)
+	{
+		e.Handled = true;
+		await RecheckReadinessAsync();
+	}
+
+	private async Task RecheckReadinessAsync()
+	{
+		ReadinessRecheckButton.IsEnabled = false;
+		RecheckDiagLink.IsEnabled = false;
+		ReadinessRecheckButton.Content = "Checking...";
+		RecheckDiagLink.Content = "Checking...";
+		SetEmptyStateDiagnosticRechecking();
+
+		try
+		{
+			PreflightReport report = await StartupDiagnostics.RunAsync(_airPlayProbe);
+			BindReadinessStrip(report);
+		}
+		finally
+		{
+			ReadinessRecheckButton.IsEnabled = true;
+			RecheckDiagLink.IsEnabled = true;
+			ReadinessRecheckButton.Content = "Re-check";
+			RecheckDiagLink.Content = "Re-check";
+		}
+	}
+
+	private async void FirewallHelpButton_Click(object sender, RoutedEventArgs e)
 	{
 		try
 		{
@@ -388,27 +465,26 @@ public partial class MainWindow : Window, ISettingsHost
 		catch
 		{
 		}
+
+		SetEmptyStateDiagnosticRechecking();
+		await Task.Delay(500);
+		await RecheckReadinessAsync();
 	}
 
 	private void Window_Closing(object? sender, CancelEventArgs e)
 	{
-		if (!_lifecycle.ShouldHideOnClose())
+		if (_shutdownStarted)
 		{
+			// Shutdown already running (e.g. via tray Exit); let this close proceed.
 			return;
 		}
 
-		if (_trayIcon == null)
-		{
-			// No tray to restore from: treat the close as a real exit instead of
-			// canceling it, otherwise the app would be unclosable from the window.
-			AppLog.Write("Close requested with no tray icon; shutting down instead of hiding.");
-			e.Cancel = true;
-			_ = ShutdownApplicationAsync();
-			return;
-		}
-
+		// Closing the window quits the app (no hide-to-tray). Cancel this close and run the
+		// orderly shutdown, which stops the receiver, disposes the tray icon, and calls
+		// Application.Shutdown() so no hidden tray instance is left behind.
 		e.Cancel = true;
-		HideToTray();
+		AppLog.Write("Close requested; shutting down the application.");
+		_ = ShutdownApplicationAsync();
 	}
 
 	private void InitializeTrayIcon()
@@ -422,12 +498,19 @@ public partial class MainWindow : Window, ISettingsHost
 			{
 				RestoreFromTray();
 			};
+			var settingsItem = new Forms.ToolStripMenuItem("Settings…");
+			settingsItem.Click += delegate
+			{
+				RestoreFromTray();
+				ShowSettingsWindow();
+			};
 			var exitItem = new Forms.ToolStripMenuItem("Exit");
 			exitItem.Click += async delegate
 			{
 				await ShutdownApplicationAsync();
 			};
 			_trayMenu.Items.Add(showItem);
+			_trayMenu.Items.Add(settingsItem);
 			_trayMenu.Items.Add(new Forms.ToolStripSeparator());
 			_trayMenu.Items.Add(exitItem);
 
@@ -478,27 +561,6 @@ public partial class MainWindow : Window, ISettingsHost
 		if (e.Button == Forms.MouseButtons.Left)
 		{
 			RestoreFromTray();
-		}
-	}
-
-	private void HideToTray()
-	{
-		if (_trayIcon == null)
-		{
-			AppLog.Write("Close requested, but tray icon is unavailable; keeping the window visible.");
-			SetStatus("Tray icon is unavailable; use the window controls to keep iMirror open.");
-			return;
-		}
-
-		_settingsWindow?.Close();
-		Hide();
-		if (_lifecycle.ConsumeFirstHideNotification())
-		{
-			_trayIcon.ShowBalloonTip(
-				5000,
-				"iMirror",
-				"iMirror is still running. Right-click the tray icon to exit.",
-				Forms.ToolTipIcon.Info);
 		}
 	}
 
@@ -679,13 +741,37 @@ public partial class MainWindow : Window, ISettingsHost
 		_bitmap = null;
 		VideoImage.Source = null;
 		VideoImage.Visibility = Visibility.Visible;
-		EmptyStatePanel.Visibility = Visibility.Visible;
+		ShowEmptyStateSurface();
 		_decoderOutputFps = 0;
 		_decoderMaxRenderWidth = RealtimeMaxRenderWidth;
 		ResetStreamStateForNewConnection();
 		SetStatus(statusMessage);
 		AppLog.Write(logMessage);
 		UpdateDiagnostics();
+	}
+
+	private void ShowVideoSurface()
+	{
+		if (VideoStage.Background != Brushes.Black)
+		{
+			VideoStage.Background = Brushes.Black;
+		}
+		if (EmptyStatePanel.Visibility != Visibility.Collapsed)
+		{
+			EmptyStatePanel.Visibility = Visibility.Collapsed;
+		}
+	}
+
+	private void ShowEmptyStateSurface()
+	{
+		if (VideoStage.Background != Brushes.Transparent)
+		{
+			VideoStage.Background = Brushes.Transparent;
+		}
+		if (EmptyStatePanel.Visibility != Visibility.Visible)
+		{
+			EmptyStatePanel.Visibility = Visibility.Visible;
+		}
 	}
 
 	private void HandleAirPlayStreamConfig(StreamConfig config, int generation)
@@ -1413,15 +1499,6 @@ public partial class MainWindow : Window, ISettingsHost
 		FullscreenButton_Click(sender, e);
 	}
 
-	private void MinimizeWindowButton_Click(object sender, RoutedEventArgs e)
-	{
-		base.WindowState = WindowState.Minimized;
-	}
-
-	private void CloseWindowButton_Click(object sender, RoutedEventArgs e)
-	{
-		Close();
-	}
 
 	private void FullscreenButton_Click(object sender, RoutedEventArgs e)
 	{
@@ -1434,22 +1511,24 @@ public partial class MainWindow : Window, ISettingsHost
 		{
 			_previousWindowStyle = base.WindowStyle;
 			_previousWindowState = base.WindowState;
-				base.WindowStyle = WindowStyle.None;
-				base.WindowState = WindowState.Maximized;
-				_isFullscreen = true;
-				FullscreenButton.Content = "Windowed";
-				CompactFullscreenButton.Content = "W";
-				CompactFullscreenButton.ToolTip = "Exit fullscreen";
-			}
-			else
-			{
-				base.WindowStyle = _previousWindowStyle;
-				base.WindowState = _previousWindowState;
-				_isFullscreen = false;
-				FullscreenButton.Content = "Fullscreen";
-				CompactFullscreenButton.Content = "F";
-				CompactFullscreenButton.ToolTip = "Fullscreen";
-			}
+			base.WindowStyle = WindowStyle.None;
+			base.WindowState = WindowState.Maximized;
+			_isFullscreen = true;
+			MainTitleBar.Visibility = Visibility.Collapsed;
+			FullscreenButton.Content = "Windowed";
+			CompactFullscreenButton.Content = "W";
+			CompactFullscreenButton.ToolTip = "Exit fullscreen";
+		}
+		else
+		{
+			base.WindowStyle = _previousWindowStyle;
+			base.WindowState = _previousWindowState;
+			_isFullscreen = false;
+			MainTitleBar.Visibility = Visibility.Visible;
+			FullscreenButton.Content = "Fullscreen";
+			CompactFullscreenButton.Content = "F";
+			CompactFullscreenButton.ToolTip = "Fullscreen";
+		}
 		base.Dispatcher.BeginInvoke(new Action(delegate
 		{
 			RestartDecoderIfRenderWidthChanged("display mode changed");
@@ -1502,11 +1581,6 @@ public partial class MainWindow : Window, ISettingsHost
 			HostTextBox.Text = mirrorDevice.Address.ToString();
 			PortTextBox.Text = mirrorDevice.Port.ToString();
 		}
-	}
-
-	private void SettingsButton_Click(object sender, RoutedEventArgs e)
-	{
-		ShowSettingsWindow();
 	}
 
 	private void ShowSettingsWindow()
@@ -1667,6 +1741,7 @@ public partial class MainWindow : Window, ISettingsHost
 			ResetRemoteCursorState();
 			_streamConfig = config;
 			AppLog.Write($"Stream config received: {config.Width}x{config.Height} @ {config.Fps} codec={config.Codec}.");
+			ResizeWindowToStream(config);
 			StartFreshDecoder(config, "stream config");
 			SetStatus($"Mirroring {config.Width}x{config.Height} @ {config.Fps} fps.");
 			UpdateDiagnostics();
@@ -1678,6 +1753,62 @@ public partial class MainWindow : Window, ISettingsHost
 			AppLog.Write("Decoder failed: " + ex);
 			UpdateDiagnostics();
 		}
+	}
+
+	// Default window geometry mirrors the values declared in MainWindow.xaml.
+	private const double DefaultWindowWidth = 1180;
+	private const double DefaultWindowHeight = 760;
+	private const double DefaultMinWindowWidth = 820;
+	private const double DefaultMinWindowHeight = 620;
+	// Lower floor used while mirroring so a portrait phone stream can use a
+	// tall, narrow window instead of being letterboxed inside a wide one.
+	private const double MirroringMinWindowEdge = 320;
+
+	private void ResizeWindowToStream(StreamConfig config)
+	{
+		if (config.Width <= 0 || config.Height <= 0 || WindowState != WindowState.Normal)
+		{
+			return;
+		}
+
+		double aspect = (double)config.Width / config.Height;
+		Rect work = SystemParameters.WorkArea;
+		double maxWidth = work.Width * 0.9;
+		double maxHeight = work.Height * 0.9;
+
+		double targetWidth = maxWidth;
+		double targetHeight = targetWidth / aspect;
+		if (targetHeight > maxHeight)
+		{
+			targetHeight = maxHeight;
+			targetWidth = targetHeight * aspect;
+		}
+
+		// Relax the empty-state minimums so phone aspect ratios fit snugly.
+		MinWidth = MirroringMinWindowEdge;
+		MinHeight = MirroringMinWindowEdge;
+		Width = Math.Round(Math.Max(MirroringMinWindowEdge, targetWidth));
+		Height = Math.Round(Math.Max(MirroringMinWindowEdge, targetHeight));
+		Left = work.Left + (work.Width - Width) / 2.0;
+		Top = work.Top + (work.Height - Height) / 2.0;
+
+		AppLog.Write($"Resized window to stream {config.Width}x{config.Height} (aspect {aspect:F3}) -> {Width:F0}x{Height:F0}.");
+	}
+
+	private void RestoreDefaultWindowSize()
+	{
+		MinWidth = DefaultMinWindowWidth;
+		MinHeight = DefaultMinWindowHeight;
+		if (WindowState != WindowState.Normal)
+		{
+			return;
+		}
+
+		Width = DefaultWindowWidth;
+		Height = DefaultWindowHeight;
+		Rect work = SystemParameters.WorkArea;
+		Left = work.Left + (work.Width - Width) / 2.0;
+		Top = work.Top + (work.Height - Height) / 2.0;
 	}
 
 	private void StartFreshDecoder(StreamConfig config, string reason)
@@ -1692,6 +1823,7 @@ public partial class MainWindow : Window, ISettingsHost
 		ReleasePendingD3DFrame();
 #endif
 		ReleasePendingFrame();
+		ShowVideoSurface();
 		// Restart the latency warmup grace so decoder/renderer spin-up and reconnect/session-refresh
 		// catch-up are excluded from steady-state percentiles instead of inflating the first window.
 		_receiveToPresentLatencyWindow.BeginWarmup();
@@ -1927,7 +2059,7 @@ public partial class MainWindow : Window, ISettingsHost
 		{
 			SetStatus("GPU decode failed.");
 			VideoImage.Source = null;
-			EmptyStatePanel.Visibility = Visibility.Visible;
+			ShowEmptyStateSurface();
 		}
 		UpdateDiagnostics();
 	}
@@ -2151,7 +2283,6 @@ public partial class MainWindow : Window, ISettingsHost
 			{
 				Interlocked.Exchange(ref _latestDecodeToRenderMs, ElapsedMilliseconds(frame.DecodedTick, renderDoneTick));
 			}
-			EmptyStatePanel.Visibility = Visibility.Collapsed;
 			LogRenderLatencyThrottled(renderStartTick, renderDoneTick, renderedFrames);
 			QueueDiagnosticsUpdate();
 		}
@@ -2447,7 +2578,8 @@ public partial class MainWindow : Window, ISettingsHost
 			VideoImage.Source = null;
 			VideoImage.Visibility = Visibility.Visible;
 			ResetRemoteCursorState();
-			EmptyStatePanel.Visibility = Visibility.Visible;
+			ShowEmptyStateSurface();
+			RestoreDefaultWindowSize();
 			CleanupGuards.RunStep("pending frame release", ReleasePendingFrame);
 #if HIGH_RESOLUTION_D3D
 			CleanupGuards.RunStep("pending D3D frame release", ReleasePendingD3DFrame);
@@ -2553,6 +2685,9 @@ public partial class MainWindow : Window, ISettingsHost
 		EmptyStateDetailTextBlock.Text = ResolveEmptyStateDetail(connected, deviceCount);
 		HowToMirrorCard.Visibility = connected || _isConnecting ? Visibility.Collapsed : Visibility.Visible;
 		StatusSummaryPanel.Visibility = connected || _isConnecting ? Visibility.Collapsed : Visibility.Visible;
+		// While mirroring, keep the stage clean: hide the top status pill so it
+		// doesn't cover the incoming video.
+		ReceiverCardBorder.Visibility = connected ? Visibility.Collapsed : Visibility.Visible;
 
 		Brush statusBrush = ResolveReceiverStatusBrush(connected, deviceCount);
 		SidebarStatusDot.Fill = statusBrush;
@@ -2738,7 +2873,6 @@ public partial class MainWindow : Window, ISettingsHost
 			{
 				Interlocked.Exchange(ref _latestDecodeToRenderMs, ElapsedMilliseconds(frame.DecodedTick, renderDoneTick));
 			}
-			EmptyStatePanel.Visibility = Visibility.Collapsed;
 			LogRenderLatencyThrottled(renderStartTick, renderDoneTick, renderedFrames);
 			QueueDiagnosticsUpdate();
 		}
