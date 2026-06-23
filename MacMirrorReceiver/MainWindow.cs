@@ -473,22 +473,18 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 
 	private void Window_Closing(object? sender, CancelEventArgs e)
 	{
-		if (!_lifecycle.ShouldHideOnClose())
+		if (_shutdownStarted)
 		{
+			// Shutdown already running (e.g. via tray Exit); let this close proceed.
 			return;
 		}
 
+		// Closing the window quits the app (no hide-to-tray). Cancel this close and run the
+		// orderly shutdown, which stops the receiver, disposes the tray icon, and calls
+		// Application.Shutdown() so no hidden tray instance is left behind.
 		e.Cancel = true;
-		Hide();
-		AppLog.Write("Close requested; hiding main window to tray.");
-		if (_lifecycle.ConsumeFirstHideNotification())
-		{
-			_trayIcon?.ShowBalloonTip(
-				3000,
-				"iMirror is still running",
-				"Right-click the tray icon to exit.",
-				Forms.ToolTipIcon.Info);
-		}
+		AppLog.Write("Close requested; shutting down the application.");
+		_ = ShutdownApplicationAsync();
 	}
 
 	private void InitializeTrayIcon()

@@ -307,11 +307,6 @@ public partial class SettingsWindow : Wpf.Ui.Controls.FluentWindow
 		SettingsRestartPanel.Visibility = restartRequired ? Visibility.Visible : Visibility.Collapsed;
 	}
 
-	private void SettingsCloseButton_Click(object sender, RoutedEventArgs e)
-	{
-		Close();
-	}
-
 	private void UpdatesHyperlink_RequestNavigate(object sender, RequestNavigateEventArgs e)
 	{
 		e.Handled = true;

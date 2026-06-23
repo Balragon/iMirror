@@ -40,19 +40,7 @@
             <ui:TitleBar Title="Settings"
                          ShowMinimize="False"
                          ShowMaximize="False"
-                         ShowClose="False" />
-            <ui:Button x:Name="SettingsCloseButton"
-                       Width="32"
-                       Height="32"
-                       Padding="0"
-                       Margin="0,0,10,0"
-                       HorizontalAlignment="Right"
-                       VerticalAlignment="Center"
-                       Content="&#x2715;"
-                       ToolTip="Close"
-                       AutomationProperties.Name="Close settings"
-                       Appearance="Transparent"
-                       Click="SettingsCloseButton_Click" />
+                         ShowClose="True" />
         </Grid>
 
         <ScrollViewer Grid.Row="1"
