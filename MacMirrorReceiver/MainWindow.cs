@@ -397,6 +397,16 @@ public partial class MainWindow : Window, ISettingsHost
 			return;
 		}
 
+		if (_trayIcon == null)
+		{
+			// No tray to restore from: treat the close as a real exit instead of
+			// canceling it, otherwise the app would be unclosable from the window.
+			AppLog.Write("Close requested with no tray icon; shutting down instead of hiding.");
+			e.Cancel = true;
+			_ = ShutdownApplicationAsync();
+			return;
+		}
+
 		e.Cancel = true;
 		HideToTray();
 	}
