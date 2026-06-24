@@ -83,6 +83,10 @@ Private and Public networks. Video uses fixed AirPlay ports, but audio uses
 dynamic UDP ports negotiated during SETUP; allow the app itself rather than only
 opening fixed ports.
 
+For long-running iPhone validation, keep the iPhone awake and unlocked. iMirror
+is an AirPlay receiver, not Apple's iPhone Mirroring remote-control feature, so
+it cannot keep private iPhone content visible after iOS locks the device.
+
 ## Video Engine Controls
 
 The normal product path chooses Media Foundation/D3D11 automatically when hardware decode is available.
