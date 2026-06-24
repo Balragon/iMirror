@@ -16,8 +16,8 @@ Remaining gate: **one Windows real-device E2E validation run**.
 
 ## 0. Preparation
 
-- [ ] `winget install Gyan.FFmpeg.Essentials`
-- [ ] `powershell -ExecutionPolicy Bypass -File .\scripts\publish-win-x64.ps1 -Version 0.2.0`
+- [ ] Download the published release zip, or build locally with `powershell -ExecutionPolicy Bypass -File .\scripts\publish-win-x64.ps1 -Version 0.2.0`.
+- [ ] If building locally, make Gyan.FFmpeg.Essentials available via `tools\ffmpeg\bin\ffmpeg.exe`, `PATH`, or `-FfmpegPath`.
 - [ ] Confirm packaging log prints `Bundled FFmpeg: ...Gyan.FFmpeg.Essentials...` or a local `tools\ffmpeg\bin\ffmpeg.exe` verified as `essentials_build`.
 - [ ] Confirm no `full_build` warning is printed.
 - [ ] Extract the zip outside the repository and run from that folder to block source-tree dependency leaks.

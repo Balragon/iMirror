@@ -184,6 +184,7 @@ try
 		Where-Object { $_.Extension -in @(".pdb", ".log", ".h264", ".bgra") } |
 		Remove-Item -Force
 
+	$ffmpegBundled = $false
 	$resolvedFfmpeg = Find-Ffmpeg $repoRoot $FfmpegPath
 	if ($resolvedFfmpeg)
 	{
@@ -191,6 +192,7 @@ try
 		$packageFfmpegDir = Join-Path $packageDir "tools\ffmpeg\bin"
 		New-Item -ItemType Directory -Force -Path $packageFfmpegDir | Out-Null
 		Copy-Item -LiteralPath $resolvedFfmpeg -Destination (Join-Path $packageFfmpegDir "ffmpeg.exe") -Force
+		$ffmpegBundled = $true
 		Write-Host "Bundled FFmpeg: $resolvedFfmpeg"
 	}
 	elseif (-not $AllowMissingFfmpeg)
@@ -229,6 +231,12 @@ try
 		}
 	}
 
+	$ffmpegNote = if ($ffmpegBundled) {
+		"  - FFmpeg is bundled under tools\ffmpeg\bin."
+	} else {
+		"  - FFmpeg was not bundled; put ffmpeg.exe on PATH or at tools\ffmpeg\bin before mirroring."
+	}
+
 	$readme = @"
 iMirror Windows AirPlay Receiver
 
@@ -242,7 +250,7 @@ Use:
 
 Notes:
   - This win-x64 package is self-contained; .NET does not need to be installed.
-  - FFmpeg is bundled under tools\ffmpeg\bin when available at package time.
+$ffmpegNote
   - iMirror.log is written next to iMirror.exe and can contain local session details.
   - Delete logs before sharing the package folder or screenshots.
 "@
