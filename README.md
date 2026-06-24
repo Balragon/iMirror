@@ -81,7 +81,10 @@ Then open Control Center on the sender, choose Screen Mirroring, and select `iMi
 If Windows Firewall prompts on first launch, allow `iMirror.exe` for both
 Private and Public networks. Video uses fixed AirPlay ports, but audio uses
 dynamic UDP ports negotiated during SETUP; allow the app itself rather than only
-opening fixed ports.
+opening fixed ports. If the prompt was missed or audio is blocked, click
+**Allow in Firewall** in iMirror and approve the Windows UAC prompt. This adds
+an inbound program rule for the currently running `iMirror.exe`; repeat it after
+running iMirror from a new extracted folder.
 
 For long-running iPhone validation, keep the iPhone awake and unlocked. iMirror
 is an AirPlay receiver, not Apple's iPhone Mirroring remote-control feature, so
