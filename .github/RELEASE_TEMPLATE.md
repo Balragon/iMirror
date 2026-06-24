@@ -14,7 +14,7 @@
 2. Extract the zip.
 3. Run `iMirror.exe`.
 4. Windows SmartScreen may warn on first launch because this build is unsigned. Click **More info** -> **Run anyway**.
-5. If Windows Firewall prompts for network access, allow both **Private** and **Public** network access.
+5. If Windows Firewall prompts for network access, allow `iMirror.exe` for both **Private** and **Public** network access. Audio uses dynamic UDP ports, so allow the app itself rather than only fixed ports.
 
 ## Known limitations (v0.2)
 
