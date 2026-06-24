@@ -384,6 +384,7 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 	{
 		SolidColorBrush brush = (SolidColorBrush)FindResource("WarningBrush");
 		string text = "Checking network…";
+		bool listenerBlocked = HasDiagnosticIssue(report, "listeners", PreflightStatus.Blocked);
 
 		if (report.Worst == PreflightStatus.Ok)
 		{
@@ -395,7 +396,7 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 			brush = (SolidColorBrush)FindResource("DangerBrush");
 			text = "FFmpeg not found — video decode unavailable";
 		}
-		else if (HasDiagnosticIssue(report, "listeners", PreflightStatus.Blocked))
+		else if (listenerBlocked)
 		{
 			brush = (SolidColorBrush)FindResource("WarningBrush");
 			text = "Firewall may be blocking AirPlay — check Windows Firewall";
@@ -408,6 +409,7 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 
 		DiagStatusDot.Fill = brush;
 		DiagStatusText.Text = text;
+		FirewallAllowInlineButton.Visibility = listenerBlocked ? Visibility.Visible : Visibility.Collapsed;
 	}
 
 	private void SetEmptyStateDiagnosticRechecking()
@@ -465,6 +467,68 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 
 	private async void FirewallHelpButton_Click(object sender, RoutedEventArgs e)
 	{
+		await AllowInFirewallAsync();
+	}
+
+	private async void FirewallAllowButton_Click(object sender, RoutedEventArgs e)
+	{
+		await AllowInFirewallAsync();
+	}
+
+	private async Task AllowInFirewallAsync()
+	{
+		SetFirewallAllowButtonsEnabled(false);
+		SetFirewallAllowButtonsContent("Allowing...");
+		SetStatus("Requesting Windows Firewall access...");
+		SetEmptyStateDiagnosticRechecking();
+
+		try
+		{
+			FirewallRuleInstallResult result = await WindowsFirewallRuleInstaller.AllowCurrentExecutableAsync();
+			AppLog.Write($"Windows Firewall allow rule result: {result.Status}: {result.Message}");
+
+			if (result.Status == FirewallRuleInstallStatus.Success)
+			{
+				SetStatus("Windows Firewall now allows iMirror. Reconnect mirroring if audio does not start.");
+				await Task.Delay(500);
+				await RecheckReadinessAsync();
+				return;
+			}
+
+			if (result.Status == FirewallRuleInstallStatus.Cancelled)
+			{
+				SetStatus("Windows Firewall permission was cancelled.");
+				return;
+			}
+
+			SetStatus(result.Message);
+			OpenWindowsFirewallSettings();
+		}
+		finally
+		{
+			SetFirewallAllowButtonsEnabled(true);
+			SetFirewallAllowButtonsContent("Allow");
+			FirewallAllowInlineButton.Content = "Allow in Firewall";
+			FirewallHelpButton.Content = "Allow in Firewall";
+		}
+	}
+
+	private void SetFirewallAllowButtonsEnabled(bool isEnabled)
+	{
+		FirewallAllowButton.IsEnabled = isEnabled;
+		FirewallAllowInlineButton.IsEnabled = isEnabled;
+		FirewallHelpButton.IsEnabled = isEnabled;
+	}
+
+	private void SetFirewallAllowButtonsContent(string content)
+	{
+		FirewallAllowButton.Content = content;
+		FirewallAllowInlineButton.Content = content;
+		FirewallHelpButton.Content = content;
+	}
+
+	private static void OpenWindowsFirewallSettings()
+	{
 		try
 		{
 			Process.Start(new ProcessStartInfo
@@ -476,10 +540,6 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 		catch
 		{
 		}
-
-		SetEmptyStateDiagnosticRechecking();
-		await Task.Delay(500);
-		await RecheckReadinessAsync();
 	}
 
 	private void Window_Closing(object? sender, CancelEventArgs e)
@@ -2831,6 +2891,7 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 		StatusSummaryPanel.Visibility = connected || _isConnecting ? Visibility.Collapsed : Visibility.Visible;
 		// While mirroring, keep the stage clean unless there is an actionable warning.
 		ReceiverCardBorder.Visibility = connected && !audioFirewallWarning ? Visibility.Collapsed : Visibility.Visible;
+		FirewallAllowButton.Visibility = audioFirewallWarning ? Visibility.Visible : Visibility.Collapsed;
 
 		Brush statusBrush = ResolveReceiverStatusBrush(connected, deviceCount, audioFirewallWarning);
 		SidebarStatusDot.Fill = statusBrush;
