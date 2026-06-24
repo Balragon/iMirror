@@ -52,6 +52,7 @@ public sealed class MediaFoundationD3D11Decoder : IDisposable
 	private bool _loggedFirstTextureDetails;
 	private bool _loggedInvalidTextureSubresource;
 	private bool _loggedSubresourceQueryFailure;
+	private bool _loggedPaddedOutputGeometry;
 	private DumpFile? _receivedDump;
 	private DumpFile? _submittedDump;
 
@@ -499,8 +500,9 @@ public sealed class MediaFoundationD3D11Decoder : IDisposable
 
 			int actualWidth = (int)(packedFrameSize >> 32);
 			int actualHeight = (int)(packedFrameSize & 0xFFFFFFFFL);
-			if (actualSubtype == VideoSubtypes.NV12 && actualWidth == _width && actualHeight == _height)
+			if (actualSubtype == VideoSubtypes.NV12 && IsCompatibleNv12OutputSize(_width, _height, actualWidth, actualHeight))
 			{
+				LogPaddedOutputGeometryIfNeeded(actualWidth, actualHeight, reason);
 				return;
 			}
 
@@ -585,7 +587,7 @@ public sealed class MediaFoundationD3D11Decoder : IDisposable
 
 			var texture = new D3D11.Texture2D(texturePtr);
 			D3D11.Texture2DDescription desc = texture.Description;
-			if (desc.Format != SharpDX.DXGI.Format.NV12 || desc.Width != _width || desc.Height != _height)
+			if (desc.Format != SharpDX.DXGI.Format.NV12 || !IsCompatibleNv12OutputSize(_width, _height, desc.Width, desc.Height))
 			{
 				string message =
 					$"High-resolution D3D output geometry changed: expected {_width}x{_height} NV12, " +
@@ -595,6 +597,7 @@ public sealed class MediaFoundationD3D11Decoder : IDisposable
 				Fault(message);
 				throw new InvalidOperationException(message);
 			}
+			LogPaddedOutputGeometryIfNeeded(desc.Width, desc.Height, "decoder texture");
 			if (subresourceIndex < 0 || subresourceIndex >= desc.ArraySize)
 			{
 				if (!_loggedInvalidTextureSubresource)
@@ -645,6 +648,33 @@ public sealed class MediaFoundationD3D11Decoder : IDisposable
 			}
 			Marshal.ReleaseComObject(mediaBuffer);
 		}
+	}
+
+	internal static bool IsCompatibleNv12OutputSize(int expectedWidth, int expectedHeight, int actualWidth, int actualHeight)
+	{
+		return expectedWidth > 0
+			&& expectedHeight > 0
+			&& actualWidth >= expectedWidth
+			&& actualHeight >= expectedHeight
+			&& (actualWidth == expectedWidth || actualWidth == AlignUp(expectedWidth, 16))
+			&& (actualHeight == expectedHeight || actualHeight == AlignUp(expectedHeight, 16));
+	}
+
+	private void LogPaddedOutputGeometryIfNeeded(int actualWidth, int actualHeight, string reason)
+	{
+		if ((actualWidth == _width && actualHeight == _height) || _loggedPaddedOutputGeometry)
+		{
+			return;
+		}
+
+		_loggedPaddedOutputGeometry = true;
+		StatusChanged?.Invoke(
+			$"Media Foundation D3D11 decoder accepted padded NV12 output: visible={_width}x{_height}, texture={actualWidth}x{actualHeight}, source={reason}.");
+	}
+
+	private static int AlignUp(int value, int alignment)
+	{
+		return ((value + alignment - 1) / alignment) * alignment;
 	}
 
 	private void RecordWriteMetrics(long writeMs)

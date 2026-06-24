@@ -873,7 +873,10 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 #if HIGH_RESOLUTION_D3D
 				if (_mediaFoundationD3DDecoder != null)
 				{
-					AppLog.Write("AirPlay stream config repeated for high-resolution D3D path; refreshing renderer for new sender session.");
+					AppLog.Write("AirPlay stream config repeated for high-resolution D3D path; keeping active renderer.");
+					UpdateHighResolutionD3DPresenterLayout();
+					UpdateDiagnostics();
+					return;
 				}
 				else
 #endif
@@ -882,28 +885,8 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 				}
 			}
 
-#if HIGH_RESOLUTION_D3D
-			if (sameStreamConfig && _mediaFoundationD3DDecoder == null)
-			{
-				return;
-			}
-#endif
-
-			if (sameStreamConfig)
-			{
-#if HIGH_RESOLUTION_D3D
-				RequireH264Keyframe();
-#else
-				ResetH264Gate();
-#endif
-				StartFreshDecoder(config, "AirPlay session refresh");
-				UpdateDiagnostics();
-			}
-			else
-			{
-				ResetH264Gate();
-				StartDecoder(config);
-			}
+			ResetH264Gate();
+			StartDecoder(config);
 		}), DispatcherPriority.Background);
 	}
 
@@ -2126,8 +2109,7 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 		return videoEngine != ReceiverVideoEngineSetting.Software
 			&& qualityRenderModeEnabled
 			&& gpuQualityRequested
-			&& config.Width > ResponsiveMaxRenderWidth
-			&& config.Height > 1080;
+			&& (config.Width > ResponsiveMaxRenderWidth || config.Height > 1080);
 	}
 
 	private bool TryStartHighResolutionD3DPath(StreamConfig config, string reason)
@@ -2227,17 +2209,32 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 		double dpiScaleX = dpi.DpiScaleX > 0.0 ? dpi.DpiScaleX : 1.0;
 		double dpiScaleY = dpi.DpiScaleY > 0.0 ? dpi.DpiScaleY : 1.0;
 		double stageWidthPixels = stageWidthDip * dpiScaleX;
-		double stageHeightPixels = stageHeightDip * dpiScaleY;
-		double scale = Math.Min(stageWidthPixels / config.Width, stageHeightPixels / config.Height);
+		double topInsetDip = ResolveHighResolutionD3DTopInsetDip(stageHeightDip);
+		double availableHeightDip = Math.Max(1.0, stageHeightDip - topInsetDip);
+		double availableHeightPixels = availableHeightDip * dpiScaleY;
+		double scale = Math.Min(stageWidthPixels / config.Width, availableHeightPixels / config.Height);
 		double fitWidthPixels = Math.Max(1.0, Math.Round(config.Width * scale));
 		double fitHeightPixels = Math.Max(1.0, Math.Round(config.Height * scale));
 		double fitWidthDip = Math.Min(stageWidthDip, fitWidthPixels / dpiScaleX);
-		double fitHeightDip = Math.Min(stageHeightDip, fitHeightPixels / dpiScaleY);
+		double fitHeightDip = Math.Min(availableHeightDip, fitHeightPixels / dpiScaleY);
 
 		presenter.Width = fitWidthDip;
 		presenter.Height = fitHeightDip;
+		presenter.Margin = new Thickness(0.0, topInsetDip, 0.0, 0.0);
 		presenter.HorizontalAlignment = HorizontalAlignment.Center;
-		presenter.VerticalAlignment = VerticalAlignment.Center;
+		presenter.VerticalAlignment = topInsetDip > 0.0 ? VerticalAlignment.Top : VerticalAlignment.Center;
+	}
+
+	private double ResolveHighResolutionD3DTopInsetDip(double stageHeightDip)
+	{
+		if (!_audioFirewallWarningActive || ReceiverCardBorder.Visibility != Visibility.Visible)
+		{
+			return 0.0;
+		}
+
+		double cardHeightDip = ReceiverCardBorder.ActualHeight > 0.0 ? ReceiverCardBorder.ActualHeight : 44.0;
+		double desiredInsetDip = ReceiverCardBorder.Margin.Top + cardHeightDip + 12.0;
+		return Math.Min(Math.Max(0.0, desiredInsetDip), Math.Max(0.0, stageHeightDip - 1.0));
 	}
 
 	private void HandleHighResolutionD3DFatal(string message)
@@ -2899,6 +2896,9 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 		SidebarStatusDot.Fill = statusBrush;
 		EmptyStateStatusDot.Fill = statusBrush;
 		ReceiverStateBadge.Background = statusBrush;
+#if HIGH_RESOLUTION_D3D
+		UpdateHighResolutionD3DPresenterLayout();
+#endif
 	}
 
 	private bool IsMirroringActive()
