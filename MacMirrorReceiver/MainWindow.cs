@@ -108,6 +108,8 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 
 	private readonly Queue<PendingVideoPayload> _pendingVideoBeforeSink = new Queue<PendingVideoPayload>();
 
+	private volatile bool _videoSinkAcceptingInput;
+
 	private readonly object _audioGate = new object();
 
 	// 3s warmup grace: BeginWarmup fires at decoder (re)start, but frames only flow after FFmpeg/MF
@@ -726,6 +728,7 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 		int generation = Interlocked.Increment(ref _connectionGeneration);
 		Volatile.Write(ref _airPlaySessionGeneration, activeSession ? generation : 0);
 		CleanupGuards.RunStep("video watchdog stop", StopVideoWatchdog);
+		_videoSinkAcceptingInput = false;
 		FfmpegDecoder? decoder = _decoder;
 		_decoder = null;
 		CleanupGuards.RunStep("ffmpeg decoder dispose", () => decoder?.Dispose());
@@ -1152,9 +1155,10 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 			_audioPcmBytes = 0L;
 			_audioStatus = "waiting for stream";
 			StopAudioPipeline();
-				_streamConfig = null;
-				ResetRemoteCursorState();
-				_decoderStatus = "waiting for stream config";
+			_streamConfig = null;
+			ResetRemoteCursorState();
+			_decoderStatus = "waiting for stream config";
+			_videoSinkAcceptingInput = false;
 			ClearPendingVideoBeforeSink();
 			ResetH264Gate();
 			UpdateDiagnostics();
@@ -1241,6 +1245,11 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 
 	private bool HasVideoSinkReady()
 	{
+		if (!_videoSinkAcceptingInput)
+		{
+			return false;
+		}
+
 		if (_decoder != null)
 		{
 			return true;
@@ -1814,6 +1823,7 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 	private void StartFreshDecoder(StreamConfig config, string reason)
 	{
 		StopVideoWatchdog();
+		_videoSinkAcceptingInput = false;
 		_decoder?.Dispose();
 		_decoder = null;
 #if HIGH_RESOLUTION_D3D
@@ -1833,6 +1843,7 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 		{
 			_decoderMaxRenderWidth = config.Width;
 			_decoderOutputFps = Math.Clamp(config.Fps, 1, HighResolutionMaxRenderFps);
+			_videoSinkAcceptingInput = true;
 			FlushPendingVideoToSink();
 			AppLog.Write("Media Foundation D3D11 renderer started for " + reason + ".");
 			StartVideoWatchdog(config, _connectionGeneration);
@@ -1898,6 +1909,7 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 		};
 		_decoder.Start();
 		_decoderStatus = "started";
+		_videoSinkAcceptingInput = true;
 		FlushPendingVideoToSink();
 		AppLog.Write("FFmpeg software decoder started for " + reason + ".");
 		StartVideoWatchdog(config, _connectionGeneration);
@@ -2562,6 +2574,7 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 			});
 
 			CleanupGuards.RunStep("video watchdog stop", StopVideoWatchdog);
+			_videoSinkAcceptingInput = false;
 			FfmpegDecoder? decoder = _decoder;
 			_decoder = null;
 			CleanupGuards.RunStep("ffmpeg decoder dispose", () => decoder?.Dispose());
