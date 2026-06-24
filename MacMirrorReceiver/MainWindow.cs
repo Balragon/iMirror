@@ -49,7 +49,10 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 
 	private const int MaxAutoReconnectAttempts = 5;
 
-	private const int MaxPendingVideoPacketsBeforeSink = 8;
+	// Keep the initial SPS/PPS/IDR burst while the decoder/render sink spins up.
+	// Small AirPlay slice packets can exceed single digits before WPF/FFmpeg/MF is ready;
+	// the byte cap below remains the hard memory guard.
+	private const int MaxPendingVideoPacketsBeforeSink = 512;
 
 	private const long MaxPendingVideoBytesBeforeSink = 8L * 1024L * 1024L;
 
