@@ -980,7 +980,6 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 	{
 		CancelAudioRtpWatchdogLocked();
 		long frameBaseline = Interlocked.Read(ref _audioFramesReceived);
-		_audioFirewallWarningActive = false;
 		_audioRtpWatchdogCts = new CancellationTokenSource();
 		_ = WatchAudioRtpStartupAsync(generation, frameBaseline, _audioRtpWatchdogCts.Token);
 	}
