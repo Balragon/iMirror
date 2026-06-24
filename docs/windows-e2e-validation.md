@@ -47,6 +47,7 @@ Remaining gate: **one Windows real-device E2E validation run**.
 ## 3. Basic Mirroring Regression
 
 - [ ] Start screen mirroring from Mac/iPhone, select iMirror, and confirm video appears.
+- [ ] For iPhone long-run checks, keep the device awake and unlocked so iOS does not hide private content behind the lock screen.
 - [ ] Confirm audio playback through AAC-ELD decode.
 - [ ] Confirm `iMirror.log` records `AirPlay audio RTP #1`, first AAC-ELD decrypt, and WASAPI buffer status.
 - [ ] Run three reconnect cycles: connect, disconnect, reconnect.
