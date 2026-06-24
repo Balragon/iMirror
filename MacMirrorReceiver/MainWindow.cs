@@ -1887,6 +1887,10 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 	// Lower floor used while mirroring so a portrait phone stream can use a
 	// tall, narrow window instead of being letterboxed inside a wide one.
 	private const double MirroringMinWindowEdge = 320;
+	private const double PortraitMirroringMaxWorkAreaWidthRatio = 0.45;
+	private const double PortraitMirroringMaxWorkAreaHeightRatio = 0.68;
+	private const double PortraitMirroringMaxWidth = 520;
+	private const double PortraitMirroringMaxHeight = 760;
 
 	private void ResizeWindowToStream(StreamConfig config)
 	{
@@ -1897,8 +1901,18 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 
 		double aspect = (double)config.Width / config.Height;
 		Rect work = SystemParameters.WorkArea;
+		bool isPortrait = config.Height > config.Width;
 		double maxWidth = work.Width * 0.9;
 		double maxHeight = work.Height * 0.9;
+		if (isPortrait)
+		{
+			maxWidth = Math.Min(
+				maxWidth,
+				Math.Min(work.Width * PortraitMirroringMaxWorkAreaWidthRatio, PortraitMirroringMaxWidth));
+			maxHeight = Math.Min(
+				maxHeight,
+				Math.Min(work.Height * PortraitMirroringMaxWorkAreaHeightRatio, PortraitMirroringMaxHeight));
+		}
 
 		double targetWidth = maxWidth;
 		double targetHeight = targetWidth / aspect;
@@ -1916,7 +1930,8 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 		Left = work.Left + (work.Width - Width) / 2.0;
 		Top = work.Top + (work.Height - Height) / 2.0;
 
-		AppLog.Write($"Resized window to stream {config.Width}x{config.Height} (aspect {aspect:F3}) -> {Width:F0}x{Height:F0}.");
+		string resizeProfile = isPortrait ? "portrait" : "landscape";
+		AppLog.Write($"Resized window to {resizeProfile} stream {config.Width}x{config.Height} (aspect {aspect:F3}) -> {Width:F0}x{Height:F0}.");
 	}
 
 	private void RestoreDefaultWindowSize()
