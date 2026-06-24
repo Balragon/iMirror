@@ -118,7 +118,7 @@ internal static class StartupDiagnostics
 				"Windows Firewall is blocking AirPlay. iMirror is not discoverable.",
 				$"Blocked: {string.Join(", ", missing)}. Open Windows Security → " +
 				"Firewall & network protection → Allow an app through firewall, " +
-				"find iMirror, and check Private networks.");
+				"find iMirror, and check both Private and Public networks. Audio uses dynamic UDP ports, so allow the iMirror app rather than only fixed ports.");
 		}
 
 		if (!raopBound)
