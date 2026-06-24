@@ -5,12 +5,8 @@
 ## Requirements
 
 - Windows 10 22H2 or Windows 11
-- [.NET 8 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/8.0)
-- FFmpeg Essentials:
-
-```powershell
-winget install Gyan.FFmpeg.Essentials
-```
+- No .NET installation required
+- No separate FFmpeg installation required
 
 ## Installation
 
@@ -24,6 +20,7 @@ winget install Gyan.FFmpeg.Essentials
 
 - No auto-update - check this page for new releases.
 - Unsigned build - SmartScreen warning is expected.
+- FFmpeg Essentials is bundled under `tools\ffmpeg\bin`.
 - GPU decode requires a D3D11-capable GPU; software fallback is automatic.
 
 ## Checksums

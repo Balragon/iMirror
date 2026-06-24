@@ -16,7 +16,7 @@ The public artifact is a self-contained `win-x64` zip built from
 
 - Windows x64 build machine.
 - .NET 8 SDK.
-- FFmpeg Essentials available for local validation or private packages:
+- FFmpeg Essentials available for packaging:
   - `tools\ffmpeg\bin\ffmpeg.exe`
   - `ffmpeg.exe` on `PATH`
   - `-FfmpegPath C:\path\to\ffmpeg.exe`
@@ -40,13 +40,14 @@ The publish script:
 - publishes `MacMirrorReceiver.csproj` as a self-contained `win-x64` Release build
 - copies publish output into an artifacts package folder
 - removes debug, log, and capture files
-- bundles FFmpeg when found
+- bundles FFmpeg
 - validates required files
 - writes `README.txt`
 - creates a zip unless `-NoZip` is passed
 
-For the public v0.2 zip, do not include FFmpeg in the uploaded artifact. Users
-install FFmpeg separately with `winget`.
+For public v0.2 release zips, FFmpeg must be included under
+`tools\ffmpeg\bin\ffmpeg.exe`. It is required for AAC-ELD audio decode and for
+the software video fallback.
 
 ## Tagging A Release
 
@@ -79,12 +80,10 @@ first launch or download. No publisher action is required for v0.2.
 
 ## FFmpeg Note
 
-FFmpeg is not bundled in the public v0.2 release artifact. Users should install
-FFmpeg Essentials:
-
-```powershell
-winget install Gyan.FFmpeg.Essentials
-```
+FFmpeg Essentials is bundled in the public v0.2 release artifact. The GitHub
+release workflow downloads a pinned Gyan.FFmpeg.Essentials zip, verifies its
+SHA-256 checksum, and fails the package if `tools\ffmpeg\bin\ffmpeg.exe` is
+missing.
 
 ## Checksums
 

@@ -43,15 +43,16 @@ Create a self-contained Windows x64 zip package:
 powershell -ExecutionPolicy Bypass -File .\scripts\publish-win-x64.ps1
 ```
 
-The package is written under `artifacts\`. See `docs/release.md` for FFmpeg
-requirements and package smoke-test steps.
+The package is written under `artifacts\`. Public release zips bundle FFmpeg
+Essentials under `tools\ffmpeg\bin`; see `docs/release.md` for package
+smoke-test steps.
 
 ## Runtime Dependencies
 
-FFmpeg is intentionally not committed. Use **Gyan.FFmpeg.Essentials** for release
-packages, not the larger `full_build` variant. Confirm the exact FFmpeg license
-obligations from `ffmpeg -version` and the matching source package before
-redistribution.
+FFmpeg is intentionally not committed. Public release packages bundle a pinned
+**Gyan.FFmpeg.Essentials** build, not the larger `full_build` variant. Confirm
+the exact FFmpeg license obligations from `ffmpeg -version` and the matching
+source package before redistribution.
 
 ```powershell
 winget install Gyan.FFmpeg.Essentials
