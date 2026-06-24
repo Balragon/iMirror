@@ -1,13 +1,28 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <AssemblyName>iMirror</AssemblyName>
-    <GenerateAssemblyInfo>False</GenerateAssemblyInfo>
     <OutputType>WinExe</OutputType>
     <UseWPF>True</UseWPF>
     <UseWindowsForms>True</UseWindowsForms>
     <TargetFramework>net8.0-windows</TargetFramework>
     <PlatformTarget>x64</PlatformTarget>
     <Nullable>enable</Nullable>
+  </PropertyGroup>
+  <!-- Version metadata is release-driven (docs/specs/v02-decisions.md: version-policy).
+       Version/FileVersion/AssemblyVersion default here for local/dev builds; a tagged CI
+       release overrides Version via publish-win-x64.ps1 and injects the short commit SHA
+       through SourceRevisionId, so InformationalVersion becomes e.g. "0.2.0+abc1234".
+       The remaining identity attributes stay hand-authored in Properties/AssemblyInfo.cs,
+       so their SDK generators are disabled to avoid duplicate-attribute (CS0579) errors. -->
+  <PropertyGroup>
+    <Version>0.2.0</Version>
+    <FileVersion>0.2.0.0</FileVersion>
+    <AssemblyVersion>0.2.0.0</AssemblyVersion>
+    <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
+    <GenerateAssemblyCompanyAttribute>false</GenerateAssemblyCompanyAttribute>
+    <GenerateAssemblyConfigurationAttribute>false</GenerateAssemblyConfigurationAttribute>
+    <GenerateAssemblyProductAttribute>false</GenerateAssemblyProductAttribute>
+    <GenerateAssemblyTitleAttribute>false</GenerateAssemblyTitleAttribute>
   </PropertyGroup>
   <PropertyGroup>
     <LangVersion>11.0</LangVersion>

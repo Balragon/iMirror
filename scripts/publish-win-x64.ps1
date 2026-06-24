@@ -117,6 +117,36 @@ try
 		$Version = if ($gitShort) { $gitShort } else { Get-Date -Format "yyyyMMdd-HHmmss" }
 	}
 
+	# Resolve the short commit SHA so InformationalVersion gets a "+<sha>" provenance suffix
+	# (see docs/specs/v02-decisions.md: version-policy). The SDK appends SourceRevisionId to
+	# InformationalVersion automatically.
+	$shortSha = ""
+	try
+	{
+		$shortSha = (& git rev-parse --short HEAD 2>$null).Trim()
+	}
+	catch
+	{
+		$shortSha = ""
+	}
+
+	# A tagged release passes a real SemVer (e.g. "0.2.0" or "0.2.0-rc.1") and should drive the
+	# assembly version. Dev/local runs use a bare commit SHA or timestamp as $Version (used only
+	# for the package filename), so the assembly version stays at the csproj default there.
+	$versionMsbuildArgs = @()
+	if ($Version -match '^(\d+)\.(\d+)\.(\d+)(?:\.(\d+))?(-[0-9A-Za-z.-]+)?$')
+	{
+		$fourth = if ($Matches[4]) { $Matches[4] } else { "0" }
+		$assemblyVersion = "$($Matches[1]).$($Matches[2]).$($Matches[3]).$fourth"
+		$versionMsbuildArgs += "-p:Version=$Version"
+		$versionMsbuildArgs += "-p:FileVersion=$assemblyVersion"
+		$versionMsbuildArgs += "-p:AssemblyVersion=$assemblyVersion"
+	}
+	if ($shortSha)
+	{
+		$versionMsbuildArgs += "-p:SourceRevisionId=$shortSha"
+	}
+
 	$packageName = "iMirror-$Version-$Runtime"
 	$outputRootFull = Join-Path $repoRoot $OutputRoot
 	$publishRoot = Join-Path $outputRootFull "publish"
@@ -132,14 +162,17 @@ try
 	New-Item -ItemType Directory -Force -Path $packageDir | Out-Null
 
 	Write-Host "Publishing iMirror ($Configuration, $Runtime, self-contained)..."
-	& dotnet publish ".\MacMirrorReceiver.csproj" `
-		-c $Configuration `
-		-r $Runtime `
-		--self-contained true `
-		-p:PublishSingleFile=false `
-		-p:DebugType=none `
-		-p:DebugSymbols=false `
-		-o $publishDir
+	$publishArgs = @(
+		".\MacMirrorReceiver.csproj",
+		"-c", $Configuration,
+		"-r", $Runtime,
+		"--self-contained", "true",
+		"-p:PublishSingleFile=false",
+		"-p:DebugType=none",
+		"-p:DebugSymbols=false",
+		"-o", $publishDir
+	) + $versionMsbuildArgs
+	& dotnet publish @publishArgs
 	if ($LASTEXITCODE -ne 0)
 	{
 		exit $LASTEXITCODE
