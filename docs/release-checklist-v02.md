@@ -35,6 +35,7 @@ Manual release validation checklist to be completed before publishing the GitHub
 - [ ] "Re-check" link re-runs diagnostics after user fixes firewall
 - [ ] FFmpeg missing → orange dot + "FFmpeg not found" message shown
 - [ ] Windows Firewall prompt appears on first launch; allow `iMirror.exe` for both Private and Public network types
+- [ ] If the firewall prompt was missed, "Allow in Firewall" launches UAC and installs an inbound program rule for the current `iMirror.exe`
 - [ ] Firewall guidance says audio uses dynamic UDP ports and must allow the app itself, not only fixed ports
 
 ## GPU & video engine
