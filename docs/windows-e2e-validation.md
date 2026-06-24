@@ -28,6 +28,7 @@ Remaining gate: **one Windows real-device E2E validation run**.
 - [ ] **Normal environment:** all checks pass, the strip is completely hidden, and the sidebar matches the existing UI.
 - [ ] **Missing FFmpeg:** delete `tools\ffmpeg\bin\ffmpeg.exe` and launch. Confirm red header `Setup needs attention` plus the FFmpeg row.
 - [ ] **Firewall blocked:** block inbound iMirror in Windows Firewall. Confirm `Firewall is blocking` row and `Open Windows Firewall settings` button behavior.
+- [ ] **Audio UDP blocked:** with video mirroring connected, block inbound UDP for `iMirror.exe`. Confirm audio is silent, the app warns that Windows Firewall may be blocking audio, and `iMirror.log` records no audio RTP after SETUP.
 - [ ] **mDNS port occupied:** launch iMirror while iTunes/Bonjour is holding UDP 5353. Confirm the strip detail correctly names `mDNS UDP 5353` as blocked. This verifies `9164dab`.
 - [ ] **VPN/virtual adapter only:** enable VPN and launch. Confirm yellow `Minor setup notes` plus VPN warning, not `Blocked`.
 - [ ] **Re-check button:** allow firewall, click `Re-check`, and confirm the strip refreshes/disappears without restart.
@@ -47,6 +48,7 @@ Remaining gate: **one Windows real-device E2E validation run**.
 
 - [ ] Start screen mirroring from Mac/iPhone, select iMirror, and confirm video appears.
 - [ ] Confirm audio playback through AAC-ELD decode.
+- [ ] Confirm `iMirror.log` records `AirPlay audio RTP #1`, first AAC-ELD decrypt, and WASAPI buffer status.
 - [ ] Run three reconnect cycles: connect, disconnect, reconnect.
 - [ ] Confirm new session state reset is correct. This verifies `7feefa9`.
 

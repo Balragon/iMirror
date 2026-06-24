@@ -53,6 +53,8 @@ public sealed class StartupDiagnosticsTests
 		Assert.Equal(PreflightStatus.Blocked, check.Status);
 		Assert.Contains("Windows Firewall is blocking AirPlay", check.Message);
 		Assert.Contains("mDNS UDP 5353", check.Detail);
+		Assert.Contains("Private and Public", check.Detail);
+		Assert.Contains("dynamic UDP", check.Detail);
 	}
 
 	[Fact]

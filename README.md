@@ -78,6 +78,11 @@ FFmpeg is used by:
 
 Then open Control Center on the sender, choose Screen Mirroring, and select `iMirror`.
 
+If Windows Firewall prompts on first launch, allow `iMirror.exe` for both
+Private and Public networks. Video uses fixed AirPlay ports, but audio uses
+dynamic UDP ports negotiated during SETUP; allow the app itself rather than only
+opening fixed ports.
+
 ## Video Engine Controls
 
 The normal product path chooses Media Foundation/D3D11 automatically when hardware decode is available.

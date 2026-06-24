@@ -84,7 +84,8 @@ no `netsh`. On a `Blocked` listener verdict the strip shows a short inline panel
 
 > Windows Firewall is blocking AirPlay. Open **Windows Security → Firewall &
 > network protection → Allow an app through firewall**, find **iMirror**, and
-> check it for **Private** networks. (Ports: TCP 7000/7100, UDP 5353.)
+> check it for **Private** and **Public** networks. Audio uses dynamic UDP
+> ports, so allow the app itself instead of only fixed ports.
 
 The **Allow in Firewall** button therefore opens this help text (or the Windows
 Firewall settings page via `ms-settings:windowsdefender` / the firewall control

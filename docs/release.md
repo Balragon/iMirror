@@ -73,6 +73,10 @@ Use `docs/validation.md` as the source checklist. At minimum:
 7. Disconnect and confirm the UI returns to the ready state.
 8. Confirm `iMirror.log` has no decoder fault loop, H.264 corruption loop, or repeated reconnect loop.
 
+If Windows Firewall prompts, allow `iMirror.exe` for both Private and Public
+networks. AirPlay audio uses dynamic UDP ports negotiated at runtime; opening
+only fixed ports can leave video working while audio stays silent.
+
 ## SmartScreen / Trust
 
 The v0.2 public zip is unsigned, so Windows SmartScreen warnings are expected on
