@@ -11,7 +11,7 @@ Manual release validation checklist to be completed before publishing the GitHub
 
 ## Smoke test — AirPlay mirroring
 
-- [ ] App launches on a clean Windows 11 machine (no prior install)
+- [ ] App launches on a clean Windows 10 22H2 or Windows 11 machine (no prior install)
 - [ ] mDNS advertisement visible: iMirror appears in iOS/macOS Screen Mirroring picker
 - [ ] Mac screen mirroring connects and displays video
 - [ ] iPhone screen mirroring connects and displays video
