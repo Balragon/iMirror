@@ -28,7 +28,8 @@ Role in package : Bundled executable, invoked by iMirror as a separate process
 
 License         : GNU General Public License, version 3 (GPLv3).
                   Gyan's "essentials_build" is a GPL build of FFmpeg.
-                  License text: ThirdParty/playfair/LICENSE.md (GPLv3).
+                  License text: tools/ffmpeg/bin/LICENSE.txt.
+                  GPLv3 text is also available at ThirdParty/playfair/LICENSE.md.
                   FFmpeg legal information: https://ffmpeg.org/legal.html
 
 Provenance      : Downloaded at release-build time from a pinned, versioned

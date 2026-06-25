@@ -98,6 +98,35 @@ function Test-FfmpegBuild([string]$Path)
 	}
 }
 
+function Find-FfmpegLicense([string]$FfmpegPath)
+{
+	$searchRoot = Split-Path -Parent $FfmpegPath
+	for ($i = 0; $i -lt 3 -and $searchRoot; $i++)
+	{
+		if ($searchRoot -eq [IO.Path]::GetPathRoot($searchRoot))
+		{
+			break
+		}
+
+		$license = Get-ChildItem -LiteralPath $searchRoot -File -Recurse -ErrorAction SilentlyContinue |
+			Where-Object { $_.Name -in @("LICENSE", "LICENSE.txt", "COPYING", "COPYING.txt", "COPYING.GPLv3", "COPYING.LGPLv3") } |
+			Select-Object -First 1
+		if ($license)
+		{
+			return $license.FullName
+		}
+
+		$parent = Split-Path -Parent $searchRoot
+		if ($parent -eq $searchRoot)
+		{
+			break
+		}
+		$searchRoot = $parent
+	}
+
+	return $null
+}
+
 $repoRoot = Resolve-RepoPath (Join-Path $PSScriptRoot "..")
 Push-Location $repoRoot
 try
@@ -162,12 +191,14 @@ try
 	New-Item -ItemType Directory -Force -Path $packageDir | Out-Null
 
 	Write-Host "Publishing iMirror ($Configuration, $Runtime, self-contained)..."
+	if ($Runtime -ne "win-x64")
+	{
+		throw "This release package is configured for win-x64 only. Runtime was '$Runtime'."
+	}
+
 	$publishArgs = @(
 		".\MacMirrorReceiver.csproj",
 		"-c", $Configuration,
-		"-r", $Runtime,
-		"--self-contained", "true",
-		"-p:PublishSingleFile=false",
 		"-p:DebugType=none",
 		"-p:DebugSymbols=false",
 		"-o", $publishDir
@@ -192,8 +223,15 @@ try
 		$packageFfmpegDir = Join-Path $packageDir "tools\ffmpeg\bin"
 		New-Item -ItemType Directory -Force -Path $packageFfmpegDir | Out-Null
 		Copy-Item -LiteralPath $resolvedFfmpeg -Destination (Join-Path $packageFfmpegDir "ffmpeg.exe") -Force
+		$ffmpegLicense = Find-FfmpegLicense $resolvedFfmpeg
+		if (-not $ffmpegLicense)
+		{
+			throw "FFmpeg license file was not found near '$resolvedFfmpeg'. Bundle a LICENSE/COPYING file with ffmpeg.exe before packaging."
+		}
+		Copy-Item -LiteralPath $ffmpegLicense -Destination (Join-Path $packageFfmpegDir "LICENSE.txt") -Force
 		$ffmpegBundled = $true
 		Write-Host "Bundled FFmpeg: $resolvedFfmpeg"
+		Write-Host "Bundled FFmpeg license: $ffmpegLicense"
 	}
 	elseif (-not $AllowMissingFfmpeg)
 	{
@@ -231,10 +269,15 @@ try
 		{
 			throw "Package is missing bundled FFmpeg."
 		}
+		$packageFfmpegLicense = Join-Path $packageDir "tools\ffmpeg\bin\LICENSE.txt"
+		if (-not (Test-Path -LiteralPath $packageFfmpegLicense -PathType Leaf))
+		{
+			throw "Package is missing bundled FFmpeg license file."
+		}
 	}
 
 	$ffmpegNote = if ($ffmpegBundled) {
-		"  - FFmpeg is bundled under tools\ffmpeg\bin."
+		"  - FFmpeg is bundled under tools\ffmpeg\bin, with its license at tools\ffmpeg\bin\LICENSE.txt."
 	} else {
 		"  - FFmpeg was not bundled; put ffmpeg.exe on PATH or at tools\ffmpeg\bin before mirroring."
 	}
