@@ -209,6 +209,8 @@ try
 		"iMirror.dll",
 		"iMirror.runtimeconfig.json",
 		"iMirror.deps.json",
+		"THIRD_PARTY_NOTICES.txt",
+		"ThirdParty\playfair\LICENSE.md",
 		"ThirdParty\playfair\omg_hax.h",
 		"ThirdParty\playfair\omg_hax.c",
 		"ThirdParty\playfair\sap_hash.c"
@@ -251,8 +253,11 @@ Use:
 Notes:
   - This win-x64 package is self-contained; .NET does not need to be installed.
 $ffmpegNote
-  - iMirror.log is written next to iMirror.exe and can contain local session details.
-  - Delete logs before sharing the package folder or screenshots.
+  - Logs, diagnostics and settings are written under %LOCALAPPDATA%\iMirror
+    (not next to iMirror.exe), so the app works when installed read-only.
+  - iMirror.log (under %LOCALAPPDATA%\iMirror\Logs) can contain local session
+    details; delete it before sharing logs or screenshots.
+  - Third-party license and source notices: see THIRD_PARTY_NOTICES.txt.
 "@
 	Set-Content -LiteralPath (Join-Path $packageDir "README.txt") -Value $readme -Encoding ASCII
 

@@ -46,6 +46,7 @@
     <Compile Remove="MacMirrorReceiver.Tests\**\*.cs" />
   </ItemGroup>
   <ItemGroup>
+    <Content Include="THIRD_PARTY_NOTICES.txt" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="ThirdParty\playfair\LICENSE.md" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="ThirdParty\playfair\hand_garble.c" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="ThirdParty\playfair\modified_md5.c" CopyToOutputDirectory="PreserveNewest" />
