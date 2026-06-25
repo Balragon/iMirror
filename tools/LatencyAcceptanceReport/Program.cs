@@ -74,6 +74,10 @@ bool p95Pass = windows.All(window => window.P95Milliseconds < p95TargetMs);
 bool severeMaxPass = severeMaxWindows == 0;
 bool maxTrendWarn = longestNonDecreasingMaxStreak >= 6;
 bool corruptionPass = signals.CorruptionLines.Count == 0;
+// Crash gate: any unhandled-exception marker fails the run. Backward
+// compatible — a clean log has zero crash lines, so existing acceptance
+// captures are unaffected; only a genuinely crashed soak run fails here.
+bool crashPass = signals.CrashLines.Count == 0;
 bool reconnectPass = signals.ReconnectAttempts >= requiredReconnects;
 bool stableAdvertisePass = !requireStableAdvertise || signals.StableAdvertiseLines > 0;
 bool highResolutionD3DPass = !requireHighResolutionD3D ||
@@ -81,7 +85,7 @@ bool highResolutionD3DPass = !requireHighResolutionD3D ||
 		signals.HighResolutionD3DMultithreadProtectedLines > 0 &&
 		signals.HighResolutionD3DFirstTextureLines > 0 &&
 		signals.HighResolutionD3DFailureLines.Count == 0);
-bool pass = durationPass && p95Pass && severeMaxPass && corruptionPass && reconnectPass && stableAdvertisePass && highResolutionD3DPass;
+bool pass = durationPass && p95Pass && severeMaxPass && corruptionPass && crashPass && reconnectPass && stableAdvertisePass && highResolutionD3DPass;
 
 Console.WriteLine((pass ? "PASS" : "FAIL") + ": iMirror acceptance report");
 Console.WriteLine($"windows={windows.Count:N0}, evidenceDuration={FormatDuration(evidenceSeconds)}, targetDuration={minimumMinutes.ToString("0.###", CultureInfo.InvariantCulture)}min");
@@ -93,8 +97,8 @@ Console.WriteLine($"longestNonDecreasingMaxStreak={longestNonDecreasingMaxStreak
 Console.WriteLine($"reconnectAttempts={signals.ReconnectAttempts:N0}, requiredReconnects={requiredReconnects:N0}");
 Console.WriteLine($"stableAdvertiseLines={signals.StableAdvertiseLines:N0}, experimentalAdvertiseLines={signals.ExperimentalAdvertiseLines:N0}");
 Console.WriteLine($"highResolutionD3DPathActiveLines={signals.HighResolutionD3DPathActiveLines:N0}, d3d11MultithreadProtectedLines={signals.HighResolutionD3DMultithreadProtectedLines:N0}, highResolutionD3DFirstTextureLines={signals.HighResolutionD3DFirstTextureLines:N0}, highResolutionD3DFailureLines={signals.HighResolutionD3DFailureLines.Count:N0}, required={requireHighResolutionD3D}");
-Console.WriteLine($"corruptionLines={signals.CorruptionLines.Count:N0}");
-Console.WriteLine($"duration={(durationPass ? "pass" : "fail")}, p95={(p95Pass ? "pass" : "fail")}, severeMax={(severeMaxPass ? "pass" : "fail")}, maxTrend={(maxTrendWarn ? "warn" : "pass")}, corruption={(corruptionPass ? "pass" : "fail")}, reconnect={(reconnectPass ? "pass" : "fail")}, stableAdvertise={(stableAdvertisePass ? "pass" : "fail")}, highResolutionD3D={(highResolutionD3DPass ? "pass" : "fail")}");
+Console.WriteLine($"corruptionLines={signals.CorruptionLines.Count:N0}, crashLines={signals.CrashLines.Count:N0}");
+Console.WriteLine($"duration={(durationPass ? "pass" : "fail")}, p95={(p95Pass ? "pass" : "fail")}, severeMax={(severeMaxPass ? "pass" : "fail")}, corruption={(corruptionPass ? "pass" : "fail")}, crash={(crashPass ? "pass" : "fail")}, maxTrend={(maxTrendWarn ? "warn" : "pass")}, reconnect={(reconnectPass ? "pass" : "fail")}, stableAdvertise={(stableAdvertisePass ? "pass" : "fail")}, highResolutionD3D={(highResolutionD3DPass ? "pass" : "fail")}");
 if (!contiguousEvidence)
 {
 	Console.WriteLine($"WARN: evidence is not time-contiguous ({largeGapCount:N0} gap(s) over {largeGapThresholdSeconds:0}s, largest {FormatDuration(maxGapSeconds)}). A hand-selected or spliced clean slice can mask spikes; prefer a single continuous capture for product-release acceptance.");
@@ -110,6 +114,14 @@ foreach (string corruptionLine in signals.CorruptionLines.Take(5))
 if (signals.CorruptionLines.Count > 5)
 {
 	Console.WriteLine($"corruption: ... {signals.CorruptionLines.Count - 5:N0} more line(s)");
+}
+foreach (string crashLine in signals.CrashLines.Take(5))
+{
+	Console.WriteLine("crash: " + crashLine);
+}
+if (signals.CrashLines.Count > 5)
+{
+	Console.WriteLine($"crash: ... {signals.CrashLines.Count - 5:N0} more line(s)");
 }
 foreach (string failureLine in signals.HighResolutionD3DFailureLines.Take(5))
 {
@@ -129,6 +141,7 @@ static LogSignals ReadLogSignals(string logPath)
 		@"^\[(?<timestamp>[^\]]+)\].*Presentation latency window:\s+\w+\s+(?<seconds>[0-9.]+)s\s+n=(?<samples>[0-9,]+)\s+p50=(?<p50>[0-9]+)ms\s+p95=(?<p95>[0-9]+)ms\s+max=(?<max>[0-9]+)ms",
 		RegexOptions.Compiled | RegexOptions.CultureInvariant);
 	var corruptionLines = new List<string>();
+	var crashLines = new List<string>();
 	int reconnectAttempts = 0;
 	int stableAdvertiseLines = 0;
 	int experimentalAdvertiseLines = 0;
@@ -171,6 +184,10 @@ static LogSignals ReadLogSignals(string logPath)
 		{
 			corruptionLines.Add(line);
 		}
+		if (IsCrashLine(line))
+		{
+			crashLines.Add(line);
+		}
 
 		Match match = pattern.Match(line);
 		if (!match.Success)
@@ -195,6 +212,7 @@ static LogSignals ReadLogSignals(string logPath)
 	return new LogSignals(
 		windows,
 		corruptionLines,
+		crashLines,
 		reconnectAttempts,
 		stableAdvertiseLines,
 		experimentalAdvertiseLines,
@@ -212,6 +230,15 @@ static bool IsCorruptionLine(string line)
 		line.Contains("reference count overflow", StringComparison.OrdinalIgnoreCase) ||
 		(line.Contains("sps_id", StringComparison.OrdinalIgnoreCase) && line.Contains("out of range", StringComparison.OrdinalIgnoreCase)) ||
 		line.Contains("non-intra slice in an IDR", StringComparison.OrdinalIgnoreCase);
+}
+
+static bool IsCrashLine(string line)
+{
+	// Unhandled-exception markers written by App.cs. Their presence means the
+	// session crashed (or a UI-thread exception escaped), which is a hard soak
+	// failure regardless of how clean the latency windows look.
+	return line.Contains("Unhandled domain exception:", StringComparison.OrdinalIgnoreCase) ||
+		line.Contains("Dispatcher exception:", StringComparison.OrdinalIgnoreCase);
 }
 
 static bool IsHighResolutionD3DFailureLine(string line)
@@ -318,6 +345,7 @@ internal sealed record LatencyWindow(
 internal sealed record LogSignals(
 	List<LatencyWindow> LatencyWindows,
 	List<string> CorruptionLines,
+	List<string> CrashLines,
 	int ReconnectAttempts,
 	int StableAdvertiseLines,
 	int ExperimentalAdvertiseLines,
