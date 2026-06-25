@@ -8,7 +8,7 @@ internal static class AppLog
 	private static readonly object Gate = new object();
 
 	private static readonly string LogPath = Path.Combine(
-		AppContext.BaseDirectory,
+		AppPaths.LogsDirectory,
 #if HARDWARE_PROBE
 			"iMirror-hwprobe.log");
 #else

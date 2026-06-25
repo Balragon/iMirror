@@ -67,17 +67,54 @@ internal static class ReceiverSettings
 
 	private static readonly object FileGate = new object();
 
-	public static string SettingsPath
+	// Settings live under %LOCALAPPDATA%\iMirror\Config (via AppPaths), alongside
+	// logs/diagnostics/dumps. The install directory is read-only, so there is no
+	// fallback to AppContext.BaseDirectory — AppPaths already degrades to the
+	// per-user temp directory if LocalAppData itself is unavailable.
+	public static string SettingsPath => Path.Combine(AppPaths.ConfigDirectory, SettingsFileName);
+
+	// Pre-v0.3 builds stored settings under Roaming AppData\iMirror\settings.json.
+	// Surfaced so a one-time migration can preserve an existing user's choices when
+	// the file moves to the consolidated LocalAppData location.
+	private static string LegacySettingsPath
 	{
 		get
 		{
-			string appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
-			if (string.IsNullOrWhiteSpace(appData))
+			string roaming = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+			if (string.IsNullOrWhiteSpace(roaming))
 			{
-				appData = AppContext.BaseDirectory;
+				return string.Empty;
 			}
 
-			return Path.Combine(appData, SettingsDirectoryName, SettingsFileName);
+			return Path.Combine(roaming, SettingsDirectoryName, SettingsFileName);
+		}
+	}
+
+	// Copies a pre-v0.3 Roaming settings file to the new location once, if the new
+	// file does not exist yet. Best-effort: any failure leaves the app to start
+	// from defaults rather than blocking startup. Must be called under FileGate.
+	private static void MigrateLegacySettingsIfNeeded()
+	{
+		try
+		{
+			string current = SettingsPath;
+			if (File.Exists(current))
+			{
+				return;
+			}
+
+			string legacy = LegacySettingsPath;
+			if (string.IsNullOrEmpty(legacy) || !File.Exists(legacy))
+			{
+				return;
+			}
+
+			File.Copy(legacy, current, overwrite: false);
+			AppLog.Write("Migrated legacy settings from " + legacy + " to " + current + ".");
+		}
+		catch (Exception ex)
+		{
+			AppLog.Write("Legacy settings migration skipped: " + ex.Message);
 		}
 	}
 
@@ -87,6 +124,8 @@ internal static class ReceiverSettings
 	{
 		lock (FileGate)
 		{
+			MigrateLegacySettingsIfNeeded();
+
 			string path = SettingsPath;
 			if (!File.Exists(path))
 			{

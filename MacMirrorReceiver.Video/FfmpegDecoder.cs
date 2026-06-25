@@ -245,7 +245,7 @@ public sealed class FfmpegDecoder : IDisposable
 			if (string.IsNullOrWhiteSpace(setting) || setting == "1" || string.Equals(setting, "true", StringComparison.OrdinalIgnoreCase))
 			{
 				string fileName = "imirror-" + DateTime.Now.ToString("yyyyMMdd-HHmmss", System.Globalization.CultureInfo.InvariantCulture) + ".h264";
-				basePath = Path.Combine(AppContext.BaseDirectory, fileName);
+				basePath = Path.Combine(MacMirrorReceiver.AppPaths.DumpsDirectory, fileName);
 			}
 			else
 			{

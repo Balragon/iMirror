@@ -139,7 +139,7 @@ public sealed class MediaFoundationD3D11Decoder : IDisposable
 			if (string.IsNullOrWhiteSpace(setting) || setting == "1" || string.Equals(setting, "true", StringComparison.OrdinalIgnoreCase))
 			{
 				string fileName = "imirror-" + DateTime.Now.ToString("yyyyMMdd-HHmmss", CultureInfo.InvariantCulture) + ".h264";
-				basePath = System.IO.Path.Combine(AppContext.BaseDirectory, fileName);
+				basePath = System.IO.Path.Combine(MacMirrorReceiver.AppPaths.DumpsDirectory, fileName);
 			}
 			else
 			{
