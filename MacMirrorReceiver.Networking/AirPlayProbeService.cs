@@ -861,7 +861,7 @@ public sealed class AirPlayProbeService : IDisposable
 				["candidateReport"] = candidateReport.ToArray()
 			};
 
-			string directory = Path.Combine(AppContext.BaseDirectory, "Diagnostics");
+			string directory = AppPaths.DiagnosticsDirectory;
 			Directory.CreateDirectory(directory);
 			string fileName = "airplay-mirror-" + DateTimeOffset.Now.ToString("yyyyMMdd-HHmmss-fff", CultureInfo.InvariantCulture) + ".json";
 			string path = Path.Combine(directory, fileName);

@@ -389,7 +389,7 @@ internal sealed class AirPlayAudioReceiver : IDisposable
 				string stamp = DateTime.Now.ToString("yyyyMMdd-HHmmss", CultureInfo.InvariantCulture);
 				if (string.IsNullOrWhiteSpace(setting) || setting == "1" || string.Equals(setting, "true", StringComparison.OrdinalIgnoreCase))
 				{
-					directory = AppContext.BaseDirectory;
+					directory = AppPaths.DumpsDirectory;
 				}
 				else
 				{
