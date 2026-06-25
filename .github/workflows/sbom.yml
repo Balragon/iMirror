@@ -1,0 +1,43 @@
+name: SBOM
+
+# Generates a CycloneDX Software Bill of Materials for iMirror's managed
+# dependencies. Kept as a separate workflow (not part of CI) so the build
+# status stays independent of SBOM tooling. Runs on release tags and can be
+# triggered manually to validate the tool invocation.
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*.*.*'
+
+jobs:
+  sbom:
+    name: Generate CycloneDX SBOM
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Restore
+        run: dotnet restore iMirror.sln
+
+      - name: Generate SBOM
+        shell: pwsh
+        run: |
+          dotnet tool install --global CycloneDX
+          $env:PATH = "$env:USERPROFILE\.dotnet\tools;$env:PATH"
+          dotnet CycloneDX iMirror.sln -o sbom --json
+          Get-ChildItem -Recurse sbom
+
+      - name: Upload SBOM artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: imirror-sbom
+          path: sbom/*
+          if-no-files-found: error
