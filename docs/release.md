@@ -46,8 +46,9 @@ The publish script:
 - creates a zip unless `-NoZip` is passed
 
 For public v0.2 release zips, FFmpeg must be included under
-`tools\ffmpeg\bin\ffmpeg.exe`. It is required for AAC-ELD audio decode and for
-the software video fallback.
+`tools\ffmpeg\bin\ffmpeg.exe`, with its license at
+`tools\ffmpeg\bin\LICENSE.txt`. It is required for AAC-ELD audio decode and
+for the software video fallback.
 
 ## Tagging A Release
 
@@ -87,7 +88,8 @@ first launch or download. No publisher action is required for v0.2.
 FFmpeg Essentials is bundled in the public v0.2 release artifact. The GitHub
 release workflow downloads a pinned Gyan.FFmpeg.Essentials zip, verifies its
 SHA-256 checksum, and fails the package if `tools\ffmpeg\bin\ffmpeg.exe` is
-missing.
+missing. The package also includes the FFmpeg license file at
+`tools\ffmpeg\bin\LICENSE.txt`.
 
 ## Checksums
 

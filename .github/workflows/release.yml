@@ -59,10 +59,19 @@ jobs:
             throw "Downloaded FFmpeg is not an essentials_build."
           }
 
+          $ffmpegLicense = Get-ChildItem -LiteralPath $extractPath -File -Recurse |
+            Where-Object { $_.Name -in @("LICENSE", "LICENSE.txt", "COPYING", "COPYING.txt", "COPYING.GPLv3", "COPYING.LGPLv3") } |
+            Select-Object -First 1
+          if (-not $ffmpegLicense) {
+            throw "FFmpeg license/COPYING file not found in extracted archive."
+          }
+
           $destDir = "tools\ffmpeg\bin"
           New-Item -ItemType Directory -Force -Path $destDir | Out-Null
           Copy-Item -LiteralPath $ffmpegExe.FullName -Destination "$destDir\ffmpeg.exe" -Force
+          Copy-Item -LiteralPath $ffmpegLicense.FullName -Destination "$destDir\LICENSE.txt" -Force
           Write-Host "FFmpeg placed at $destDir\ffmpeg.exe"
+          Write-Host "FFmpeg license placed at $destDir\LICENSE.txt from $($ffmpegLicense.FullName)"
 
       - name: Publish Windows x64 package
         shell: pwsh
@@ -87,6 +96,12 @@ jobs:
             }
             if (-not $bundledFfmpeg) {
               throw "Release package must include tools/ffmpeg/bin/ffmpeg.exe."
+            }
+            $bundledFfmpegLicense = $zip.Entries | Where-Object {
+              $_.FullName -replace "\\", "/" -match "(^|/)tools/ffmpeg/bin/LICENSE\.txt$"
+            }
+            if (-not $bundledFfmpegLicense) {
+              throw "Release package must include tools/ffmpeg/bin/LICENSE.txt."
             }
           }
           finally {
@@ -130,7 +145,7 @@ jobs:
           ### Notes
 
           - This package is unsigned; Windows SmartScreen may show a warning.
-          - FFmpeg Essentials is bundled under `tools\ffmpeg\bin`.
+          - FFmpeg Essentials is bundled under `tools\ffmpeg\bin` with its license file.
           - The app is self-contained for .NET 8.
           "@
           }
