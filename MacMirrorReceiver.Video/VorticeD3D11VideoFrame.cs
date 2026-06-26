@@ -1,10 +1,10 @@
 #if HIGH_RESOLUTION_D3D
 using System;
-using D3D11 = SharpDX.Direct3D11;
+using D3D11 = Vortice.Direct3D11;
 
 namespace MacMirrorReceiver.Video;
 
-public sealed class D3D11VideoFrame : IHighResolutionD3DFrame
+public sealed class VorticeD3D11VideoFrame : IHighResolutionD3DFrame
 {
 	private bool _disposed;
 
@@ -14,7 +14,7 @@ public sealed class D3D11VideoFrame : IHighResolutionD3DFrame
 
 	public required int Fps { get; init; }
 
-	public required D3D11.Texture2D Texture { get; init; }
+	public required D3D11.ID3D11Texture2D Texture { get; init; }
 
 	public required int SubresourceIndex { get; init; }
 

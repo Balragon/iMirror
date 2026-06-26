@@ -53,12 +53,19 @@ internal static class Program
 		long decodedFrames = 0;
 		long presentedFrames = 0;
 		long firstDecodedTick = 0;
-		using var decodedFrameQueue = new BlockingCollection<D3D11VideoFrame>();
-		using var presenter = new D3D11VideoProcessorD3DImagePresenter(windowHandle);
-		Console.WriteLine("d3d11MultithreadProtected=" + presenter.IsMultithreadProtected);
-		using var decoder = new MediaFoundationD3D11Decoder(geometry.Width, geometry.Height, geometry.Fps, presenter.Device);
-		decoder.StatusChanged += message => Console.WriteLine("status: " + message);
-		decoder.FrameDecoded += frame =>
+		using var decodedFrameQueue = new BlockingCollection<IHighResolutionD3DFrame>();
+		using IDisposable presenter = CreateReplayBinding(
+			geometry,
+			windowHandle,
+			out IHighResolutionD3DDecoder decoder,
+			out Action<IHighResolutionD3DFrame> presentFrame,
+			out bool isMultithreadProtected);
+		using (decoder)
+		{
+			Console.WriteLine("gpuBinding=" + D3DGpuBindingSelector.CurrentName);
+			Console.WriteLine("d3d11MultithreadProtected=" + isMultithreadProtected);
+			decoder.StatusChanged += message => Console.WriteLine("status: " + message);
+			decoder.FrameDecoded += frame =>
 		{
 			if (Interlocked.Increment(ref decodedFrames) == 1)
 			{
@@ -74,11 +81,11 @@ internal static class Program
 
 		void DrainDecodedFrames()
 		{
-			while (decodedFrameQueue.TryTake(out D3D11VideoFrame? frame))
+			while (decodedFrameQueue.TryTake(out IHighResolutionD3DFrame? frame))
 			{
 				try
 				{
-					presenter.PresentNv12Texture(frame.Texture, frame.SubresourceIndex, frame.Width, frame.Height, frame.Fps);
+					presentFrame(frame);
 					Interlocked.Increment(ref presentedFrames);
 				}
 				finally
@@ -90,7 +97,7 @@ internal static class Program
 
 		void DisposeQueuedFrames()
 		{
-			while (decodedFrameQueue.TryTake(out D3D11VideoFrame? frame))
+			while (decodedFrameQueue.TryTake(out IHighResolutionD3DFrame? frame))
 			{
 				frame.Dispose();
 			}
@@ -129,13 +136,37 @@ internal static class Program
 		Console.WriteLine("== Summary ==");
 		Console.WriteLine($"queuedRemaining={decoder.QueuedInputPackets:N0}, accepted={decoder.AcceptedInputPackets:N0}, submitted={decoder.WrittenInputPackets:N0}, dropped={decoder.DroppedInputPackets:N0}");
 		Console.WriteLine($"decodedFrames={decodedFrames:N0}, presentedFrames={presentedFrames:N0}, firstDecodedMs={firstDecodedMs}, elapsedMs={elapsedMs:N0}");
-		bool pass = decodedFrames > 0 && presentedFrames > 0;
-		Console.WriteLine((pass ? "PASS" : "FAIL") + ": product MF/D3D11 decode-to-D3DImage replay");
-		return pass ? 0 : 1;
+			bool pass = decodedFrames > 0 && presentedFrames > 0;
+			Console.WriteLine((pass ? "PASS" : "FAIL") + ": product MF/D3D11 decode-to-D3DImage replay");
+			return pass ? 0 : 1;
+		}
+	}
+
+	private static IDisposable CreateReplayBinding(
+		VideoGeometry geometry,
+		IntPtr windowHandle,
+		out IHighResolutionD3DDecoder decoder,
+		out Action<IHighResolutionD3DFrame> presentFrame,
+		out bool isMultithreadProtected)
+	{
+		if (D3DGpuBindingSelector.Current == D3DGpuBinding.Vortice)
+		{
+			var presenter = new VorticeD3D11VideoProcessorD3DImagePresenter(windowHandle);
+			decoder = new VorticeMediaFoundationD3D11Decoder(geometry.Width, geometry.Height, geometry.Fps, presenter.Device);
+			presentFrame = presenter.PresentFrame;
+			isMultithreadProtected = presenter.IsMultithreadProtected;
+			return presenter;
+		}
+
+		var sharpDxPresenter = new D3D11VideoProcessorD3DImagePresenter(windowHandle);
+		decoder = new MediaFoundationD3D11Decoder(geometry.Width, geometry.Height, geometry.Fps, sharpDxPresenter.Device);
+		presentFrame = sharpDxPresenter.PresentFrame;
+		isMultithreadProtected = sharpDxPresenter.IsMultithreadProtected;
+		return sharpDxPresenter;
 	}
 
 	private static void WaitForReplayToSettle(
-		MediaFoundationD3D11Decoder decoder,
+		IHighResolutionD3DDecoder decoder,
 		Func<long> decodedFrames,
 		Func<long> presentedFrames,
 		Action drainDecodedFrames,
