@@ -40,6 +40,11 @@ internal sealed record ReceiverSettingsSnapshot(
 	ReceiverSettingsOverrides Overrides,
 	string SettingsPath);
 
+internal sealed record UpdateNotificationState(
+	string? LastNotifiedVersion,
+	DateTimeOffset? LastNotifiedAt,
+	string? DismissedVersion);
+
 internal static class ReceiverSettings
 {
 	public const int CurrentSchemaVersion = 1;
@@ -170,6 +175,57 @@ internal static class ReceiverSettings
 
 			File.WriteAllText(path, JsonSerializer.Serialize(dto, JsonOptions));
 		}
+	}
+
+	public static UpdateNotificationState LoadUpdateNotificationState()
+	{
+		ReceiverUpdateNotificationsDto? updates = LoadDto().Updates;
+		return new UpdateNotificationState(
+			updates?.LastNotifiedVersion,
+			updates?.LastNotifiedAt,
+			updates?.DismissedVersion);
+	}
+
+	public static bool ShouldShowAutomaticUpdateNotice(UpdateInfo updateInfo, DateTimeOffset now)
+	{
+		if (updateInfo == null || !updateInfo.IsNewer)
+		{
+			return false;
+		}
+
+		UpdateNotificationState state = LoadUpdateNotificationState();
+		if (string.Equals(state.DismissedVersion, updateInfo.LatestVersion, StringComparison.OrdinalIgnoreCase))
+		{
+			return false;
+		}
+
+		if (string.Equals(state.LastNotifiedVersion, updateInfo.LatestVersion, StringComparison.OrdinalIgnoreCase)
+			&& state.LastNotifiedAt.HasValue
+			&& now - state.LastNotifiedAt.Value < TimeSpan.FromDays(1))
+		{
+			return false;
+		}
+
+		return true;
+	}
+
+	public static void MarkUpdateNoticeShown(string version, DateTimeOffset now)
+	{
+		UpdateDto(dto =>
+		{
+			dto.Updates ??= new ReceiverUpdateNotificationsDto();
+			dto.Updates.LastNotifiedVersion = version;
+			dto.Updates.LastNotifiedAt = now;
+		});
+	}
+
+	public static void DismissUpdateNotice(string version)
+	{
+		UpdateDto(dto =>
+		{
+			dto.Updates ??= new ReceiverUpdateNotificationsDto();
+			dto.Updates.DismissedVersion = version;
+		});
 	}
 
 	public static ReceiverSettingsSnapshot Load()
@@ -361,6 +417,7 @@ internal sealed class ReceiverSettingsDto
 	public bool? AudioEnabled { get; set; }
 	public int? AudioSyncOffsetMs { get; set; }
 	public ReceiverDiagnosticsDto? Diagnostics { get; set; }
+	public ReceiverUpdateNotificationsDto? Updates { get; set; }
 }
 
 internal sealed class ReceiverDiagnosticsDto
@@ -368,4 +425,11 @@ internal sealed class ReceiverDiagnosticsDto
 	public bool? WriteDiagnostics { get; set; }
 	public bool? DumpH264 { get; set; }
 	public bool? DumpAudio { get; set; }
+}
+
+internal sealed class ReceiverUpdateNotificationsDto
+{
+	public string? LastNotifiedVersion { get; set; }
+	public DateTimeOffset? LastNotifiedAt { get; set; }
+	public string? DismissedVersion { get; set; }
 }

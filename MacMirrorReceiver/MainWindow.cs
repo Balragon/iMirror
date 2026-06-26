@@ -255,6 +255,12 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 
 	private SettingsWindow? _settingsWindow;
 
+	private readonly UpdateService _updateService = new UpdateService();
+
+	private UpdateInfo? _pendingUpdate;
+
+	private bool _startupUpdateCheckStarted;
+
 	private Forms.NotifyIcon? _trayIcon;
 
 	private Forms.ContextMenuStrip? _trayMenu;
@@ -333,6 +339,7 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 		AppLog.Write($"Preflight: {report.Worst} — " +
 			string.Join("; ", System.Linq.Enumerable.Select(report.Checks, check => $"{check.Id}={check.Status}")));
 		BindReadinessStrip(report);
+		_ = CheckForUpdatesOnStartupAsync();
 	}
 
 	private void BindReadinessStrip(PreflightReport report)
@@ -720,6 +727,16 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 	Task ISettingsHost.RestartApplicationAsync()
 	{
 		return RestartApplicationAsync();
+	}
+
+	Task<UpdateCheckResult> ISettingsHost.CheckForUpdatesAsync(bool manual)
+	{
+		return CheckForUpdatesAsync(manual);
+	}
+
+	Task<bool> ISettingsHost.InstallUpdateAsync(UpdateInfo updateInfo, IProgress<double>? progress)
+	{
+		return InstallUpdateAsync(updateInfo, progress);
 	}
 
 	void ISettingsHost.SetStatusMessage(string message)
@@ -1790,6 +1807,140 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 			UseShellExecute = true
 		});
 		await ShutdownApplicationAsync();
+	}
+
+	private async Task CheckForUpdatesOnStartupAsync()
+	{
+		if (_startupUpdateCheckStarted || _shutdownStarted)
+		{
+			return;
+		}
+
+		_startupUpdateCheckStarted = true;
+		try
+		{
+			await Task.Delay(1500);
+			if (_shutdownStarted)
+			{
+				return;
+			}
+
+			UpdateCheckResult result = await CheckForUpdatesAsync(manual: false);
+			UpdateInfo? update = result.Update;
+			if (update?.IsNewer != true)
+			{
+				return;
+			}
+
+			DateTimeOffset now = DateTimeOffset.Now;
+			if (!ReceiverSettings.ShouldShowAutomaticUpdateNotice(update, now))
+			{
+				return;
+			}
+
+			ReceiverSettings.MarkUpdateNoticeShown(update.LatestVersion, now);
+			ShowUpdateNotice(update);
+		}
+		catch (Exception ex)
+		{
+			AppLog.Write("Startup update check failed: " + ex.Message);
+		}
+	}
+
+	private async Task<UpdateCheckResult> CheckForUpdatesAsync(bool manual)
+	{
+		UpdateInfo? update = await _updateService.CheckAsync(includePrerelease: false, CancellationToken.None);
+		if (update == null)
+		{
+			return new UpdateCheckResult(
+				null,
+				manual ? "Could not check for updates. Open Releases and install manually." : string.Empty,
+				Failed: true);
+		}
+
+		if (!update.IsNewer)
+		{
+			return new UpdateCheckResult(null, "You're on the latest iMirror.", Failed: false);
+		}
+
+		_pendingUpdate = update;
+		if (manual)
+		{
+			ShowUpdateNotice(update);
+		}
+
+		return new UpdateCheckResult(update, $"iMirror {update.LatestVersion} is available.", Failed: false);
+	}
+
+	private void ShowUpdateNotice(UpdateInfo update)
+	{
+		_pendingUpdate = update;
+		UpdateNoticeTextBlock.Text = $"iMirror {update.LatestVersion} is available.";
+		UpdateNoticeInstallButton.Content = "Update";
+		UpdateNoticeInstallButton.IsEnabled = true;
+		UpdateNoticeDismissButton.IsEnabled = true;
+		UpdateNoticeBorder.Visibility = Visibility.Visible;
+	}
+
+	private void HideUpdateNotice()
+	{
+		UpdateNoticeBorder.Visibility = Visibility.Collapsed;
+	}
+
+	private async Task<bool> InstallUpdateAsync(UpdateInfo updateInfo, IProgress<double>? progress)
+	{
+		try
+		{
+			_pendingUpdate = updateInfo;
+			UpdateNoticeBorder.Visibility = Visibility.Visible;
+			UpdateNoticeInstallButton.IsEnabled = false;
+			UpdateNoticeDismissButton.IsEnabled = false;
+			UpdateNoticeTextBlock.Text = $"Downloading iMirror {updateInfo.LatestVersion}...";
+			SetStatus($"Downloading iMirror {updateInfo.LatestVersion} update...");
+
+			string setupPath = await _updateService.DownloadSetupAsync(updateInfo, progress, CancellationToken.None);
+			UpdateNoticeTextBlock.Text = "Starting update installer...";
+			SetStatus("Starting update installer...");
+			UpdateLauncher.Launch(setupPath);
+			SetStatus("Update installer started. iMirror will close when setup is ready.");
+			return true;
+		}
+		catch (Exception ex)
+		{
+			AppLog.Write("Update install failed: " + ex);
+			SetStatus("Update could not be installed: " + ex.Message);
+			UpdateNoticeTextBlock.Text = "Update could not be installed. Open Releases and install manually.";
+			UpdateNoticeInstallButton.Content = "Retry";
+			UpdateNoticeInstallButton.IsEnabled = true;
+			UpdateNoticeDismissButton.IsEnabled = true;
+			return false;
+		}
+	}
+
+	private async void UpdateNoticeInstallButton_Click(object sender, RoutedEventArgs e)
+	{
+		UpdateInfo? update = _pendingUpdate;
+		if (update == null)
+		{
+			return;
+		}
+
+		var progress = new Progress<double>(value =>
+		{
+			int percent = Math.Clamp((int)Math.Round(value * 100.0), 0, 100);
+			UpdateNoticeTextBlock.Text = $"Downloading iMirror {update.LatestVersion}... {percent}%";
+		});
+		await InstallUpdateAsync(update, progress);
+	}
+
+	private void UpdateNoticeDismissButton_Click(object sender, RoutedEventArgs e)
+	{
+		UpdateInfo? update = _pendingUpdate;
+		if (update != null)
+		{
+			ReceiverSettings.DismissUpdateNotice(update.LatestVersion);
+		}
+		HideUpdateNotice();
 	}
 
 	private static string ResolveExecutablePath()
