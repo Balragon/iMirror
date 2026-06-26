@@ -155,6 +155,32 @@ lock and relaunch. Full design lives in **`docs/specs/v04-updater-design.md`**.
 - [ ] Update downloads the new Setup, verifies it, runs it, and the app relaunches.
 - [ ] Any failure path leaves the user on their working version, no half-state.
 
+**Status:** ✅ Delivered by codex (`feat: add installer and lightweight updater`,
+`f36b238`). Installer (`installer/iMirror.iss`), updater
+(`UpdateService`/`UpdateLauncher`/`SemanticVersion`), UI hooks, `release.yml`
+installer + `SHA256SUMS`, and tests. Verified against
+`docs/specs/v04-updater-design.md`: never-throws check, semver compare,
+size+SHA-256 verify (classic `hash␠␠name` format matches `release.yml`), shared
+mutex `Local\iMirror.App`, restart-manager relaunch.
+
+---
+
+## Phase 2.5: GPLv3 §5(d) in-app legal notice — codex compliance follow-up
+
+**Open codex item (small).** Because iMirror is GPLv3 (see
+`docs/specs/open-source-strategy.md` Phase 0) and has an interactive WPF UI,
+GPLv3 §5(d) requires "Appropriate Legal Notices" in the app. This is the one
+remaining piece of the v0.4 product surface before the first public release.
+
+| Task | Title | Effort | Handoff |
+|---|---|---:|---|
+| compliance-inapp-notice | Show copyright + no-warranty + "GPLv3" + source/license link in the Settings footer (next to `VersionTextBlock`) | S | codex-backend |
+
+Full spec (location, suggested copy, acceptance) lives in
+`docs/specs/open-source-strategy.md` → "Phase 2 ▶ Open codex item." Reuse
+existing `AppUpdateConstants` URLs and `MutedTextBrush`/`Hyperlink` styling; no
+"MIT" wording anywhere.
+
 ---
 
 ## Phase 3: Code Signing — builds trust when expanding beyond developers

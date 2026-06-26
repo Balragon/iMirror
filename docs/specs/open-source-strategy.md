@@ -1,54 +1,57 @@
-# iMirror Open Source Distribution Strategy
+# iMirror GitHub Public Distribution Roadmap
 
-## Executive Summary
+How iMirror becomes a properly-distributed open source project on GitHub:
+license, community scaffolding, a distributable product surface, repo
+governance, and the first public release — sequenced as phases with live status.
 
-iMirror is positioning as an open source Windows developer tool with **transparent development** (public repository, public CI, public roadmap) while maintaining clear boundaries around **audience, contributions, and licensing**. This document establishes the policies governing the public GitHub repository and external engagement.
+This is the roadmap form of what was previously a flat strategy doc. It is
+companion to `docs/specs/v04-product-surface-roadmap.md` (the installer/updater
+that makes the product *distributable*) and `docs/specs/v05-plus-roadmap.md`
+(what happens after the first public release).
 
-**Key decision: iMirror is licensed under GPLv3.** This is not a preference — it is *forced* by the codebase. iMirror combines two GPLv3 components that it cannot ship without: the **playfair** FairPlay sources (read at runtime; FairPlay is required for real-device mirroring) and a bundled **GPLv3 FFmpeg** build. A required GPLv3 component makes the distributed work a GPLv3 combined work; a permissive (MIT) license on the whole would misrepresent that. See "Licensing Decision" below for the full analysis, including why an LGPL-FFmpeg swap would *not* unlock MIT.
+## Where we are
+
+```
+Phase 0  Licensing & compliance baseline ............. DONE
+Phase 1  Community & contribution scaffolding ........ DONE (templates optional)
+Phase 2  Distributable product surface (codex v0.4) .. DONE — 1 follow-up item (§5(d) notice)
+Phase 3  Repo governance & metadata .................. TODO (maintainer GitHub settings)
+Phase 4  First public release cut (v0.4.0 tag) ....... TODO (gated on Phase 2 item + real-HW validation)
+Phase 5  Post-distribution / ongoing ................. STANDING (net10, signing-deferred, security-deferred)
+```
+
+The hard external constraint behind everything past Phase 4 is **.NET 8 EOL,
+2026-11-10** — see `docs/specs/v05-plus-roadmap.md`. Get the public release out,
+then protect net10's validation window.
 
 ---
 
-## Repository Visibility & Access Model
+## Phase 0 — Licensing & compliance baseline ✅ DONE
 
-### Public Repository
-- **Repository:** `github.com/Balragon/iMirror` is **publicly visible** (anyone can clone, fork, browse code).
-- **Rationale:** Transparency attracts developers, enables feedback loops, and demonstrates active development. Windows-only tooling carries minimal supply-chain risk, and the technical-audience positioning self-selects against drive-by issues.
-- **Current CI:** GitHub Actions workflows (CI, SBOM, release) are publicly logged and visible to anyone.
-- **Branches:** `main` is the stable/released branch; feature branches are development-in-progress; releases are tagged.
+The foundation: you cannot publicly distribute until the license is correct.
+For iMirror that license is **GPLv3**, and it is *forced*, not chosen.
 
-### Read Access
-- Fully public; no authentication needed.
+### iMirror is licensed under **GPLv3** (SPDX `GPL-3.0-or-later`)
 
-### Write Access (Contributions)
-- **Core maintainers** (Balragon team) have direct push and merge rights on `main`.
-- **External contributors** submit PRs; see "Contribution Model" below.
+`LICENSE` at the repo root is the full GNU GPL v3 text, prefixed with iMirror's
+copyright/grant notice and a pointer to `THIRD_PARTY_NOTICES.txt`.
 
----
-
-## Licensing Decision: GPLv3 for iMirror
-
-### iMirror License: **GPLv3** (forced by required GPL components)
-
-**Action:** `LICENSE` at the repository root is the full GNU General Public
-License v3 text, prefixed with iMirror's copyright/grant notice and a pointer to
-`THIRD_PARTY_NOTICES.txt`. SPDX: `GPL-3.0-or-later`.
-
-### Why GPLv3, and why MIT is not available
+### Why GPLv3, and why MIT/permissive is not available
 
 MIT was the initial instinct (permissive, developer-friendly). It does not
 survive contact with the codebase. Two GPLv3 components are **structurally
 required** by every shipped build:
 
 1. **playfair (GPLv3) — the decisive one.** `MacMirrorReceiver.csproj` ships the
-   playfair `.c`/`.h` files into the publish output, and
-   `AirPlayPlayFair.cs` **reads them at runtime** to extract the FairPlay
-   constant tables (S-boxes, keys, IVs), throwing `FileNotFoundException` if they
-   are absent. FairPlay is mandatory for real-device AirPlay mirroring, so iMirror
-   is **non-functional without playfair**. That is a combined/derivative work, and
-   GPL is one-directional: you may pull MIT *into* GPL, but you cannot wrap a
-   required GPLv3 component in an MIT product and call the whole MIT. playfair is a
-   FairPlay reverse-engineering project published GPLv3-only — **there is no LGPL
-   or permissive alternative**.
+   playfair `.c`/`.h` files into the publish output, and `AirPlayPlayFair.cs`
+   **reads them at runtime** to extract the FairPlay constant tables (S-boxes,
+   keys, IVs), throwing `FileNotFoundException` if they are absent. FairPlay is
+   mandatory for real-device AirPlay mirroring, so iMirror is **non-functional
+   without playfair**. That makes the distributed work a combined/derivative
+   work, and GPL is one-directional: you may pull MIT *into* GPL, but you cannot
+   wrap a required GPLv3 component in an MIT product and call the whole MIT.
+   playfair is a FairPlay reverse-engineering project published GPLv3-only —
+   **there is no LGPL or permissive alternative**.
 
 2. **FFmpeg (Gyan "essentials", GPLv3) — bundled, but not the blocker.** iMirror
    invokes `ffmpeg.exe` as a *separate child process* (documented in the notices:
@@ -59,25 +62,22 @@ required** by every shipped build:
    bundled-binary obligation that is already met, while playfair (#1) keeps the
    work GPL regardless.
 
-**Conclusion:** GPLv3 is the only honest license for the distributed work. A bare
-MIT `LICENSE` would assert freedoms the playfair dependency does not grant. The
-"permissive developer tool" positioning is simply unavailable unless FairPlay is
-re-implemented without playfair — see "Path back to permissive" below.
+**Conclusion:** GPLv3 is the only honest license for the distributed work.
 
 ### Consequences of GPLv3 for users and contributors
 
 - **Source availability:** anyone who receives an iMirror binary is entitled to
   the complete corresponding source (the public repo + the bundled GPL component
-  sources). Already addressed by the public repository and `THIRD_PARTY_NOTICES.txt`
-  §6 source offers.
-- **Derivatives stay GPL:** forks/redistributions of iMirror (or its binaries)
-  must remain GPLv3. iMirror cannot be embedded in closed-source products.
+  sources). Addressed by the public repository and `THIRD_PARTY_NOTICES.txt` §6
+  source offers. Phase 4 also surfaces this in the release notes.
+- **Derivatives stay GPL:** forks/redistributions must remain GPLv3; iMirror
+  cannot be embedded in closed-source products.
 - **Contributions are GPLv3:** by submitting a PR, contributors agree their
-  changes are licensed GPLv3 (inbound = outbound). Stated in `CONTRIBUTING.md`.
+  changes are GPLv3 (inbound = outbound). Stated in `CONTRIBUTING.md`.
 - **Appropriate Legal Notices (GPLv3 §5(d)):** because iMirror has an interactive
-  WPF UI, an About/Settings notice should display copyright + "no warranty" + a
-  pointer to the license. The existing Settings/Updates surface is the natural
-  home; track as a small follow-up.
+  WPF UI, an About/Settings notice must display copyright + "no warranty" + a
+  license/source pointer. **This is the one open Phase 2 item — handed to codex
+  (see Phase 2).**
 
 ### Bundled / combined components & compliance
 
@@ -95,231 +95,199 @@ work is GPLv3). The reverse — GPL → MIT — is what is impossible here.
 
 ### Path back to permissive (if ever wanted)
 
-The *only* way iMirror could become MIT/permissive is to **remove the playfair
+The *only* way iMirror could become permissive is to **remove the playfair
 dependency** (re-implement or drop FairPlay) **and** swap FFmpeg to an LGPL
 build. Removing FairPlay would break real-device AirPlay mirroring, so this is
 not a near-term option. Until then, GPLv3 is correct and final. Documented so the
 question is not re-litigated.
 
----
-
-## Contribution Model
-
-### Philosophy
-
-iMirror is **open to external contributions** with a clear scope: bug fixes, performance improvements, and documentation. The bar for acceptance is higher for architectural changes that conflict with the Windows/GPU focus or demand platform-specific re-testing.
-
-### Who Can Contribute
-
-- **External developers:** anyone with a GitHub account. No prior approval or membership required.
-- **Pull requests:** fork → branch → PR against `main`.
-- **Expectations:** (see "Code of Conduct" below).
-
-### Contribution Types & Acceptance Criteria
-
-| Type | Bar | Examples | Acceptance |
-|---|---|---|---|
-| **Bug fixes** | Medium | Crash on D3D loss, latency regression, FFmpeg fallback issue | Reviewed for correctness; must include test or repro; CI must pass |
-| **Performance** | Medium | Reduce frame-copy overhead, lower latency, memory efficiency | Benchmark required (see `tools/LatencyAcceptanceReport`); real-device validation on branch before merge |
-| **Documentation** | Low | Expand README, add architecture notes, clarify validation steps | Reviewed for accuracy; should link to source code locations |
-| **Architectural change** | High | Platform abstraction, new rendering backend, redesigned audio stack | Discussion in issue first; Windows-only focus must be preserved; GPU-path testing overhead scoped |
-| **Feature request** | Case-by-case | New protocol support, alternative codecs, AirPlay 2 | Discuss in issue; scope against roadmap (v0.4/v0.5 milestones); GPU implications assessed |
-
-### Contribution Workflow
-
-1. **Open an issue** (for bugs, features, or design discussion) or **fork & branch**.
-2. **Create a PR** against `main`. Reference related issues.
-3. **CI runs automatically** (build, test, SBOM). Must pass before review.
-4. **Code review** by maintainers. For GPU/video changes, author may be asked for real-device test results.
-5. **Approval & merge** — typically `squash and rebase` to keep history clean.
-
-### Pre-Contribution Discussion
-
-For **major changes** (protocol changes, new rendering modes, removal of FFmpeg fallback), open an issue first. This avoids wasted effort on PRs that may not align with the product direction.
-
-### Testing Requirements for Contributors
-
-- **Build:** `dotnet build` must pass.
-- **Unit tests:** run existing test suite; add tests for new logic.
-- **GPU-path changes:** author should validate on real hardware (Windows 10+, NVIDIA or Intel iGPU preferred). Report: device model, driver version, test result.
+**Status:** `LICENSE`, `THIRD_PARTY_NOTICES.txt` (playfair combined-work note
+resolved), and README License section are all in place. ✅
 
 ---
 
-## Code of Conduct
+## Phase 1 — Community & contribution scaffolding ✅ DONE
 
-iMirror adopts the **Contributor Covenant 2.1** (standard in-community CoC). Key expectations:
+The files a public contributor expects to find, and the contribution rules.
 
-- **Respectful:** critique ideas, not people. Assume good intent.
-- **Inclusive:** welcome contributors from all backgrounds.
-- **On-topic:** discussions stay focused on iMirror development; off-topic arguments are closed.
-- **Violations:** reported to maintainers; enforcement may include warning, temporary block, or permanent ban.
-
-**File:** `CODE_OF_CONDUCT.md` (add to repository root; standard Contributor Covenant template).
-
----
-
-## Public Release & Version Management
-
-### Release Cadence
-
-- **Stable releases:** tagged `v0.X.Y` on `main`. Infrequent (~1-2 per quarter until reach v1.0).
-- **Prerelease:** tagged `v0.X.Y-preN`. Marked as prerelease on GitHub; excluded from auto-update stable channel (v0.4+).
-- **No breaking changes** within a `0.X` series unless documented in release notes.
-
-### Public Release Artifacts
-
-GitHub Releases (per `.github/workflows/release.yml`):
-1. **iMirror-v0.X.Y-setup.exe** — Inno Setup installer (v0.4+). Requires approval on SmartScreen for now.
-2. **iMirror-v0.X.Y.zip** — portable self-contained package. Always available (v0.3+).
-3. **SBOM (CycloneDX JSON)** — published for supply-chain transparency (v0.3+).
-4. **SHA256SUMS** — integrity hashes for installer and zip (v0.4+).
-
-### Development Transparency
-
-- **Issues:** tracked publicly (GitHub Issues). Open issues visible to anyone; includes planned work (v0.4, v0.5, future).
-- **Milestones:** roadmap milestones on GitHub Milestones link to docs/specs/v04-product-surface-roadmap.md etc.
-- **Release notes:** GitHub Releases page + CHANGELOG (manual).
-
----
-
-## External Contributor Considerations
-
-### Scope Boundaries
-
-**In scope:**
-- Bug fixes to existing features (AirPlay protocol, video/audio decode, UI).
-- Performance optimization (latency, CPU/GPU efficiency).
-- Documentation improvements.
-- Test coverage expansion.
-
-**Out of scope (likely require maintainer involvement):**
-- New rendering backends (would fragment GPU-path testing).
-- Non-Windows platform support (project charter is Windows).
-- Dependency changes that affect GPU stack (SharpDX, Media Foundation, WASAPI).
-- CLI restructure or public API design (product surface is WPF GUI).
-
-### Hardware Requirements for Contributors
-
-Testing GPU-path changes requires:
-- Windows 10 or later.
-- GPU with hardware video decode (NVIDIA, Intel iGPU; AMD also supported).
-- Real AirPlay sender (iPhone, Mac, iPad).
-- Validation against soak gate (if perf/latency claims made).
-
-For contributors without access to real hardware, maintainers will test on their machines before merge. Clearly state "hardware available: none" in PR description if so.
-
----
-
-## Security & Vulnerability Disclosure
-
-### No Security.md Yet (Add Later)
-
-When iMirror reaches general-audience distribution or handles untrusted network data (AirPlay is mDNS discovery + paired device only, low risk), add a `SECURITY.md` file with:
-- **Supported versions:** only latest `0.X.Y` branch.
-- **Reporting:** private disclosure to maintainers (email, not public issue).
-- **Response SLA:** 30 days to fix or public notification.
-
-**For now (v0.3/v0.4):** no formal security policy; report security issues directly in a private discussion or email.
-
----
-
-## Contributing Guidelines & Documentation
-
-### Files to Add (Immediate)
-
-1. **LICENSE** — GPLv3 full text + iMirror notice (done; see "Licensing Decision").
-2. **CONTRIBUTING.md** — contributor guide (workflow, testing, CoC, inbound=GPLv3).
-3. **CODE_OF_CONDUCT.md** — Contributor Covenant 2.1 standard template.
-4. **CHANGELOG.md** — releases (v0.2, v0.3, v0.4 summaries); updated per release.
-
-### Files to Add (When General-Audience Expansion is Decided)
-
-- **SECURITY.md** — vulnerability disclosure policy (un-defer with Phase 3 signing).
-
-### Existing Documentation (Keep Updated)
-
-- **README.md** — user quick-start (already good; extend with "Contributing" link).
-- **docs/architecture.md** — developer reference for internals (already exists; refresh per major version).
-- **docs/validation.md** — acceptance & soak procedures (already exists; reference in CONTRIBUTING).
-- **docs/release.md** — release packaging (already exists; update for new installer v0.4).
-
----
-
-## Access Control & Branch Protection
-
-### `main` Branch Protection
-
-Enforce:
-- Require PR review (≥1 approval from maintainer).
-- Require CI (build, test) to pass.
-- Require up-to-date with `main` before merge.
-- Allow admins to bypass (for emergency releases).
-
-### Collaborator Roles
-
-- **Maintainers** (core team): can merge PRs, push directly to branches, administer repository.
-- **Triage** (future, if needed): can label/close issues, cannot merge.
-- **External contributors:** create forks, submit PRs; no direct push access.
-
----
-
-## Repository Metadata & Discoverability
-
-### GitHub Repository Settings
-
-- **Description:** "Windows AirPlay mirroring receiver for developers and QA teams."
-- **URL:** https://github.com/Balragon/iMirror
-- **Topics:** `airplay`, `mirroring`, `windows`, `developer-tools`, `gpu-video`, `real-device-testing`.
-- **License:** GPL-3.0 (GitHub auto-detects from the LICENSE file).
-- **Visibility:** Public.
-- **Discussions:** disabled (issues only for now).
-- **Wikis:** disabled (use docs/ folder).
-
----
-
-## Not Public (Yet)
-
-- **Private discussions:** none; all roadmap/planning is in issues or docs/.
-- **Board:** no public project board; reference GitHub Milestones instead.
-- **Sponsors:** no GitHub Sponsors setup (no donation model yet).
-
----
-
-## Interaction with v0.4 Signing Decision
-
-**Code signing** (v0.4 Phase 3) is currently **deferred** pending a product decision to expand beyond technical users. The open source strategy **does not depend on signing**:
-
-- **Signing un-defer trigger:** explicit decision to target general-audience distribution (not developer-only).
-- **Until then:** iMirror remains unsigned on public GitHub Releases. Technical users click through SmartScreen.
-- **Repository visibility:** unaffected; repository stays public regardless of signing status.
-
----
-
-## Summary & Next Steps
-
-| Item | Status | Action |
+| File | Status | Purpose |
 |---|---|---|
-| **Repository visibility** | Public | No change; confirm in GitHub Settings |
-| **iMirror license** | GPLv3 | `LICENSE` (GPLv3 + notice) added ✅ |
-| **Bundled/combined compliance** | GPLv3 (playfair combined, FFmpeg aggregated) + MIT deps | Documented in `THIRD_PARTY_NOTICES.txt`; playfair combined-work note updated ✅ |
-| **CONTRIBUTING.md** | Added ✅ | Includes inbound=GPLv3 (DCO-style) statement |
-| **CODE_OF_CONDUCT.md** | Added ✅ | Contributor Covenant 2.1 |
-| **CHANGELOG.md** | Added ✅ | v0.2/v0.3/v0.4 summaries; update per release |
-| **GPLv3 §5(d) in-app notice** | Follow-up | Add copyright + no-warranty + license pointer to Settings/About |
-| **SECURITY.md** | Deferred | Add after general-audience decision (tracks with signing) |
-| **GitHub branch protection** | Unconfigured | Add PR review + CI gate to `main` |
-| **Repository topics** | Not set | airplay, mirroring, windows, developer-tools, gpu-video, real-device-testing |
+| `LICENSE` | ✅ | GPLv3 + iMirror notice |
+| `CONTRIBUTING.md` | ✅ | Workflow, testing, real-device template, inbound=GPLv3 |
+| `CODE_OF_CONDUCT.md` | ✅ | Contributor Covenant 2.1 |
+| `CHANGELOG.md` | ✅ | v0.2/v0.3/v0.4 history + roadmap; update per release |
+| `README.md` License + Contributing sections | ✅ | Discoverability |
+| `.github/ISSUE_TEMPLATE/*`, `PULL_REQUEST_TEMPLATE.md` | ⚪ Optional | Nudge GPU/device info into bug reports; defer until inbound issue volume justifies |
+
+### Contribution model (the rules these files encode)
+
+- **Open to external PRs** — anyone with a GitHub account; fork → branch → PR
+  against `main`; CI must pass; maintainer review.
+- **Inbound = outbound GPLv3** — stated in `CONTRIBUTING.md`.
+- **Scope boundaries:**
+  - *In scope:* bug fixes, performance, documentation, test coverage.
+  - *Out of scope (maintainer-led):* non-Windows platform support, new rendering
+    backends, GPU-stack dependency swaps (SharpDX/MediaFoundation/WASAPI), public
+    API/CLI redesign. These fragment the GPU-path testing surface.
+- **Real-device testing** — GPU-path changes must be validated on real hardware
+  (device, driver, latency ≤150ms, soak); the `CONTRIBUTING.md` template captures
+  this. Contributors without hardware say so; maintainers validate before merge.
+
+**Status:** scaffolding complete; issue/PR templates intentionally deferred.
 
 ---
 
-## Appendix: License Files
+## Phase 2 — Distributable product surface (codex v0.4) ✅ DONE · 1 follow-up
 
-- **`LICENSE`** (repository root) — the full GNU General Public License v3 text,
-  prefixed with iMirror's copyright/grant notice and a pointer to
-  `THIRD_PARTY_NOTICES.txt`. SPDX identifier: `GPL-3.0-or-later`.
+"Open source on GitHub" is not just source — it is something a user can install
+and keep updated. v0.4 (codex, commit `f36b238`) delivered exactly that:
+
+| Delivered | Where |
+|---|---|
+| Inno Setup installer, per-user `%LOCALAPPDATA%\Programs\iMirror`, no UAC | `installer/iMirror.iss`, `scripts/build-installer.ps1` |
+| Restart-manager close+relaunch; shared mutex `Local\iMirror.App` | `.iss` `AppMutex` ↔ `AppUpdateConstants.ApplicationMutexName` |
+| Lightweight in-app updater (GitHub Releases API, semver, size/SHA verify) | `UpdateService.cs`, `UpdateInfo.cs`, `UpdateLauncher.cs`, `SemanticVersion.cs` |
+| Deterministic Setup asset name `iMirror-<version>-setup.exe` | `AppUpdateConstants.SetupAssetNameForVersion` ↔ `.iss` `OutputBaseFilename` |
+| Update UI: startup notice + Settings "Check"/"Install update" | `MainWindow.*`, `SettingsWindow.xaml(.cs)` |
+| Release pipeline emits installer + `SHA256SUMS` alongside the zip | `.github/workflows/release.yml` |
+| Updater tests | `MacMirrorReceiver.Tests/UpdateServiceTests.cs` |
+
+This matches `docs/specs/v04-updater-design.md`; the shared constants
+(mutex name, asset naming) are consistent across app and installer. ✅
+
+### ▶ Open codex item: GPLv3 §5(d) in-app legal notice
+
+**Handed to the v0.4 codex batch** (codex owns the WPF Settings surface). Small,
+self-contained, and a genuine GPLv3 obligation for an interactive-UI program.
+
+- **What:** display "Appropriate Legal Notices" in the app — copyright line, an
+  explicit **no-warranty** statement, that it is licensed under **GPLv3**, and
+  **where to get the source** (the GitHub repo) and the license.
+- **Where:** the Settings window footer already shows `VersionTextBlock` next to
+  the "Check"/"Releases" controls (`SettingsWindow.xaml`). Add the notice there
+  (e.g., a short muted `TextBlock` under the version line, with a `Hyperlink` to
+  the repo/LICENSE), or an "About" expander in the same footer. Reuse the
+  existing `MutedTextBrush`/`Hyperlink` styling and the
+  `UpdatesHyperlink_RequestNavigate` pattern already in `SettingsWindow.xaml.cs`.
+- **Suggested copy:**
+  > iMirror © 2024–present Balragon Contributors. Licensed under GPLv3 — provided
+  > with **no warranty**. Source and license: github.com/Balragon/iMirror
+- **Constants:** `AppUpdateConstants.GitHubReleasesUrl` / repo URL already exist;
+  reuse rather than hard-code.
+- **Acceptance:**
+  - [ ] Settings shows copyright + no-warranty + "GPLv3" + a working link to the
+        repository (source) and the license.
+  - [ ] No new strings hard-coded that duplicate existing `AppUpdateConstants`.
+  - [ ] Wording matches `LICENSE`/`THIRD_PARTY_NOTICES.txt` (no "MIT" anywhere).
+
+**Why it's in this phase:** it is the last piece of the *distributed product*
+that the license requires; Phase 4 (public release) should not ship without it.
+
+---
+
+## Phase 3 — Repo governance & metadata 🔲 TODO (maintainer GitHub settings)
+
+Not code — GitHub repository configuration the maintainer applies once.
+
+- **Branch protection on `main`:** require ≥1 maintainer review, require CI
+  (build/test) green, require up-to-date branch; admins may bypass for emergency
+  releases.
+- **Repository metadata:**
+  - *Description:* "Windows AirPlay mirroring receiver for developers and QA teams."
+  - *Topics:* `airplay`, `mirroring`, `windows`, `developer-tools`, `gpu-video`,
+    `real-device-testing`.
+  - *License:* confirm GitHub auto-detects **GPL-3.0** from `LICENSE`.
+  - *Discussions:* off for now (issues only). *Wikis:* off (use `docs/`).
+- **Collaborator roles:** maintainers merge/administer; external contributors via
+  forks + PRs (no direct push); add a triage role only if issue volume warrants.
+- **Visibility:** repository is public; CI/SBOM/release logs are public. No
+  change — just confirm.
+
+**Not set up (intentionally):** project board (use GitHub Milestones linked to
+the `docs/specs/*roadmap.md` files), GitHub Sponsors (no donation model).
+
+---
+
+## Phase 4 — First public release cut (v0.4.0 tag) 🔲 TODO
+
+The actual "publicly distribute" moment. Gated on the Phase 2 §5(d) item and a
+real-hardware validation pass.
+
+1. **Pre-cut gates:**
+   - Phase 2 §5(d) in-app notice merged.
+   - Real-hardware soak passes on the build to be released
+     (`scripts/soak-gate.ps1`; see `docs/specs/v05-plus-roadmap.md` — the gate
+     has tooling but must actually *run*).
+   - Installer + updater end-to-end validated on Windows: install → run →
+     in-app "Check" finds a newer release → download verifies size/SHA → restart
+     manager relaunches the new build → settings/logs preserved.
+2. **Tag `v0.4.0`** on `main`. `release.yml` builds and uploads:
+   - `iMirror-0.4.0-setup.exe` (installer),
+   - `iMirror-0.4.0-win-x64.zip` (portable),
+   - `SHA256SUMS`, and the CycloneDX SBOM.
+3. **Release notes** must include the **GPLv3 source/license statement** and link
+   `THIRD_PARTY_NOTICES.txt` (the §6 corresponding-source offer travels with the
+   binary). Note the build is **unsigned** (SmartScreen warning expected for the
+   developer audience).
+4. **Post-cut:** verify the published `releases/latest` is what the in-app updater
+   resolves against (stable channel, prereleases excluded).
+
+**Output:** iMirror is installable, self-updating, and license-compliant from a
+public GitHub Release — the definition of "distributed open source" for this app.
+
+---
+
+## Phase 5 — Post-distribution / ongoing ⏩ STANDING
+
+Sequenced in `docs/specs/v05-plus-roadmap.md`; summarized here for the public-
+distribution lens.
+
+- **Release cadence:** stable `v0.X.Y` on `main`, ~1–2/quarter to v1.0;
+  prereleases `v0.X.Y-preN` flagged on GitHub and excluded from the updater's
+  stable channel. No breaking changes within a `0.X` series without release-note
+  callout.
+- **net10 migration (v0.5, REQUIRED before 2026-11-10):** the only milestone with
+  a hard deadline. Protect its real-hardware re-validation window; do not let
+  Phase 4 polish eat it.
+- **Code signing — DEFERRED.** iMirror's confirmed audience is technical/developer
+  users who click through SmartScreen, so unsigned public releases are acceptable.
+  Signing is **not scheduled**; un-defer only on an explicit decision to target a
+  general (non-developer) audience. See `v04-product-surface-roadmap.md` Phase 3.
+  Repository visibility and distribution do not depend on it.
+- **SECURITY.md — DEFERRED (tracks with signing).** AirPlay surface is mDNS
+  discovery + paired-device only (low risk). Add a disclosure policy (supported
+  versions, private reporting channel, response SLA) when the audience expands
+  beyond developers. Until then: report security issues privately to maintainers.
+- **Transparency:** issues, Milestones (→ roadmap docs), and `CHANGELOG.md` stay
+  public and current.
+
+---
+
+## Status dashboard
+
+| Item | Phase | Status | Owner |
+|---|---|---|---|
+| GPLv3 `LICENSE` + notices + README license | 0 | ✅ Done | — |
+| `CONTRIBUTING` / `CODE_OF_CONDUCT` / `CHANGELOG` | 1 | ✅ Done | — |
+| Issue/PR templates | 1 | ⚪ Optional/deferred | maintainer |
+| Installer + in-app updater (v0.4) | 2 | ✅ Done | codex (`f36b238`) |
+| **GPLv3 §5(d) in-app notice** | 2 | 🔲 **Open — codex** | codex |
+| Branch protection on `main` | 3 | 🔲 TODO | maintainer (GitHub) |
+| Repo description / topics / license detect | 3 | 🔲 TODO | maintainer (GitHub) |
+| Real-hardware soak + updater E2E validation | 4 | 🔲 TODO | maintainer (Windows + device) |
+| Cut `v0.4.0` public release (GPL notes) | 4 | 🔲 TODO | maintainer |
+| net10 migration (before EOL) | 5 | ⏩ Scheduled | — |
+| Code signing / SECURITY.md | 5 | ⏸ Deferred | — |
+
+---
+
+## Appendix: license files
+
+- **`LICENSE`** (repository root) — the full GNU GPL v3 text, prefixed with
+  iMirror's copyright/grant notice and a pointer to `THIRD_PARTY_NOTICES.txt`.
+  SPDX: `GPL-3.0-or-later`.
 - **`ThirdParty/playfair/LICENSE.md`** — the same GPLv3 text as shipped with the
-  playfair component (verbatim, markdown-formatted); the root `LICENSE` is derived
-  from it.
+  playfair component (verbatim, markdown); the root `LICENSE` is derived from it.
 - **`THIRD_PARTY_NOTICES.txt`** — per-component provenance, coupling, and GPLv3
-  §6 corresponding-source offers for the combined/bundled GPL parts, plus the MIT
+  §6 corresponding-source offers for the combined/bundled GPL parts, plus MIT
   notices for the permissively-licensed dependencies.
