@@ -25,6 +25,10 @@ Features planned for v0.5 and beyond. See [`docs/specs/v05-plus-roadmap.md`](doc
 - Release pipeline now publishes both `iMirror-<version>-setup.exe` and the portable `iMirror-<version>-win-x64.zip`, plus `SHA256SUMS`.
 - The portable zip remains available for soak testing, CI, and power users; the installer is the primary distribution artifact.
 
+### Fixed
+
+- Reduced live GPU backlog during Media Foundation/D3D11 stalls by bounding decoder input queue growth and dropping stale GPU frames instead of presenting seconds-late video.
+
 ### Notes
 
 - Builds remain unsigned. SmartScreen warnings are expected for this developer/QA release; code signing remains deferred.
