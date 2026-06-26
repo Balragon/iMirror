@@ -40,7 +40,8 @@ On hold (NOT a scheduled milestone — see "Deferred"):
 ## v0.5 — net10 runtime migration (REQUIRED)
 
 **Tracked by Issue #17.** This is the priority immediately after v0.4 and the
-only milestone with a hard external deadline.
+only milestone with a hard external deadline. Ready-to-run execution note (exact
+TFM/CI edits, gates, sequencing): `docs/specs/v05-net10-migration.md`.
 
 - **Scope:** bump `TargetFramework` `net8.0-windows` → `net10.0-windows` on
   `MacMirrorReceiver.csproj` and the `tools/*` probe projects. **Keep SharpDX**
