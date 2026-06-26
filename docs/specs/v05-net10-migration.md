@@ -1,13 +1,21 @@
 # v0.5 — net10 Runtime Migration: Execution Note
 
-**Owner:** maintainer (not codex — codex owns the v0.4 release) · **Tracked by:**
-Issue #17 · **Status:** prepped, **blocked on `v0.4.0` tag** · **Hard deadline:**
-land well before **.NET 8 EOL 2026-11-10**, with buffer for GPU re-validation.
+**Tracked by:** Issue #17 · **Hard deadline:** land well before **.NET 8 EOL
+2026-11-10**, with buffer for GPU re-validation.
+
+**Status (2026-06-26):**
+- **Gate A — DONE.** TFM bump (8 projects) + workflows + `LangVersion 12.0` landed
+  in PR #25; CI green on net10 (restore/build/test, 43 tests, warning-clean), and
+  the self-contained publish ships all WPF assemblies (the net9+ regression did
+  **not** occur). `v0.4.0` shipped first, as designed.
+- **Gate B — handed to codex.** Real-hardware GPU present-path re-validation
+  (§3 below) runs in the codex batch on a real device + GPU, before the `v0.5`
+  tag. See `docs/specs/v05-gateb-codex-handoff.md`.
 
 This is the execution layer for the net10 bump. The *analysis* (why net10, SharpDX
 behaviour, risk surface, full CI checklist) is in `docs/dotnet-strategy.md` — read
 it once; this note does not repeat it. Here: the order, the exact edits, and the
-gates, ready to run the moment v0.4 ships.
+gates.
 
 ---
 
@@ -52,9 +60,18 @@ workflows (the `windows-latest` runner stays):
 - `.github/workflows/release.yml:25`
 - `.github/workflows/sbom.yml:25`
 
+### Required alongside the TFM bump
+- **`LangVersion` `11.0` → `12.0`** (all 8 projects). **Not optional on net10:**
+  net10's `Marshal.QueryInterface(IntPtr, in Guid, out IntPtr)` takes the IID by
+  `in` (it was effectively `ref` on net8). The existing `ref dxgiBufferIid` call
+  site (`MediaFoundationD3D11Decoder.cs`) is `error CS9194` under C# 11 —
+  "may not be passed with the 'ref' keyword in language version 11.0". C# 12 is
+  the minimum that permits `ref`→`in`. Bumping to 12.0 fixes this class of error
+  without touching call sites. (Earlier drafts of this note wrongly called the
+  `11.0` pin "harmless on net10" — it blocks the build.)
+
 ### Leave alone
 - `UseWPF` / `UseWindowsForms` — keep as-is.
-- `LangVersion` pinned `11.0` — harmless on net10; no action.
 - **Keep SharpDX 4.2.0.** No binding swap here (that's v0.7 / Vortice).
 - Hard-coded `net8.0` path segments in scripts/workflows: **pre-checked, none
   found** — but re-confirm after the bump (publish output paths embed the TFM).
@@ -72,10 +89,12 @@ Per `docs/dotnet-strategy.md` §"CI validation checklist", Part A:
       explicitly**: suppress NU1701 via `NoWarn`, or leave it visible — do **not**
       silently add `-warnaserror`.
 - [ ] `dotnet test iMirror.sln -c Release --no-build` — all existing tests green.
-- [ ] Run `scripts/publish-win-x64.ps1` and **inspect the produced zip**: it
-      launches **and** WPF assemblies (`PresentationFramework`, `PresentationCore`,
-      `WindowsBase`) are present. Catches the net9+ self-contained WPF-omission
-      regression — a green build alone does **not** prove this.
+- [x] **WPF-assembly presence now CI-enforced.** `publish-win-x64.ps1`'s
+      `$requiredFiles` asserts `PresentationFramework`/`PresentationCore`/
+      `WindowsBase`, and `ci.yml` runs `publish-win-x64.ps1 -AllowMissingFfmpeg
+      -NoZip` on every PR/push — so the net9+ self-contained WPF-omission
+      regression is a hard CI failure, not a manual zip inspection. A green build
+      alone still does not prove launch on real hardware (that is Gate B).
 
 ## 3. Gate B — GPU present path (REQUIRES real device + GPU; not hosted)
 

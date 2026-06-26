@@ -247,6 +247,13 @@ try
 		"iMirror.dll",
 		"iMirror.runtimeconfig.json",
 		"iMirror.deps.json",
+		# WPF runtime assemblies must ship in the self-contained output. .NET 9+
+		# can silently drop these from a self-contained publish, producing a
+		# package that fails to launch. Assert them explicitly so the net10
+		# migration (and any future SDK bump) cannot regress unnoticed.
+		"PresentationFramework.dll",
+		"PresentationCore.dll",
+		"WindowsBase.dll",
 		"THIRD_PARTY_NOTICES.txt",
 		"ThirdParty\playfair\LICENSE.md",
 		"ThirdParty\playfair\omg_hax.h",

@@ -554,7 +554,7 @@ public sealed class MediaFoundationD3D11Decoder : IDisposable
 		{
 			mediaBufferPtr = Marshal.GetIUnknownForObject(mediaBuffer);
 			Guid dxgiBufferIid = Interfaces.IMFDXGIBuffer;
-			int dxgiHr = Marshal.QueryInterface(mediaBufferPtr, ref dxgiBufferIid, out dxgiBufferPtr);
+			int dxgiHr = Marshal.QueryInterface(mediaBufferPtr, in dxgiBufferIid, out dxgiBufferPtr);
 			if (dxgiHr < 0 || dxgiBufferPtr == IntPtr.Zero)
 			{
 				return false;
