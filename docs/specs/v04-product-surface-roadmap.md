@@ -159,13 +159,19 @@ lock and relaunch. Full design lives in **`docs/specs/v04-updater-design.md`**.
 
 ## Phase 3: Code Signing — builds trust when expanding beyond developers
 
+> **Status: DEFERRED / on hold — not a scheduled milestone.** General-audience
+> expansion is **not a confirmed direction**, and signing is gated on it. This
+> section remains a ready-to-pull-in spec, but it does not own a release slot.
+> See `docs/specs/v05-plus-roadmap.md` → "Deferred" for the decision and the
+> trigger to un-defer.
+
 **Goal:** Build platform reputation and prepare for general-audience distribution
 once the developer base proves the product.
 
 **This phase is optional for the v0.4 timeline.** Developers will click through
 SmartScreen; signing is not a blocker for adoption within that audience.
-However, it should land **before** pursuing general users or enterprise
-distribution.
+If iMirror ever targets general users or enterprise distribution, signing should
+land **before** that — but that expansion is not currently planned.
 
 **Decision is already made** (`docs/specs/v02-decisions.md` → "Code Signing"):
 > Path forward: **Microsoft Trusted Signing** (~$9.99/month, no hardware token,
