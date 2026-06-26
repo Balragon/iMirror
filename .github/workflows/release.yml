@@ -164,18 +164,18 @@ jobs:
           }
 
           if ([string]::IsNullOrWhiteSpace($body)) {
-            $body = @"
-          ## iMirror $tag
+            $body = @'
+          ## iMirror __TAG__
 
-          Windows x64 package for iMirror $version.
+          Windows x64 package for iMirror __VERSION__.
 
           ### Installation
 
           Recommended:
-          1. Download and run `iMirror-$version-setup.exe`.
+          1. Download and run `iMirror-__VERSION__-setup.exe`.
 
           Portable fallback:
-          1. Download the `iMirror-$version-win-x64.zip` asset.
+          1. Download the `iMirror-__VERSION__-win-x64.zip` asset.
           2. Extract the zip.
           3. Run `iMirror.exe`.
 
@@ -183,13 +183,15 @@ jobs:
 
           - This package is unsigned; Windows SmartScreen may show a warning.
           - FFmpeg Essentials is bundled under `tools\ffmpeg\bin` with its license file.
-          - The app is self-contained for .NET 8.
+          - The app is self-contained for .NET 10.
           - SHA-256 checksums are published in `SHA256SUMS`.
 
           ### License
 
           iMirror is free software under the GNU General Public License v3 (GPLv3); see LICENSE and NOTICE. It combines required GPLv3 components -- the playfair FairPlay sources and a bundled Gyan FFmpeg build -- so the work as a whole is GPLv3, provided with no warranty. The complete corresponding source is this repository; per-component provenance and the written offers for source are in THIRD_PARTY_NOTICES.txt.
-          "@
+          '@
+
+            $body = $body.Replace("__TAG__", $tag).Replace("__VERSION__", $version)
           }
 
           Set-Content -LiteralPath $bodyPath -Value $body -Encoding UTF8
