@@ -138,11 +138,11 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 	private WriteableBitmap? _bitmap;
 
 #if HIGH_RESOLUTION_D3D
-	private D3D11SwapChainVideoPresenter? _highResolutionD3DPresenter;
+	private IHighResolutionD3DPresenter? _highResolutionD3DPresenter;
 
-	private MediaFoundationD3D11Decoder? _mediaFoundationD3DDecoder;
+	private IHighResolutionD3DDecoder? _mediaFoundationD3DDecoder;
 
-	private D3D11VideoFrame? _pendingD3DFrame;
+	private IHighResolutionD3DFrame? _pendingD3DFrame;
 
 	private long _staleD3DFramesDropped;
 
@@ -342,7 +342,7 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 		await _browser.StartAsync();
 		await _airPlayProbe.StartAsync();
 		PreflightReport report = await StartupDiagnostics.RunAsync(_airPlayProbe);
-		AppLog.Write($"Preflight: {report.Worst} — " +
+		AppLog.Write($"Preflight: {report.Worst} ??" +
 			string.Join("; ", System.Linq.Enumerable.Select(report.Checks, check => $"{check.Id}={check.Status}")));
 		BindReadinessStrip(report);
 		_ = CheckForUpdatesOnStartupAsync();
@@ -399,7 +399,7 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 	private void BindEmptyStateDiagnosticStatus(PreflightReport report)
 	{
 		SolidColorBrush brush = (SolidColorBrush)FindResource("WarningBrush");
-		string text = "Checking network…";
+		string text = "Checking network...";
 		bool listenerBlocked = HasDiagnosticIssue(report, "listeners", PreflightStatus.Blocked);
 
 		if (report.Worst == PreflightStatus.Ok)
@@ -410,12 +410,12 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 		else if (HasDiagnosticIssue(report, "ffmpeg"))
 		{
 			brush = (SolidColorBrush)FindResource("DangerBrush");
-			text = "FFmpeg not found — video decode unavailable";
+			text = "FFmpeg not found ??video decode unavailable";
 		}
 		else if (listenerBlocked)
 		{
 			brush = (SolidColorBrush)FindResource("WarningBrush");
-			text = "Firewall may be blocking AirPlay — check Windows Firewall";
+			text = "Firewall may be blocking AirPlay ??check Windows Firewall";
 		}
 		else if (HasDiagnosticIssue(report, "network"))
 		{
@@ -431,7 +431,7 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 	private void SetEmptyStateDiagnosticRechecking()
 	{
 		DiagStatusDot.Fill = (SolidColorBrush)FindResource("WarningBrush");
-		DiagStatusText.Text = "Re-checking…";
+		DiagStatusText.Text = "Re-checking...";
 	}
 
 	private static bool HasDiagnosticIssue(PreflightReport report, string id)
@@ -585,7 +585,7 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 			{
 				RestoreFromTray();
 			};
-			var settingsItem = new Forms.ToolStripMenuItem("Settings…");
+			var settingsItem = new Forms.ToolStripMenuItem("Settings...");
 			settingsItem.Click += delegate
 			{
 				RestoreFromTray();
@@ -828,7 +828,7 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 		_decoder = null;
 		CleanupGuards.RunStep("ffmpeg decoder dispose", () => decoder?.Dispose());
 #if HIGH_RESOLUTION_D3D
-		MediaFoundationD3D11Decoder? mediaFoundationD3DDecoder = _mediaFoundationD3DDecoder;
+		IHighResolutionD3DDecoder? mediaFoundationD3DDecoder = _mediaFoundationD3DDecoder;
 		_mediaFoundationD3DDecoder = null;
 		CleanupGuards.RunStep("Media Foundation D3D decoder dispose", () => mediaFoundationD3DDecoder?.Dispose());
 		CleanupGuards.RunStep("D3D presenter dispose", DisposeHighResolutionD3DPresenter);
@@ -1378,7 +1378,7 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 
 		FfmpegDecoder? decoder = _decoder;
 #if HIGH_RESOLUTION_D3D
-		MediaFoundationD3D11Decoder? mediaFoundationD3DDecoder = _mediaFoundationD3DDecoder;
+		IHighResolutionD3DDecoder? mediaFoundationD3DDecoder = _mediaFoundationD3DDecoder;
 #endif
 		byte[]? array = ProcessH264Payload(payload, out long h264ForwardedPackets, out string h264LastDecision);
 #if HIGH_RESOLUTION_D3D
@@ -2277,8 +2277,22 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 	{
 		try
 		{
-			var presenter = new D3D11SwapChainVideoPresenter();
-			var decoder = new MediaFoundationD3D11Decoder(config.Width, config.Height, config.Fps, presenter.Device);
+			D3DGpuBinding binding = D3DGpuBindingSelector.Current;
+			IHighResolutionD3DPresenter presenter;
+			IHighResolutionD3DDecoder decoder;
+			if (binding == D3DGpuBinding.Vortice)
+			{
+				var vorticePresenter = new VorticeD3D11SwapChainVideoPresenter();
+				presenter = vorticePresenter;
+				decoder = new VorticeMediaFoundationD3D11Decoder(config.Width, config.Height, config.Fps, vorticePresenter.Device);
+			}
+			else
+			{
+				var sharpDxPresenter = new D3D11SwapChainVideoPresenter();
+				presenter = sharpDxPresenter;
+				decoder = new MediaFoundationD3D11Decoder(config.Width, config.Height, config.Fps, sharpDxPresenter.Device);
+			}
+
 			decoder.DumpH264Enabled = StartupReceiverSettings.Effective.DumpH264;
 			_highResolutionD3DPresenter = presenter;
 			_mediaFoundationD3DDecoder = decoder;
@@ -2286,9 +2300,9 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 			VideoImage.Visibility = Visibility.Collapsed;
 			VideoImage.Source = null;
 			_bitmap = null;
-			VideoStage.Children.Insert(0, presenter);
-			presenter.HorizontalAlignment = HorizontalAlignment.Center;
-			presenter.VerticalAlignment = VerticalAlignment.Center;
+			VideoStage.Children.Insert(0, presenter.View);
+			presenter.View.HorizontalAlignment = HorizontalAlignment.Center;
+			presenter.View.VerticalAlignment = VerticalAlignment.Center;
 			UpdateHighResolutionD3DPresenterLayout(presenter, config);
 			VideoStage.UpdateLayout();
 			presenter.StatusChanged += delegate(string message)
@@ -2322,7 +2336,7 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 			decoder.FrameDecoded += QueueD3DFrameForPresentation;
 			decoder.Start();
 			_decoderStatus = "Media Foundation D3D11 decoder started";
-			AppLog.Write($"High-resolution D3D path active for {reason}: {config.Width}x{config.Height}@{config.Fps}, d3d11MultithreadProtected={presenter.IsMultithreadProtected}.");
+			AppLog.Write($"High-resolution D3D path active for {reason}: {config.Width}x{config.Height}@{config.Fps}, gpuBinding={D3DGpuBindingSelector.CurrentName}, d3d11MultithreadProtected={presenter.IsMultithreadProtected}.");
 			return true;
 		}
 		catch (Exception ex)
@@ -2339,7 +2353,7 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 
 	private void UpdateHighResolutionD3DPresenterLayout()
 	{
-		D3D11SwapChainVideoPresenter? presenter = _highResolutionD3DPresenter;
+		IHighResolutionD3DPresenter? presenter = _highResolutionD3DPresenter;
 		StreamConfig? config = _streamConfig;
 		if (presenter == null || config == null)
 		{
@@ -2348,7 +2362,7 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 		UpdateHighResolutionD3DPresenterLayout(presenter, config);
 	}
 
-	private void UpdateHighResolutionD3DPresenterLayout(D3D11SwapChainVideoPresenter presenter, StreamConfig config)
+	private void UpdateHighResolutionD3DPresenterLayout(IHighResolutionD3DPresenter presenter, StreamConfig config)
 	{
 		double stageWidthDip = VideoStage.ActualWidth;
 		double stageHeightDip = VideoStage.ActualHeight;
@@ -2370,11 +2384,12 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 		double fitWidthDip = Math.Min(stageWidthDip, fitWidthPixels / dpiScaleX);
 		double fitHeightDip = Math.Min(availableHeightDip, fitHeightPixels / dpiScaleY);
 
-		presenter.Width = fitWidthDip;
-		presenter.Height = fitHeightDip;
-		presenter.Margin = new Thickness(0.0, topInsetDip, 0.0, 0.0);
-		presenter.HorizontalAlignment = HorizontalAlignment.Center;
-		presenter.VerticalAlignment = topInsetDip > 0.0 ? VerticalAlignment.Top : VerticalAlignment.Center;
+		FrameworkElement presenterView = presenter.View;
+		presenterView.Width = fitWidthDip;
+		presenterView.Height = fitHeightDip;
+		presenterView.Margin = new Thickness(0.0, topInsetDip, 0.0, 0.0);
+		presenterView.HorizontalAlignment = HorizontalAlignment.Center;
+		presenterView.VerticalAlignment = topInsetDip > 0.0 ? VerticalAlignment.Top : VerticalAlignment.Center;
 	}
 
 	private double ResolveHighResolutionD3DTopInsetDip(double stageHeightDip)
@@ -2500,7 +2515,7 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 	}
 
 #if HIGH_RESOLUTION_D3D
-	private void QueueD3DFrameForPresentation(D3D11VideoFrame frame)
+	private void QueueD3DFrameForPresentation(IHighResolutionD3DFrame frame)
 	{
 		Interlocked.Increment(ref _decodedFrames);
 		lock (_frameGate)
@@ -2543,7 +2558,7 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 	{
 		VideoFrame? pendingFrame;
 #if HIGH_RESOLUTION_D3D
-		D3D11VideoFrame? pendingD3DFrame;
+		IHighResolutionD3DFrame? pendingD3DFrame;
 #endif
 		lock (_frameGate)
 		{
@@ -2732,12 +2747,13 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 		}
 
 #if HIGH_RESOLUTION_D3D
-		D3D11SwapChainVideoPresenter? d3dPresenter = _highResolutionD3DPresenter;
-		if (d3dPresenter != null && d3dPresenter.ActualWidth > 0.0 && d3dPresenter.ActualHeight > 0.0)
+		IHighResolutionD3DPresenter? d3dPresenter = _highResolutionD3DPresenter;
+		FrameworkElement? d3dPresenterView = d3dPresenter?.View;
+		if (d3dPresenterView != null && d3dPresenterView.ActualWidth > 0.0 && d3dPresenterView.ActualHeight > 0.0)
 		{
-			double d3dLeft = Math.Max(0.0, (VideoStage.ActualWidth - d3dPresenter.ActualWidth) / 2.0);
-			double d3dTop = Math.Max(0.0, (VideoStage.ActualHeight - d3dPresenter.ActualHeight) / 2.0);
-			return new Rect(d3dLeft, d3dTop, d3dPresenter.ActualWidth, d3dPresenter.ActualHeight);
+			double d3dLeft = Math.Max(0.0, (VideoStage.ActualWidth - d3dPresenterView.ActualWidth) / 2.0);
+			double d3dTop = Math.Max(0.0, (VideoStage.ActualHeight - d3dPresenterView.ActualHeight) / 2.0);
+			return new Rect(d3dLeft, d3dTop, d3dPresenterView.ActualWidth, d3dPresenterView.ActualHeight);
 		}
 #endif
 
@@ -2921,7 +2937,7 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 			CleanupGuards.RunStep("ffmpeg decoder dispose", () => decoder?.Dispose());
 			CleanupGuards.RunStep("audio pipeline stop", StopAudioPipeline);
 #if HIGH_RESOLUTION_D3D
-			MediaFoundationD3D11Decoder? mediaFoundationD3DDecoder = _mediaFoundationD3DDecoder;
+			IHighResolutionD3DDecoder? mediaFoundationD3DDecoder = _mediaFoundationD3DDecoder;
 			_mediaFoundationD3DDecoder = null;
 			CleanupGuards.RunStep("Media Foundation D3D decoder dispose", () => mediaFoundationD3DDecoder?.Dispose());
 #endif
@@ -2955,7 +2971,7 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 #if HIGH_RESOLUTION_D3D
 	private void DisposeHighResolutionD3DPresenter()
 	{
-		D3D11SwapChainVideoPresenter? presenter = _highResolutionD3DPresenter;
+		IHighResolutionD3DPresenter? presenter = _highResolutionD3DPresenter;
 		if (presenter == null)
 		{
 			return;
@@ -2963,7 +2979,7 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 		_highResolutionD3DPresenter = null;
 		try
 		{
-			VideoStage.Children.Remove(presenter);
+			VideoStage.Children.Remove(presenter.View);
 		}
 		catch
 		{
@@ -3203,7 +3219,7 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 	}
 
 #if HIGH_RESOLUTION_D3D
-	private void PresentD3DFrame(D3D11VideoFrame frame)
+	private void PresentD3DFrame(IHighResolutionD3DFrame frame)
 	{
 		long renderStartTick = Stopwatch.GetTimestamp();
 		try
@@ -3221,7 +3237,7 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 				}
 			}
 
-			D3D11SwapChainVideoPresenter? presenter = _highResolutionD3DPresenter;
+			IHighResolutionD3DPresenter? presenter = _highResolutionD3DPresenter;
 			if (presenter == null)
 			{
 				return;
@@ -3229,7 +3245,7 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 
 			try
 			{
-				presenter.PresentNv12Texture(frame.Texture, frame.SubresourceIndex, frame.Width, frame.Height, frame.Fps);
+				presenter.PresentFrame(frame);
 			}
 			catch (Exception ex)
 			{

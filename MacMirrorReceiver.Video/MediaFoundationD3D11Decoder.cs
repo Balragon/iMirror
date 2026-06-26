@@ -10,7 +10,7 @@ using D3D11 = SharpDX.Direct3D11;
 
 namespace MacMirrorReceiver.Video;
 
-public sealed class MediaFoundationD3D11Decoder : IDisposable
+public sealed class MediaFoundationD3D11Decoder : IHighResolutionD3DDecoder
 {
 	private const int MaxQueuedInputPackets = 128;
 	private const long MaxQueuedInputBytes = 16L * 1024L * 1024L;
@@ -100,7 +100,7 @@ public sealed class MediaFoundationD3D11Decoder : IDisposable
 
 	public event Action<string>? StatusChanged;
 
-	public event Action<D3D11VideoFrame>? FrameDecoded;
+	public event Action<IHighResolutionD3DFrame>? FrameDecoded;
 
 	public event Action<string>? Faulted;
 

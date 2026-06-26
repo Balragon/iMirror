@@ -4,7 +4,7 @@ using D3D11 = SharpDX.Direct3D11;
 
 namespace MacMirrorReceiver.Video;
 
-public sealed class D3D11VideoFrame : IDisposable
+public sealed class D3D11VideoFrame : IHighResolutionD3DFrame
 {
 	private bool _disposed;
 
