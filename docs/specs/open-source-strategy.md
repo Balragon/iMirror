@@ -208,10 +208,12 @@ the `docs/specs/*roadmap.md` files), GitHub Sponsors (no donation model).
 
 ---
 
-## Phase 4 — First public release cut (v0.4.0 tag) 🔲 TODO
+## Phase 4 — First public release cut (v0.4.0 tag) 🔲 TODO · codex
 
 The actual "publicly distribute" moment. Gated on the Phase 2 §5(d) item and a
-real-hardware validation pass.
+real-hardware validation pass. **Handed to codex** — full execution note (file
+pointers, §5(d) UI placement, validation loop, release-notes checklist) in
+`docs/specs/v04-phase4-codex-handoff.md`.
 
 1. **Pre-cut gates:**
    - Phase 2 §5(d) in-app notice merged.
@@ -274,8 +276,8 @@ distribution lens.
 | **GPLv3 §5(d) in-app notice** | 2 | 🔲 **Open — codex** | codex |
 | Branch protection on `main` | 3 | 🔲 TODO | maintainer (GitHub) |
 | Repo description / topics / license detect | 3 | 🔲 TODO | maintainer (GitHub) |
-| Real-hardware soak + updater E2E validation | 4 | 🔲 TODO | maintainer (Windows + device) |
-| Cut `v0.4.0` public release (GPL notes) | 4 | 🔲 TODO | maintainer |
+| Real-hardware soak + updater E2E validation | 4 | 🔲 TODO | codex (Windows + device) |
+| Cut `v0.4.0` public release (GPL notes) | 4 | 🔲 TODO | codex |
 | net10 migration (before EOL) | 5 | ⏩ Scheduled | — |
 | Code signing / SECURITY.md | 5 | ⏸ Deferred | — |
 
