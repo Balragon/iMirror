@@ -51,6 +51,8 @@ any of:
 | `severeMax` | A single-frame stutter at/above 2× the p95 target. |
 | `corruption` | FFmpeg/decoder corruption markers (e.g. invalid data, PPS). |
 | **`crash`** | **Unhandled-exception markers (`Unhandled domain exception:` / `Dispatcher exception:`) — a crashed session.** |
+| `videoAudioLiveness` | Audio activity continued for 30s+ after the last decoded/rendered video progress, which indicates a video freeze while audio keeps running. |
+| `keyframeStarvation` | The H.264 gate stayed in `waiting for SPS/PPS keyframe` for 30s+, which indicates unrecovered keyframe starvation. |
 | `highResolutionD3D` | (Opt-in) GPU D3D path never became healthy, or it faulted. |
 
 It also WARNs (non-gating) on non-contiguous evidence (large timestamp gaps),

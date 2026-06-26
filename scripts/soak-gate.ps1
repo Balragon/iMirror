@@ -36,6 +36,22 @@ Set-StrictMode -Version Latest
 
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
 $project = Join-Path $repoRoot "tools\LatencyAcceptanceReport\LatencyAcceptanceReport.csproj"
+$repoLocalDotnet = Join-Path $repoRoot ".dotnet-10\dotnet.exe"
+$dotnetExe = if (Test-Path -LiteralPath $repoLocalDotnet -PathType Leaf)
+{
+	$repoLocalDotnet
+}
+else
+{
+	$dotnetCommand = Get-Command dotnet -ErrorAction SilentlyContinue
+	if ($null -eq $dotnetCommand)
+	{
+		Write-Error "dotnet SDK not found. Install .NET 10 SDK or restore the repo-local .dotnet-10 SDK."
+		exit 2
+	}
+
+	$dotnetCommand.Source
+}
 
 if (-not (Test-Path -LiteralPath $LogPath -PathType Leaf))
 {
@@ -49,7 +65,7 @@ $requireD3D = if ($RequireHighResolutionD3D) { "true" } else { "false" }
 
 Write-Host "Soak gate: $LogPath (>= $MinimumMinutes min, p95 < ${P95TargetMs}ms, requireHighResolutionD3D=$requireD3D)"
 
-& dotnet run -c Release --project $project -- `
+& $dotnetExe run -c Release --project $project -- `
 	$LogPath `
 	$P95TargetMs `
 	$MinimumMinutes `
