@@ -96,7 +96,10 @@ independently is the whole reason this stays at v0.7.
   uses.
 - **Effort:** MEDIUM — ~4 renderer files (per `docs/dotnet-strategy.md`).
 - **Precondition:** net10 must already be stable and soak-validated, so the
-  Vortice swap is measured against a known-good baseline.
+  Vortice swap is measured against a known-good baseline. **Met:** v0.5.0 (net10 +
+  SharpDX) shipped and soak-validated — v0.7 is now unblocked.
+- **Ready-to-run execution note** (package swap, per-file API mapping,
+  feature-flag, Gate A/B): `docs/specs/v07-vortice-migration.md`.
 
 ---
 
@@ -107,7 +110,10 @@ independently is the whole reason this stays at v0.7.
 - **Long-run A/V sync hardening (Issue #3)** — 30m/1h/2h sessions: confirm no
   audio drift/mute/stutter/over-buffer, clean reconnect, and promote a stable
   default `IMIRROR_AUDIO_SYNC_OFFSET_MS`; add RTP/timestamp drift correction if
-  cumulative drift appears. Field hardening, ongoing.
+  cumulative drift appears. Field hardening, ongoing. **Measurement-first
+  execution note** (observation protocol, conditional drift-correction decision
+  tree): `docs/specs/v03-av-sync-hardening.md`. Runs serial *after* v0.7 Gate B to
+  keep a GPU-binding swap and an audio-sync change independently bisectable.
 
 ---
 
