@@ -15,7 +15,7 @@ that makes the product *distributable*) and `docs/specs/v05-plus-roadmap.md`
 Phase 0  Licensing & compliance baseline ............. DONE
 Phase 1  Community & contribution scaffolding ........ DONE (templates optional)
 Phase 2  Distributable product surface (codex v0.4) .. DONE — 1 follow-up item (§5(d) notice)
-Phase 3  Repo governance & metadata .................. TODO (maintainer GitHub settings)
+Phase 3  Repo governance & metadata .................. DONE (settings applied; GPL-3.0 detection fix in flight)
 Phase 4  First public release cut (v0.4.0 tag) ....... TODO (gated on Phase 2 item + real-HW validation)
 Phase 5  Post-distribution / ongoing ................. STANDING (net10, signing-deferred, security-deferred)
 ```
@@ -33,8 +33,10 @@ For iMirror that license is **GPLv3**, and it is *forced*, not chosen.
 
 ### iMirror is licensed under **GPLv3** (SPDX `GPL-3.0-or-later`)
 
-`LICENSE` at the repo root is the full GNU GPL v3 text, prefixed with iMirror's
-copyright/grant notice and a pointer to `THIRD_PARTY_NOTICES.txt`.
+`LICENSE` at the repo root is the **verbatim** GNU GPL v3 text — kept canonical so
+GitHub's `licensee` matcher auto-detects **GPL-3.0**. iMirror's own copyright/grant
+notice and the combined-work statement live in `NOTICE`; per-component provenance
+and source offers are in `THIRD_PARTY_NOTICES.txt`.
 
 ### Why GPLv3, and why MIT/permissive is not available
 
@@ -101,8 +103,9 @@ build. Removing FairPlay would break real-device AirPlay mirroring, so this is
 not a near-term option. Until then, GPLv3 is correct and final. Documented so the
 question is not re-litigated.
 
-**Status:** `LICENSE`, `THIRD_PARTY_NOTICES.txt` (playfair combined-work note
-resolved), and README License section are all in place. ✅
+**Status:** `LICENSE` (verbatim GPLv3), `NOTICE` (iMirror copyright + combined-work
+statement), `THIRD_PARTY_NOTICES.txt` (playfair combined-work note resolved), and
+README License section are all in place. ✅
 
 ---
 
@@ -112,7 +115,8 @@ The files a public contributor expects to find, and the contribution rules.
 
 | File | Status | Purpose |
 |---|---|---|
-| `LICENSE` | ✅ | GPLv3 + iMirror notice |
+| `LICENSE` | ✅ | Verbatim GPLv3 (canonical for GitHub detection) |
+| `NOTICE` | ✅ | iMirror copyright + grant + combined-work statement |
 | `CONTRIBUTING.md` | ✅ | Workflow, testing, real-device template, inbound=GPLv3 |
 | `CODE_OF_CONDUCT.md` | ✅ | Contributor Covenant 2.1 |
 | `CHANGELOG.md` | ✅ | v0.2/v0.3/v0.4 history + roadmap; update per release |
@@ -185,18 +189,22 @@ that the license requires; Phase 4 (public release) should not ship without it.
 
 ---
 
-## Phase 3 — Repo governance & metadata 🔲 TODO (maintainer GitHub settings)
+## Phase 3 — Repo governance & metadata ✅ DONE (settings applied)
 
-Not code — GitHub repository configuration the maintainer applies once.
+Not code — GitHub repository configuration the maintainer applies once. Applied
+via the GitHub web UI.
 
-- **Branch protection on `main`:** require ≥1 maintainer review, require CI
-  (build/test) green, require up-to-date branch; admins may bypass for emergency
-  releases.
+- **Branch protection on `main`:** ✅ require a PR before merging + CI
+  (build/test) green; admins may bypass for emergency releases.
 - **Repository metadata:**
-  - *Description:* "Windows AirPlay mirroring receiver for developers and QA teams."
-  - *Topics:* `airplay`, `mirroring`, `windows`, `developer-tools`, `gpu-video`,
+  - *Description:* ✅ "Windows AirPlay mirroring receiver for developers and QA teams."
+  - *Topics:* ✅ `airplay`, `mirroring`, `windows`, `developer-tools`, `gpu-video`,
     `real-device-testing`.
-  - *License:* confirm GitHub auto-detects **GPL-3.0** from `LICENSE`.
+  - *License:* ⚠️ GitHub initially detected `LICENSE` as "Other" (NOASSERTION)
+    because the iMirror preamble prepended to the GPL text dropped the `licensee`
+    match below threshold. **Fix:** `LICENSE` reduced to verbatim GPLv3, notice
+    moved to `NOTICE` — once that lands on `main`, detection should resolve to
+    **GPL-3.0**. Confirm in the About sidebar after merge.
   - *Discussions:* off for now (issues only). *Wikis:* off (use `docs/`).
 - **Collaborator roles:** maintainers merge/administer; external contributors via
   forks + PRs (no direct push); add a triage role only if issue volume warrants.
@@ -274,8 +282,9 @@ distribution lens.
 | Issue/PR templates | 1 | ⚪ Optional/deferred | maintainer |
 | Installer + in-app updater (v0.4) | 2 | ✅ Done | codex (`f36b238`) |
 | **GPLv3 §5(d) in-app notice** | 2 | 🔲 **Open — codex** | codex |
-| Branch protection on `main` | 3 | 🔲 TODO | maintainer (GitHub) |
-| Repo description / topics / license detect | 3 | 🔲 TODO | maintainer (GitHub) |
+| Branch protection on `main` | 3 | ✅ Done | maintainer (GitHub) |
+| Repo description / topics | 3 | ✅ Done | maintainer (GitHub) |
+| GPL-3.0 license auto-detection (LICENSE/NOTICE split) | 3 | 🔧 In flight | — |
 | Real-hardware soak + updater E2E validation | 4 | 🔲 TODO | codex (Windows + device) |
 | Cut `v0.4.0` public release (GPL notes) | 4 | 🔲 TODO | codex |
 | net10 migration (before EOL) | 5 | ⏩ Scheduled | — |
@@ -285,9 +294,12 @@ distribution lens.
 
 ## Appendix: license files
 
-- **`LICENSE`** (repository root) — the full GNU GPL v3 text, prefixed with
-  iMirror's copyright/grant notice and a pointer to `THIRD_PARTY_NOTICES.txt`.
-  SPDX: `GPL-3.0-or-later`.
+- **`LICENSE`** (repository root) — the **verbatim** GNU GPL v3 text, kept
+  canonical so GitHub auto-detects the license. SPDX: `GPL-3.0-or-later`.
+- **`NOTICE`** (repository root) — iMirror's copyright, the GPLv3 grant, the
+  no-warranty statement, and the combined-work explanation (playfair + bundled
+  FFmpeg) that was previously prepended to `LICENSE`. Points to `LICENSE` and
+  `THIRD_PARTY_NOTICES.txt`.
 - **`ThirdParty/playfair/LICENSE.md`** — the same GPLv3 text as shipped with the
   playfair component (verbatim, markdown); the root `LICENSE` is derived from it.
 - **`THIRD_PARTY_NOTICES.txt`** — per-component provenance, coupling, and GPLv3
