@@ -27,6 +27,13 @@ developers expect to receive fixes without hunting for new zips. Signing comes
 last — valuable for trust/reputation-building, but not a blocker for adoption
 among technical users.
 
+**Tooling decision:** Installer = **Inno Setup**; Auto-Update = a **lightweight
+in-app updater** (not Velopack). Velopack was evaluated and deferred — its
+cross-platform and delta-update strengths are both nullified for a Windows-only,
+infrequently-updated app, while its coupling/lock-in costs remain. See Phase 1's
+"Framework decision" and `docs/specs/v04-updater-design.md` for the full
+rationale.
+
 **Timeline constraint:** Issue #17 (.NET 8 EOL, 2026-11-10) competes for the
 same v0.4/v0.5 window. Land Installer + Auto-Update **before** the net10
 runtime churn, then sequence the net10 bump and re-validate. Signing can land
@@ -49,28 +56,41 @@ For developers, the install experience is the daily **entry ritual** —
 how smooth it is shapes the likelihood they keep using the tool. An installer
 directly improves that, while signing does not.
 
-### Recommended approach — decide between two tracks
+### Framework decision: **Inno Setup** (confirmed)
 
-**Track A: Velopack** (recommended) — installer *and* auto-updater in one.
-Velopack (maintained successor to Squirrel/Clowd.Squirrel) produces a per-user
-installer, uninstaller, and delta auto-updates served from GitHub Releases.
-Choosing this **makes Phase 2 nearly free** — the updater is built-in, and both
-share one release feed. This is the best ROI pick for a v0.4 single milestone.
+iMirror uses **Inno Setup**, paired with a lightweight in-app updater (Phase 2).
+The alternative, Velopack, was evaluated and **deferred** — see rationale below.
 
-**Track B: Inno Setup** — classic, well-understood installer with full
-control, but **no built-in updater** (Phase 2 becomes a separate custom build).
-Pick this only if you prefer a standalone, dependency-free toolchain and
-are OK building an updater from scratch.
+**Why Inno Setup over Velopack for iMirror:** Velopack's two headline features
+— unified *cross-platform* packaging and *delta* updates — are both nullified
+by iMirror's actual profile:
+
+- **iMirror is Windows-only**, so Velopack's cross-platform model is dead weight.
+- **Updates are infrequent**, so Velopack's delta packages have near-zero ROI
+  (re-downloading the full ~150MB self-contained package a few times a year is
+  fine; the stateful delta-release-repo maintenance is pure overhead).
+
+With both headline benefits stripped, Velopack's remaining costs still apply:
+app-lifecycle coupling to its SDK, an imposed `current`-folder install layout,
+a version-pinned CLI, and lock-in. For an infrequent-update app the cost timing
+is wrong — you pay the coupling tax **continuously** (every build, every startup,
+and again during the net10 migration, #17) but collect the "free updater"
+benefit only a **few times a year**. Inno + a ~200-line in-app updater inverts
+that: a one-time write you barely touch, with no lifecycle coupling and full
+reversibility (you can still adopt Velopack later if release cadence rises).
+
+**Revisit Velopack if** release cadence becomes frequent (e.g. monthly, chasing
+iOS/AirPlay changes). At that point delta updates over a 150MB package become
+genuinely valuable and can justify the coupling. Today they do not.
 
 | Task | Title | Effort | Handoff |
 |---|---|---:|---|
-| inst-framework-decision | Choose Velopack vs Inno Setup (drives Phase 2 effort) | M | human-decision |
-| inst-per-user-localappdata | Per-user install to `%LOCALAPPDATA%`, no UAC | M | codex-backend |
+| inst-per-user-localappdata | Per-user install to `%LOCALAPPDATA%`, no UAC (`PrivilegesRequired=lowest`) | M | codex-backend |
 | inst-shortcuts | Start Menu + optional desktop shortcut | S | codex-backend |
 | inst-uninstaller | Uninstaller registered in Add/Remove Programs | S | codex-backend |
-| inst-upgrade-path | Clean upgrade from zip → installer (user settings preserved) | M | codex-backend |
+| inst-upgrade-path | Clean upgrade from zip → installer; close+restart running app via Inno restart manager | M | codex-backend |
 | inst-firewall-handoff | Keep firewall rule as the existing in-app manual flow | S | codex-backend |
-| inst-ci-artifact | Emit installer as release asset (keep zip as secondary for portable use) | M | codex-backend |
+| inst-ci-iscc | Compile `.iss` with `ISCC.exe` in the release workflow; emit installer as release asset (keep zip as secondary) | M | codex-backend |
 | inst-uninstall-data-policy | Decide: uninstall removes `%LOCALAPPDATA%\iMirror` data or preserves it | S | human-decision |
 
 ### Implementation notes
@@ -100,35 +120,40 @@ are OK building an updater from scratch.
 **Goal:** Developers get new versions automatically (or one-click) instead of
 manually hunting for new zips or GitHub Releases.
 
-**If Track A (Velopack) was chosen in Phase 1, this phase is ~80% done.** It
-becomes "wire the update check into startup + Settings button, choose channel
-policy, test upgrade path." If Track B was chosen, Phase 2 is a from-scratch
-updater build.
+**Approach: a lightweight in-app updater** — not a framework. The app checks the
+GitHub Releases API on startup, and if a newer release exists, downloads the new
+Inno `Setup.exe` and runs it. This is the **documented Inno update pattern**
+(app detects/downloads a new Setup and runs it `/SILENT`), not a workaround.
+Inno's restart-manager (`CloseApplications`) handles the running-process file
+lock and relaunch. Full design lives in **`docs/specs/v04-updater-design.md`**.
 
 | Task | Title | Effort | Handoff |
 |---|---|---:|---|
-| upd-feed-source | Use GitHub Releases as update feed (reuses existing pipeline) | S | codex-backend |
-| upd-check-on-startup | Background check on app launch + manual Settings button | M | codex-backend |
-| upd-apply-flow | Download, stage, apply on next restart (or manual restart prompt) | M | codex-backend |
+| upd-feed-source | Read latest release via GitHub Releases API (reuses existing tag pipeline) | S | codex-backend |
+| upd-check-on-startup | Background check on launch + manual "Check for updates" in Settings | M | codex-backend |
+| upd-notify-ux | Non-blocking "vX.Y.Z available" notice; dismissible; throttled (≤1/day) | M | codex-backend |
+| upd-download-run | Download new `Setup.exe` to temp, verify size/sha, launch, exit app | M | codex-backend |
 | upd-channel-policy | Stable vs prerelease; respect `prerelease` tag flag | S | human-decision |
-| upd-rollback-safety | Safe failure if update is corrupt (stay on current version) | M | codex-backend |
+| upd-failsafe | Any failure (network, corrupt, blocked) leaves user on current version | M | codex-backend |
 
 ### Implementation notes
-- **Reuse what exists:** v0.2 already has manual "check for updates" and the
-  release pipeline publishes GitHub Releases with `v*.*.*` tags and
-  `prerelease` flag — that is a usable update feed.
-- **UX:** default to "background check + notify on startup if new version, apply
-  on next restart." Developers are OK with restart-on-update; no forced silent
-  updates. Include a manual Settings button to check immediately if wanted.
-- **No signature requirement yet:** for developer software, availability/velocity
-  matters more than signature verification. If you want to add signature
-  verification here, it is optional (depends on Phase 3 landing first).
+- **Reuse what exists:** v0.2 already has a manual "check for updates" path, and
+  the release pipeline publishes GitHub Releases with `v*.*.*` tags and the
+  `prerelease` flag — that is a usable update feed with no new infrastructure.
+- **UX:** background check + notify on startup; user clicks to update. No forced
+  silent updates. A manual Settings button checks immediately on demand.
+- **Footgun handling:** the self-replacing-exe and AV-heuristic risks are
+  mitigated by Inno's restart manager (clean close/relaunch) and, later, Phase 3
+  signing. Low risk for a developer audience; see the design doc for specifics.
+- **Reversibility:** this updater is intentionally small and self-contained. If
+  release cadence later justifies Velopack's delta model, swapping it in is a
+  contained change because nothing else depends on the updater's internals.
 
 ### Acceptance criteria
-- [ ] App detects a new GitHub Release on startup.
-- [ ] User sees a notification + one-click "Update and Restart" option.
-- [ ] Update downloads, stages, and applies on next restart.
-- [ ] Corrupt/missing updates fail safe (user stays on current version).
+- [ ] App detects a newer GitHub Release on startup (and on manual check).
+- [ ] User sees a non-blocking notice + one-click "Update" action.
+- [ ] Update downloads the new Setup, verifies it, runs it, and the app relaunches.
+- [ ] Any failure path leaves the user on their working version, no half-state.
 
 ---
 
@@ -198,16 +223,19 @@ The hard deadline is **2026-11-10**; everything must complete before it.
 
 ---
 
-## Open Decisions (need a human call before coding)
+## Decisions
 
-- **Installer framework:** Velopack (installer + updater unified, recommended
-  for fastest delivery) vs Inno Setup (installer only, separate updater
-  build, if dependency-free is preferred).
+**Resolved:**
+- **Installer framework: Inno Setup** + lightweight in-app updater. Velopack
+  deferred (its cross-platform and delta benefits are both nullified for a
+  Windows-only, infrequently-updated app; revisit if cadence becomes frequent).
+
+**Still open (need a human call before coding):**
 - **Uninstall data policy:** preserve `%LOCALAPPDATA%\iMirror` (settings/logs)
-  on uninstall, or remove it (with optional checkbox).
+  on uninstall, or remove it (with optional checkbox). *Recommended: preserve.*
 - **Update channel policy:** stable-only, or opt-in prerelease channel via tag.
 - **Distribution shape:** installer becomes primary asset, or publish both
-  installer + zip side by side.
+  installer + zip side by side. *Recommended: both, zip secondary.*
 - **Phase 3 timing:** land signing immediately after Phase 2, or wait for 2-3
   minor releases to prove developer adoption first.
 
@@ -215,9 +243,9 @@ The hard deadline is **2026-11-10**; everything must complete before it.
 
 | Risk | Impact | Mitigation |
 |---|---|---|
-| Velopack adds a new dependency but is the fastest path | If unfamiliar, learning curve. | For v0.4, ship Velopack; if lock-in becomes real problem, Inno Setup is always available later. |
-| Installer framework choice is hard to change later | Wrong pick = re-work for Phase 2. | Velopack chosen because it unifies installer + updater; Inno Setup is safer if you prefer standalone, but slower ROI. Decide this **first**. |
-| Auto-updater as an unverified code path | A corrupt/incomplete update could break the app. | Fail safe: corrupt updates are ignored, user stays on current version. Signature verification optional (Phase 3) but recommended before expanding audience. |
+| Self-replacing-exe update footguns (file lock, relaunch) | Update fails mid-apply, app won't restart. | Use Inno's restart manager (`CloseApplications`); the app exits before Setup overwrites files; Setup relaunches it. Covered in the updater design doc. |
+| Self-downloaded exe trips AV heuristics | Update download/run flagged as suspicious. | Low risk for a dev audience; mitigated further by Phase 3 signing. Verify size/sha of the downloaded Setup before running. |
+| Update cadence rises and full re-download (~150MB) hurts | Slow, wasteful updates if releases get frequent. | Documented Velopack revisit trigger: adopt delta updates if cadence becomes frequent. Until then full download is fine. |
 | net10 churn collides with product-surface work | Re-validation thrash, missed EOL deadline. | Fixed ordering: install + auto-update first (TFM-independent), then net10 (risky re-validation), then signing (reputation-building). |
 | Elevated firewall helper scope creep | High-effort UAC/security project derails the milestone. | Keep firewall remediation manual/in-app; it is explicitly out of scope. |
 | Signing is deferred but then forgotten | End up shipping unsigned forever, never expand beyond developer audience. | Set a trigger (e.g., "after 3 releases" or "when non-dev interest appears") to start Phase 3. Document it in the decision. |
