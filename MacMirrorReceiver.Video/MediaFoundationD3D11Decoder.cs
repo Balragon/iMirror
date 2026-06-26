@@ -12,8 +12,8 @@ namespace MacMirrorReceiver.Video;
 
 public sealed class MediaFoundationD3D11Decoder : IDisposable
 {
-	private const int MaxQueuedInputPackets = 24;
-	private const long MaxQueuedInputBytes = 4L * 1024L * 1024L;
+	private const int MaxQueuedInputPackets = 128;
+	private const long MaxQueuedInputBytes = 16L * 1024L * 1024L;
 	private const long WriteStallThresholdMs = 35;
 	private const long MaxDumpBytes = 512L * 1024L * 1024L;
 	private const int MfVersion = 0x00020070;
@@ -101,8 +101,6 @@ public sealed class MediaFoundationD3D11Decoder : IDisposable
 	public event Action<string>? StatusChanged;
 
 	public event Action<D3D11VideoFrame>? FrameDecoded;
-
-	public event Action? InputQueueOverflowed;
 
 	public event Action<string>? Faulted;
 
@@ -245,11 +243,14 @@ public sealed class MediaFoundationD3D11Decoder : IDisposable
 		{
 			if (_inputQueue.Count >= MaxQueuedInputPackets || _queuedInputBytes + payload.Length > MaxQueuedInputBytes)
 			{
-				flushed = _inputQueue.Count;
-				_inputQueue.Clear();
-				_queuedInputBytes = 0L;
-				DroppedInputPackets += flushed;
-				if (!ContainsIdrNal(payload))
+				if (ContainsIdrNal(payload))
+				{
+					flushed = _inputQueue.Count;
+					_inputQueue.Clear();
+					_queuedInputBytes = 0L;
+					DroppedInputPackets += flushed;
+				}
+				else
 				{
 					droppedIncoming = true;
 					DroppedInputPackets++;
@@ -267,13 +268,11 @@ public sealed class MediaFoundationD3D11Decoder : IDisposable
 
 		if (flushed > 0)
 		{
-			StatusChanged?.Invoke(droppedIncoming
-				? $"Media Foundation decoder input overflow: flushed {flushed} queued packet(s); waiting for next keyframe."
-				: $"Media Foundation decoder input overflow: flushed {flushed} queued packet(s); resuming from incoming keyframe.");
-			if (droppedIncoming)
-			{
-				InputQueueOverflowed?.Invoke();
-			}
+			StatusChanged?.Invoke($"Media Foundation decoder input overflow: flushed {flushed} queued packet(s); resuming from incoming keyframe.");
+		}
+		else if (droppedIncoming)
+		{
+			StatusChanged?.Invoke("Media Foundation decoder input overflow: dropped incoming non-keyframe and preserved queued GOP.");
 		}
 
 		if (shouldSignal)
@@ -554,7 +553,7 @@ public sealed class MediaFoundationD3D11Decoder : IDisposable
 		{
 			mediaBufferPtr = Marshal.GetIUnknownForObject(mediaBuffer);
 			Guid dxgiBufferIid = Interfaces.IMFDXGIBuffer;
-			int dxgiHr = Marshal.QueryInterface(mediaBufferPtr, ref dxgiBufferIid, out dxgiBufferPtr);
+			int dxgiHr = Marshal.QueryInterface(mediaBufferPtr, in dxgiBufferIid, out dxgiBufferPtr);
 			if (dxgiHr < 0 || dxgiBufferPtr == IntPtr.Zero)
 			{
 				return false;
