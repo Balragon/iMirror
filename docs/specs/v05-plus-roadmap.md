@@ -99,7 +99,8 @@ independently is the whole reason this stays at v0.7.
   Vortice swap is measured against a known-good baseline. **Met:** v0.5.0 (net10 +
   SharpDX) shipped and soak-validated — v0.7 is now unblocked.
 - **Ready-to-run execution note** (package swap, per-file API mapping,
-  feature-flag, Gate A/B): `docs/specs/v07-vortice-migration.md`.
+  feature-flag, Gate A/B): `docs/specs/v07-vortice-migration.md`. **Handed to codex**
+  for the compile + real-hardware port: `docs/specs/v07-vortice-codex-handoff.md`.
 
 ---
 

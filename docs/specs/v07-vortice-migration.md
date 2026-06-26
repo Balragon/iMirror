@@ -1,8 +1,9 @@
 # v0.7 — SharpDX → Vortice.Windows: Execution Note
 
 **Tracked by:** roadmap `docs/specs/v05-plus-roadmap.md` (v0.7) · **Status:**
-prepped · **Deadline:** none (SharpDX works on net10; this is modernization, not a
-forcing function).
+prepped, **handed to codex** (`docs/specs/v07-vortice-codex-handoff.md`) for the
+compile + real-hardware port · **Deadline:** none (SharpDX works on net10; this is
+modernization, not a forcing function).
 
 The *analysis* (why Vortice, maintenance status, full API-coverage table, risk
 surface) is in `docs/dotnet-strategy.md` §"Vortice.Windows replacement assessment"
