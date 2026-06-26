@@ -52,9 +52,18 @@ workflows (the `windows-latest` runner stays):
 - `.github/workflows/release.yml:25`
 - `.github/workflows/sbom.yml:25`
 
+### Required alongside the TFM bump
+- **`LangVersion` `11.0` → `12.0`** (all 8 projects). **Not optional on net10:**
+  net10's `Marshal.QueryInterface(IntPtr, in Guid, out IntPtr)` takes the IID by
+  `in` (it was effectively `ref` on net8). The existing `ref dxgiBufferIid` call
+  site (`MediaFoundationD3D11Decoder.cs`) is `error CS9194` under C# 11 —
+  "may not be passed with the 'ref' keyword in language version 11.0". C# 12 is
+  the minimum that permits `ref`→`in`. Bumping to 12.0 fixes this class of error
+  without touching call sites. (Earlier drafts of this note wrongly called the
+  `11.0` pin "harmless on net10" — it blocks the build.)
+
 ### Leave alone
 - `UseWPF` / `UseWindowsForms` — keep as-is.
-- `LangVersion` pinned `11.0` — harmless on net10; no action.
 - **Keep SharpDX 4.2.0.** No binding swap here (that's v0.7 / Vortice).
 - Hard-coded `net8.0` path segments in scripts/workflows: **pre-checked, none
   found** — but re-confirm after the bump (publish output paths embed the TFM).
