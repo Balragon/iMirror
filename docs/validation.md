@@ -2,7 +2,7 @@
 
 Use this page as the product validation checklist before promoting work to `main`.
 
-For the current v0.2 Windows real-device gate, use
+For the current Windows real-device gate, use
 `docs/windows-e2e-validation.md`.
 
 ## Build Gate
@@ -49,7 +49,7 @@ Latest smoke run: 2026-06-16, Release build, real sender at `192.168.0.22`.
 Capture one continuous active-motion session. Prefer 10 minutes or longer for product validation.
 
 ```powershell
-dotnet run --project .\tools\LatencyAcceptanceReport\LatencyAcceptanceReport.csproj -c Release -- .\bin\Release\net8.0-windows\iMirror.log 150 10
+dotnet run --project .\tools\LatencyAcceptanceReport\LatencyAcceptanceReport.csproj -c Release -- .\bin\Release\net10.0-windows\iMirror.log 150 10
 ```
 
 Expected result:

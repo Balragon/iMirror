@@ -33,7 +33,7 @@ The only other project is `MacMirrorReceiver.Tests`.
 dotnet build .\MacMirrorReceiver.csproj -c Release
 ```
 
-The project targets `net8.0-windows`, `x64`, and WPF.
+The project targets `net10.0-windows`, `x64`, and WPF.
 
 ## Publish
 
@@ -73,7 +73,7 @@ FFmpeg is used by:
 ## Run
 
 ```powershell
-.\bin\Release\net8.0-windows\iMirror.exe
+.\bin\Release\net10.0-windows\iMirror.exe
 ```
 
 Then open Control Center on the sender, choose Screen Mirroring, and select `iMirror`.
@@ -128,7 +128,7 @@ Generated logs, H.264 dumps, audio dumps, and diagnostic snapshots can contain p
 Common checks:
 
 ```powershell
-dotnet run --project .\tools\LatencyAcceptanceReport\LatencyAcceptanceReport.csproj -c Release -- .\bin\Release\net8.0-windows\iMirror.log 150 10
+dotnet run --project .\tools\LatencyAcceptanceReport\LatencyAcceptanceReport.csproj -c Release -- .\bin\Release\net10.0-windows\iMirror.log 150 10
 
 dotnet run --project .\tools\MediaFoundationH264Probe\MediaFoundationH264Probe.csproj -c Release -- C:\temp\capture.d01.submitted.h264
 
