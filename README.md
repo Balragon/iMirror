@@ -145,8 +145,9 @@ See `docs/validation.md` for the recommended release gate.
 
 ## License
 
-iMirror is licensed under the **GNU General Public License v3** (see `LICENSE`).
-The project is GPLv3 because it combines required GPLv3 components: the
+iMirror is licensed under the **GNU General Public License v3** (the verbatim
+license text is in `LICENSE`; iMirror's copyright and combined-work statement are
+in `NOTICE`). The project is GPLv3 because it combines required GPLv3 components: the
 `ThirdParty/playfair` FairPlay sources (read at runtime; mandatory for
 real-device mirroring) and a bundled GPLv3 FFmpeg build. See
 `THIRD_PARTY_NOTICES.txt` for per-component provenance and corresponding-source
