@@ -49,6 +49,9 @@ public partial class SettingsWindow : Wpf.Ui.Controls.FluentWindow
 
 		InitializeComponent();
 		VersionTextBlock.Text = AppVersionInfo.DisplayText;
+		ReleasesHyperlink.NavigateUri = new Uri(AppVersionInfo.ReleasesUrl);
+		SourceHyperlink.NavigateUri = new Uri(AppVersionInfo.SourceUrl);
+		LicenseHyperlink.NavigateUri = new Uri(AppVersionInfo.LicenseUrl);
 		InitializeRenderModeSettingsUi();
 		InitializeReceiverSettingsUi();
 	}
@@ -321,6 +324,34 @@ public partial class SettingsWindow : Wpf.Ui.Controls.FluentWindow
 		{
 			AppLog.Write("Could not open releases page: " + ex.Message);
 			_host.SetStatusMessage("Could not open updates page: " + ex.Message);
+		}
+	}
+
+	private void SourceHyperlink_RequestNavigate(object sender, RequestNavigateEventArgs e)
+	{
+		e.Handled = true;
+		try
+		{
+			AppVersionInfo.OpenSourcePage();
+		}
+		catch (Exception ex)
+		{
+			AppLog.Write("Could not open source page: " + ex.Message);
+			_host.SetStatusMessage("Could not open source page: " + ex.Message);
+		}
+	}
+
+	private void LicenseHyperlink_RequestNavigate(object sender, RequestNavigateEventArgs e)
+	{
+		e.Handled = true;
+		try
+		{
+			AppVersionInfo.OpenLicensePage();
+		}
+		catch (Exception ex)
+		{
+			AppLog.Write("Could not open license page: " + ex.Message);
+			_host.SetStatusMessage("Could not open license page: " + ex.Message);
 		}
 	}
 

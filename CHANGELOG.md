@@ -8,7 +8,31 @@ For detailed release notes, see [GitHub Releases](https://github.com/Balragon/iM
 
 ## [Unreleased] (main branch)
 
-Features planned for v0.4 and beyond. See [`docs/specs/v04-product-surface-roadmap.md`](docs/specs/v04-product-surface-roadmap.md) and [`docs/specs/v05-plus-roadmap.md`](docs/specs/v05-plus-roadmap.md).
+Features planned for v0.5 and beyond. See [`docs/specs/v05-plus-roadmap.md`](docs/specs/v05-plus-roadmap.md).
+
+---
+
+## [0.4.0] - 2026-06-26
+
+### Added
+
+- **Inno Setup installer** - per-user install under `%LOCALAPPDATA%\Programs\iMirror`, Start Menu shortcut, optional desktop shortcut, and Add/Remove Programs uninstaller.
+- **Lightweight in-app updater** - stable-channel GitHub Releases check, non-blocking update notice, one-click installer download, size/SHA-256 verification, and Inno restart-manager relaunch.
+- **GPLv3 in-app legal notice** - Settings footer now shows copyright, GPLv3/no-warranty notice, and source/license links.
+
+### Changed
+
+- Release pipeline now publishes both `iMirror-<version>-setup.exe` and the portable `iMirror-<version>-win-x64.zip`, plus `SHA256SUMS`.
+- The portable zip remains available for soak testing, CI, and power users; the installer is the primary distribution artifact.
+
+### Fixed
+
+- Reduced live GPU backlog during Media Foundation/D3D11 stalls by bounding decoder input queue growth and dropping stale GPU frames instead of presenting seconds-late video.
+
+### Notes
+
+- Builds remain unsigned. SmartScreen warnings are expected for this developer/QA release; code signing remains deferred.
+- iMirror is GPLv3. Source, license, and third-party notices are included in the repository and release artifacts.
 
 ---
 
@@ -79,15 +103,6 @@ Features planned for v0.4 and beyond. See [`docs/specs/v04-product-surface-roadm
 ---
 
 ## Roadmap
-
-### v0.4 — Installer & Auto-Update (in progress)
-
-See [`docs/specs/v04-product-surface-roadmap.md`](docs/specs/v04-product-surface-roadmap.md):
-- **Phase 1:** Inno Setup installer (per-user, no UAC, `%LOCALAPPDATA%`).
-- **Phase 2:** Lightweight in-app updater (GitHub Releases API, size/SHA verification, Inno restart manager).
-- **Phase 3:** Code signing (deferred pending general-audience expansion decision).
-
-**Timeline:** Q3 2026 (before .NET 8 EOL, 2026-11-10).
 
 ### v0.5 — .NET 10 Migration (required)
 
