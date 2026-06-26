@@ -185,6 +185,10 @@ jobs:
           - FFmpeg Essentials is bundled under `tools\ffmpeg\bin` with its license file.
           - The app is self-contained for .NET 8.
           - SHA-256 checksums are published in `SHA256SUMS`.
+
+          ### License
+
+          iMirror is free software under the GNU General Public License v3 (GPLv3); see LICENSE and NOTICE. It combines required GPLv3 components -- the playfair FairPlay sources and a bundled Gyan FFmpeg build -- so the work as a whole is GPLv3, provided with no warranty. The complete corresponding source is this repository; per-component provenance and the written offers for source are in THIRD_PARTY_NOTICES.txt.
           "@
           }
 
