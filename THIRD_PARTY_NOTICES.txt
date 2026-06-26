@@ -75,12 +75,16 @@ Corresponding source (GPLv3 §6):
                   ThirdParty/playfair/, which constitutes the corresponding
                   source for this component.
 
-Note            : Because playfair is GPLv3 and is combined with iMirror, the
-                  GPLv3 obligations for the combined work must be reviewed as
-                  part of the v0.3 license/distribution audit. See
-                  docs/dotnet-strategy.md and the v0.3 roadmap. This NOTICES file
-                  documents provenance; it does not by itself resolve the
-                  combined-work licensing question.
+Note            : playfair is GPLv3 and is COMBINED with iMirror — its sources
+                  are shipped in the package and read at runtime by
+                  MacMirrorReceiver.Networking/AirPlayPlayFair.cs to obtain the
+                  FairPlay tables, which are required for real-device mirroring.
+                  iMirror is therefore non-functional without playfair, making
+                  the distributed work a GPLv3 combined work. This is the
+                  determining reason iMirror as a whole is licensed under GPLv3
+                  (see the repository LICENSE and
+                  docs/specs/open-source-strategy.md). The combined-work licensing
+                  question is thus RESOLVED: the whole is GPLv3.
 
 
 ================================================================================

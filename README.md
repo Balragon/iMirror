@@ -142,3 +142,19 @@ See `docs/validation.md` for the recommended release gate.
 - `docs/architecture.md` - current product architecture.
 - `docs/release.md` - self-contained Windows zip packaging flow.
 - `docs/validation.md` - validation and acceptance workflow.
+
+## License
+
+iMirror is licensed under the **GNU General Public License v3** (see `LICENSE`).
+The project is GPLv3 because it combines required GPLv3 components: the
+`ThirdParty/playfair` FairPlay sources (read at runtime; mandatory for
+real-device mirroring) and a bundled GPLv3 FFmpeg build. See
+`THIRD_PARTY_NOTICES.txt` for per-component provenance and corresponding-source
+offers, and `docs/specs/open-source-strategy.md` for the licensing rationale and
+distribution strategy.
+
+## Contributing
+
+Contributions are welcome under GPLv3 (inbound = outbound). See `CONTRIBUTING.md`
+for the workflow, testing requirements, and real-device validation procedure, and
+`CODE_OF_CONDUCT.md` for community expectations.
