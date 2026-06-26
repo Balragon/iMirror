@@ -2320,15 +2320,6 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 				}), DispatcherPriority.Background);
 			};
 			decoder.FrameDecoded += QueueD3DFrameForPresentation;
-			decoder.InputQueueOverflowed += delegate
-			{
-				base.Dispatcher.BeginInvoke(new Action(delegate
-				{
-					RequireH264Keyframe();
-					AppLog.Write("Media Foundation D3D11 decoder input queue overflowed; holding video until next keyframe.");
-					UpdateDiagnostics();
-				}));
-			};
 			decoder.Start();
 			_decoderStatus = "Media Foundation D3D11 decoder started";
 			AppLog.Write($"High-resolution D3D path active for {reason}: {config.Width}x{config.Height}@{config.Fps}, d3d11MultithreadProtected={presenter.IsMultithreadProtected}.");
