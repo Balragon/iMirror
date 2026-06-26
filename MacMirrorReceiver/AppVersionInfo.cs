@@ -5,7 +5,7 @@ namespace MacMirrorReceiver;
 
 internal static class AppVersionInfo
 {
-	public const string ReleasesUrl = "https://github.com/Balragon/iMirror/releases";
+	public const string ReleasesUrl = AppUpdateConstants.GitHubReleasesUrl;
 
 	public static string InformationalVersion =>
 		Assembly.GetExecutingAssembly()

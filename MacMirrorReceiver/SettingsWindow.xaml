@@ -316,15 +316,43 @@
                            Foreground="{StaticResource MutedTextBrush}"
                            FontSize="12"
                            VerticalAlignment="Center" />
-                <TextBlock Grid.Column="1"
-                           FontSize="12"
-                           VerticalAlignment="Center">
-                    <Hyperlink NavigateUri="https://github.com/Balragon/iMirror/releases"
-                               RequestNavigate="UpdatesHyperlink_RequestNavigate">
-                        Check for updates
-                    </Hyperlink>
-                </TextBlock>
+                <StackPanel Grid.Column="1"
+                            Orientation="Horizontal"
+                            VerticalAlignment="Center">
+                    <ui:Button x:Name="SettingsUpdateButton"
+                               Content="Check"
+                               Appearance="Transparent"
+                               Foreground="{StaticResource AccentBrush}"
+                               FontSize="12"
+                               FontWeight="SemiBold"
+                               Padding="8,0"
+                               MinHeight="28"
+                               Click="SettingsUpdateButton_Click" />
+                    <TextBlock FontSize="12"
+                               VerticalAlignment="Center"
+                               Margin="6,0,0,0">
+                        <Hyperlink NavigateUri="https://github.com/Balragon/iMirror/releases"
+                                   RequestNavigate="UpdatesHyperlink_RequestNavigate">
+                            Releases
+                        </Hyperlink>
+                    </TextBlock>
+                </StackPanel>
             </Grid>
+            <TextBlock x:Name="SettingsUpdatesStatusTextBlock"
+                       Foreground="{StaticResource MutedTextBrush}"
+                       FontSize="12"
+                       TextWrapping="Wrap"
+                       Visibility="Collapsed"
+                       Margin="0,8,0,0"
+                       LineHeight="17" />
+            <ui:Button x:Name="SettingsInstallUpdateButton"
+                       Content="Install update"
+                       AutomationProperties.Name="Install iMirror update"
+                       Click="SettingsInstallUpdateButton_Click"
+                       Appearance="Primary"
+                       HorizontalAlignment="Stretch"
+                       Visibility="Collapsed"
+                       Margin="0,8,0,0" />
         </StackPanel>
     </Grid>
 </ui:FluentWindow>

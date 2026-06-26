@@ -108,11 +108,44 @@ jobs:
             $zip.Dispose()
           }
 
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup --no-progress -y
+
+      - name: Build installer
+        shell: pwsh
+        run: |
+          $version = "${{ github.ref_name }}".TrimStart("v")
+          .\scripts\build-installer.ps1 -Version $version
+
+      - name: Write release checksums
+        shell: pwsh
+        run: |
+          $assets = @(
+            Get-ChildItem -LiteralPath artifacts -Filter "*.zip" -File
+            Get-ChildItem -LiteralPath artifacts -Filter "*-setup.exe" -File
+          ) | Sort-Object Name
+
+          if ($assets.Count -lt 2) {
+            throw "Expected zip and setup assets before checksums."
+          }
+
+          $lines = foreach ($asset in $assets) {
+            $hash = (Get-FileHash -LiteralPath $asset.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$hash  $($asset.Name)"
+          }
+
+          Set-Content -LiteralPath "artifacts\SHA256SUMS" -Value $lines -Encoding ASCII
+          Get-Content -LiteralPath "artifacts\SHA256SUMS"
+
       - name: Upload package artifact
         uses: actions/upload-artifact@v4
         with:
           name: iMirror-windows-x64
-          path: artifacts/*.zip
+          path: |
+            artifacts/*.zip
+            artifacts/*-setup.exe
+            artifacts/SHA256SUMS
           if-no-files-found: error
 
       - name: Prepare release body
@@ -138,6 +171,10 @@ jobs:
 
           ### Installation
 
+          Recommended:
+          1. Download and run `iMirror-$version-setup.exe`.
+
+          Portable fallback:
           1. Download the `iMirror-$version-win-x64.zip` asset.
           2. Extract the zip.
           3. Run `iMirror.exe`.
@@ -147,6 +184,7 @@ jobs:
           - This package is unsigned; Windows SmartScreen may show a warning.
           - FFmpeg Essentials is bundled under `tools\ffmpeg\bin` with its license file.
           - The app is self-contained for .NET 8.
+          - SHA-256 checksums are published in `SHA256SUMS`.
           "@
           }
 
@@ -158,5 +196,8 @@ jobs:
           tag_name: ${{ github.ref_name }}
           name: ${{ github.ref_name }}
           body_path: release-body.md
-          files: artifacts/*.zip
+          files: |
+            artifacts/*.zip
+            artifacts/*-setup.exe
+            artifacts/SHA256SUMS
           prerelease: ${{ contains(github.ref_name, '-') }}

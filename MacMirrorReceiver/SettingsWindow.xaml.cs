@@ -16,6 +16,8 @@ internal interface ISettingsHost
 	int LiveAudioSyncOffsetMilliseconds { get; }
 	void SetLiveAudioSyncOffsetMilliseconds(int value);
 	Task RestartApplicationAsync();
+	Task<UpdateCheckResult> CheckForUpdatesAsync(bool manual);
+	Task<bool> InstallUpdateAsync(UpdateInfo updateInfo, IProgress<double>? progress);
 	void SetStatusMessage(string message);
 }
 
@@ -32,6 +34,7 @@ public partial class SettingsWindow : Wpf.Ui.Controls.FluentWindow
 	private bool _pendingWriteDiagnostics;
 	private bool _pendingDumpH264;
 	private bool _pendingDumpAudio;
+	private UpdateInfo? _pendingUpdate;
 
 	internal SettingsWindow(ISettingsHost host)
 	{
@@ -318,6 +321,59 @@ public partial class SettingsWindow : Wpf.Ui.Controls.FluentWindow
 		{
 			AppLog.Write("Could not open releases page: " + ex.Message);
 			_host.SetStatusMessage("Could not open updates page: " + ex.Message);
+		}
+	}
+
+	private async void SettingsUpdateButton_Click(object sender, RoutedEventArgs e)
+	{
+		_pendingUpdate = null;
+		SettingsInstallUpdateButton.Visibility = Visibility.Collapsed;
+		SettingsUpdatesStatusTextBlock.Visibility = Visibility.Visible;
+		SettingsUpdatesStatusTextBlock.Text = "Checking for updates...";
+		SettingsUpdateButton.IsEnabled = false;
+
+		try
+		{
+			UpdateCheckResult result = await _host.CheckForUpdatesAsync(manual: true);
+			SettingsUpdatesStatusTextBlock.Text = result.Message;
+			_pendingUpdate = result.Update?.IsNewer == true ? result.Update : null;
+			SettingsInstallUpdateButton.Visibility = _pendingUpdate != null ? Visibility.Visible : Visibility.Collapsed;
+		}
+		catch (Exception ex)
+		{
+			AppLog.Write("Manual update check failed: " + ex);
+			SettingsUpdatesStatusTextBlock.Text = "Could not check for updates: " + ex.Message;
+		}
+		finally
+		{
+			SettingsUpdateButton.IsEnabled = true;
+		}
+	}
+
+	private async void SettingsInstallUpdateButton_Click(object sender, RoutedEventArgs e)
+	{
+		UpdateInfo? update = _pendingUpdate;
+		if (update == null)
+		{
+			return;
+		}
+
+		SettingsInstallUpdateButton.IsEnabled = false;
+		SettingsUpdateButton.IsEnabled = false;
+		SettingsUpdatesStatusTextBlock.Visibility = Visibility.Visible;
+		SettingsUpdatesStatusTextBlock.Text = "Downloading update...";
+		var progress = new Progress<double>(value =>
+		{
+			int percent = Math.Clamp((int)Math.Round(value * 100.0), 0, 100);
+			SettingsUpdatesStatusTextBlock.Text = $"Downloading update... {percent}%";
+		});
+
+		bool started = await _host.InstallUpdateAsync(update, progress);
+		if (!started)
+		{
+			SettingsInstallUpdateButton.IsEnabled = true;
+			SettingsUpdateButton.IsEnabled = true;
+			SettingsUpdatesStatusTextBlock.Text = "Update could not be started. Open Releases and install manually.";
 		}
 	}
 

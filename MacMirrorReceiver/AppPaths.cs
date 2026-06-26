@@ -32,6 +32,8 @@ internal static class AppPaths
 
 	public static string ConfigDirectory { get; } = EnsureDirectory(Path.Combine(Root, "Config"));
 
+	public static string UpdateDownloadsDirectory { get; } = EnsureDirectory(Path.Combine(Root, "Updates"));
+
 	private static string ResolveRoot()
 	{
 		string localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);

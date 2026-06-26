@@ -19,7 +19,19 @@ internal static class AppLog
 	{
 		lock (Gate)
 		{
-			File.AppendAllText(LogPath, $"[{DateTimeOffset.Now:O}] {message}{Environment.NewLine}");
+			try
+			{
+				string? directory = Path.GetDirectoryName(LogPath);
+				if (!string.IsNullOrWhiteSpace(directory))
+				{
+					Directory.CreateDirectory(directory);
+				}
+
+				File.AppendAllText(LogPath, $"[{DateTimeOffset.Now:O}] {message}{Environment.NewLine}");
+			}
+			catch
+			{
+			}
 		}
 	}
 }
