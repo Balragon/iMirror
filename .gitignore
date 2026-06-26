@@ -5,6 +5,7 @@ obj/
 .appdata/
 .dotnet-home/
 .nuget/
+.omegacode/
 .DS_Store
 *.log
 *.h264

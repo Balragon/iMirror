@@ -110,7 +110,7 @@ $env:IMIRROR_EXPERIMENTAL_QUALITY = "1"  # force the GPU path for local validati
 
 ## Diagnostics
 
-Logs are written next to the running app as `iMirror.log`.
+Logs are written under `%LOCALAPPDATA%\iMirror\Logs\iMirror.log`.
 
 Private diagnostic capture is opt-in:
 

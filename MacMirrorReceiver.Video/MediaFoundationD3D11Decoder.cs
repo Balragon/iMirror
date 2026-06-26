@@ -12,8 +12,8 @@ namespace MacMirrorReceiver.Video;
 
 public sealed class MediaFoundationD3D11Decoder : IDisposable
 {
-	private const int MaxQueuedInputPackets = 1024;
-	private const long MaxQueuedInputBytes = 64L * 1024L * 1024L;
+	private const int MaxQueuedInputPackets = 24;
+	private const long MaxQueuedInputBytes = 4L * 1024L * 1024L;
 	private const long WriteStallThresholdMs = 35;
 	private const long MaxDumpBytes = 512L * 1024L * 1024L;
 	private const int MfVersion = 0x00020070;

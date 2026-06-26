@@ -47,6 +47,8 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 
 	private const int HighResolutionMaxRenderFps = 30;
 
+	private const long HighResolutionMaxLiveFrameAgeMilliseconds = 200;
+
 	private const int MaxAutoReconnectAttempts = 5;
 
 	// Keep the initial SPS/PPS/IDR burst while the decoder/render sink spins up.
@@ -141,6 +143,10 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 	private MediaFoundationD3D11Decoder? _mediaFoundationD3DDecoder;
 
 	private D3D11VideoFrame? _pendingD3DFrame;
+
+	private long _staleD3DFramesDropped;
+
+	private long _lastStaleD3DFrameDropLogTick;
 #endif
 
 	private VideoFrame? _pendingFrame;
@@ -1326,6 +1332,10 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 			_lastGateLogTick = 0L;
 			_pendingVideoDroppedBeforeSink = 0L;
 			_lastPendingVideoDropLogTick = 0L;
+#if HIGH_RESOLUTION_D3D
+			_staleD3DFramesDropped = 0L;
+			_lastStaleD3DFrameDropLogTick = 0L;
+#endif
 			_audioFramesReceived = 0L;
 			_audioFramesQueued = 0L;
 			_audioPcmFrames = 0L;
@@ -3207,6 +3217,19 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 		long renderStartTick = Stopwatch.GetTimestamp();
 		try
 		{
+			if (frame.ReceivedTick > 0)
+			{
+				long ageMs = ElapsedMilliseconds(frame.ReceivedTick, renderStartTick);
+				if (ageMs > HighResolutionMaxLiveFrameAgeMilliseconds)
+				{
+					Interlocked.Increment(ref _renderDroppedFrames);
+					long staleDropped = Interlocked.Increment(ref _staleD3DFramesDropped);
+					LogStaleD3DFrameDropThrottled(ageMs, staleDropped);
+					QueueDiagnosticsUpdate();
+					return;
+				}
+			}
+
 			D3D11SwapChainVideoPresenter? presenter = _highResolutionD3DPresenter;
 			if (presenter == null)
 			{
@@ -3245,6 +3268,20 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 		{
 			frame.Dispose();
 		}
+	}
+
+	private void LogStaleD3DFrameDropThrottled(long ageMs, long staleDropped)
+	{
+		long tickCount = Environment.TickCount64;
+		long previous = Interlocked.Read(ref _lastStaleD3DFrameDropLogTick);
+		if (tickCount - previous < 1000)
+		{
+			return;
+		}
+		Interlocked.Exchange(ref _lastStaleD3DFrameDropLogTick, tickCount);
+		AppLog.Write(
+			$"Dropped stale D3D frame: age={ageMs}ms, staleDropped={staleDropped:N0}, " +
+			$"decoderQueue={ActiveQueuedInputPackets} packets/{(double)ActiveQueuedInputBytes / 1024.0:N1}KB.");
 	}
 #endif
 
