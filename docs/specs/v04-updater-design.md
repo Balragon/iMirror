@@ -118,15 +118,17 @@ name as a shared constant.
 | When to check | Once per app launch, in the background, after UI is up. Plus manual "Check for updates." |
 | Throttle | At most one **automatic** notice per day (persist "last notified version + timestamp" in Config). Manual check is never throttled. |
 | Dismissal | Notice is dismissible; dismissing a version suppresses re-nagging for that version (until a newer one appears). |
-| Channel | Stable by default. Opt-in prerelease via a Settings toggle (maps to the release `prerelease` flag). *(Open decision in roadmap.)* |
+| Channel | **Stable only for v0.4** (resolved). Use `/releases/latest`, which excludes prereleases — no prerelease toggle yet. A prerelease opt-in can be added later without rework. |
 | Forced updates | None. Always user-initiated apply. |
 | Rate limit | Unauthenticated GitHub API (60/req/hr/IP) is ample for once-per-launch. No token needed. |
 
 ## GitHub API specifics
 
-- Endpoint: `GET /repos/Balragon/iMirror/releases` (list) or `/releases/latest`
-  (stable only — note `/latest` **excludes** prereleases, convenient for the
-  default channel).
+- Endpoint for v0.4: `GET /repos/Balragon/iMirror/releases/latest` — `/latest`
+  **excludes** prereleases, which matches the resolved stable-only channel. (The
+  full `/releases` list is only needed if a prerelease channel is added later;
+  keep `CheckAsync`'s `includePrerelease` param defaulted to `false` as the
+  forward-compat hook.)
 - Headers: `User-Agent: iMirror-Updater` (GitHub requires a UA),
   `Accept: application/vnd.github+json`.
 - Asset selection: match on a stable naming convention emitted by the release

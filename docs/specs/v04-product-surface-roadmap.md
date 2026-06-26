@@ -229,13 +229,18 @@ The hard deadline is **2026-11-10**; everything must complete before it.
 - **Installer framework: Inno Setup** + lightweight in-app updater. Velopack
   deferred (its cross-platform and delta benefits are both nullified for a
   Windows-only, infrequently-updated app; revisit if cadence becomes frequent).
+- **Uninstall data policy: preserve** `%LOCALAPPDATA%\iMirror` (settings/logs)
+  on uninstall. Least-surprise; reinstall keeps preferences. An optional
+  "also remove my settings" checkbox may be added later, but the default and
+  unchecked behaviour is preserve.
+- **Update channel: stable only** for v0.4. The updater reads `/releases/latest`
+  (which excludes prereleases) — no prerelease toggle yet. A prerelease opt-in
+  can be added later without rework.
+- **Distribution shape: installer + zip.** `Setup.exe` is the primary asset;
+  the portable zip continues to publish as a secondary asset (CI, soak, and
+  portable users keep consuming it). No day-one regression.
 
-**Still open (need a human call before coding):**
-- **Uninstall data policy:** preserve `%LOCALAPPDATA%\iMirror` (settings/logs)
-  on uninstall, or remove it (with optional checkbox). *Recommended: preserve.*
-- **Update channel policy:** stable-only, or opt-in prerelease channel via tag.
-- **Distribution shape:** installer becomes primary asset, or publish both
-  installer + zip side by side. *Recommended: both, zip secondary.*
+**Still open (decide before/at Phase 3):**
 - **Phase 3 timing:** land signing immediately after Phase 2, or wait for 2-3
   minor releases to prove developer adoption first.
 
