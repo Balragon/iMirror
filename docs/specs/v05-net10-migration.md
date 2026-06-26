@@ -1,13 +1,21 @@
 # v0.5 — net10 Runtime Migration: Execution Note
 
-**Owner:** maintainer (not codex — codex owns the v0.4 release) · **Tracked by:**
-Issue #17 · **Status:** prepped, **blocked on `v0.4.0` tag** · **Hard deadline:**
-land well before **.NET 8 EOL 2026-11-10**, with buffer for GPU re-validation.
+**Tracked by:** Issue #17 · **Hard deadline:** land well before **.NET 8 EOL
+2026-11-10**, with buffer for GPU re-validation.
+
+**Status (2026-06-26):**
+- **Gate A — DONE.** TFM bump (8 projects) + workflows + `LangVersion 12.0` landed
+  in PR #25; CI green on net10 (restore/build/test, 43 tests, warning-clean), and
+  the self-contained publish ships all WPF assemblies (the net9+ regression did
+  **not** occur). `v0.4.0` shipped first, as designed.
+- **Gate B — handed to codex.** Real-hardware GPU present-path re-validation
+  (§3 below) runs in the codex batch on a real device + GPU, before the `v0.5`
+  tag. See `docs/specs/v05-gateb-codex-handoff.md`.
 
 This is the execution layer for the net10 bump. The *analysis* (why net10, SharpDX
 behaviour, risk surface, full CI checklist) is in `docs/dotnet-strategy.md` — read
 it once; this note does not repeat it. Here: the order, the exact edits, and the
-gates, ready to run the moment v0.4 ships.
+gates.
 
 ---
 
