@@ -32,6 +32,16 @@ jobs:
       - name: Test
         run: dotnet test iMirror.sln -c Release --no-build --logger "trx;LogFileName=results.trx"
 
+      # Self-contained publish smoke check. A green build does NOT prove the
+      # self-contained output is complete: .NET 9+ can silently drop WPF runtime
+      # assemblies from a self-contained publish, yielding a package that fails to
+      # launch. publish-win-x64.ps1 asserts PresentationFramework/PresentationCore/
+      # WindowsBase are present, so running it here turns that regression into a
+      # CI failure (FFmpeg is not on the runner, so allow it missing / skip zip).
+      - name: Verify self-contained publish (WPF assemblies)
+        shell: pwsh
+        run: .\scripts\publish-win-x64.ps1 -AllowMissingFfmpeg -NoZip
+
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@v4

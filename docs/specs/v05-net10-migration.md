@@ -81,10 +81,12 @@ Per `docs/dotnet-strategy.md` §"CI validation checklist", Part A:
       explicitly**: suppress NU1701 via `NoWarn`, or leave it visible — do **not**
       silently add `-warnaserror`.
 - [ ] `dotnet test iMirror.sln -c Release --no-build` — all existing tests green.
-- [ ] Run `scripts/publish-win-x64.ps1` and **inspect the produced zip**: it
-      launches **and** WPF assemblies (`PresentationFramework`, `PresentationCore`,
-      `WindowsBase`) are present. Catches the net9+ self-contained WPF-omission
-      regression — a green build alone does **not** prove this.
+- [x] **WPF-assembly presence now CI-enforced.** `publish-win-x64.ps1`'s
+      `$requiredFiles` asserts `PresentationFramework`/`PresentationCore`/
+      `WindowsBase`, and `ci.yml` runs `publish-win-x64.ps1 -AllowMissingFfmpeg
+      -NoZip` on every PR/push — so the net9+ self-contained WPF-omission
+      regression is a hard CI failure, not a manual zip inspection. A green build
+      alone still does not prove launch on real hardware (that is Gate B).
 
 ## 3. Gate B — GPU present path (REQUIRES real device + GPU; not hosted)
 
