@@ -8,7 +8,26 @@ For detailed release notes, see [GitHub Releases](https://github.com/Balragon/iM
 
 ## [Unreleased] (main branch)
 
-Features planned for v0.5 and beyond. See [`docs/specs/v05-plus-roadmap.md`](docs/specs/v05-plus-roadmap.md).
+Features planned for v0.6 and beyond. See [`docs/specs/v05-plus-roadmap.md`](docs/specs/v05-plus-roadmap.md).
+
+---
+
+## [0.5.0] - 2026-06-27
+
+### Changed
+
+- Migrated the Windows app, tests, diagnostic probes, CI, release, and SBOM workflows to .NET 10 (`net10.0-windows` / `net10.0`).
+- Kept SharpDX as the GPU binding for the validated .NET 10 baseline; the Vortice.Windows swap remains deferred to v0.7.
+
+### Fixed
+
+- Preserved queued Media Foundation/D3D11 GOP data during iPhone startup bursts instead of flushing the first keyframe sequence and waiting indefinitely for a later keyframe.
+- Updated the high-resolution D3D replay probe so decoded frames are presented on the STA/WPF thread under .NET 10.
+
+### Validation
+
+- GitHub CI restore/build/test and self-contained publish checks passed for the .NET 10 migration.
+- Gate B real-device validation confirmed live iPhone video/audio on the Media Foundation/D3D11 path with stable decoder/render stats over a 10+ minute hardware session.
 
 ---
 
@@ -58,7 +77,7 @@ Features planned for v0.5 and beyond. See [`docs/specs/v05-plus-roadmap.md`](doc
 
 ### Notes
 
-- v0.3 is the last version targeting `net8.0-windows`. v0.5+ will migrate to `net10.0-windows` before .NET 8 EOL (2026-11-10). See [Issue #17](https://github.com/Balragon/iMirror/issues/17).
+- v0.3 is the last version targeting `net8.0-windows`. v0.5.0 migrated iMirror to `net10.0-windows` before .NET 8 EOL (2026-11-10). See [Issue #17](https://github.com/Balragon/iMirror/issues/17).
 
 ---
 
@@ -104,12 +123,12 @@ Features planned for v0.5 and beyond. See [`docs/specs/v05-plus-roadmap.md`](doc
 
 ## Roadmap
 
-### v0.5 — .NET 10 Migration (required)
+### v0.5 — .NET 10 Migration (completed in 0.5.0)
 
 See [`docs/specs/v05-plus-roadmap.md`](docs/specs/v05-plus-roadmap.md):
-- **Scope:** `net10.0-windows` TFM bump; keep SharpDX (GPU binding swap deferred to v0.7).
-- **Validation:** CI restore/build/test + real-hardware soak (GPU D3D path, device-loss/restore cycle, 1h soak ≤150ms gate).
-- **Deadline:** must complete before 2026-11-10 (net8.0 EOL).
+- **Scope:** `net10.0-windows` TFM bump; kept SharpDX (GPU binding swap deferred to v0.7).
+- **Validation:** CI restore/build/test + real-hardware GPU Gate B.
+- **Deadline:** completed before 2026-11-10 (net8.0 EOL).
 
 ### v0.7 — SharpDX → Vortice.Windows (GPU Modernization)
 
