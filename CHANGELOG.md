@@ -124,4 +124,4 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution guidelines, testing requ
 
 ## License
 
-iMirror is licensed under the MIT License (see [LICENSE](LICENSE)). Bundled components (FFmpeg, playfair) are GPLv3; see [THIRD_PARTY_NOTICES.txt](THIRD_PARTY_NOTICES.txt) for compliance details.
+iMirror is licensed under the **GNU General Public License v3** (see [LICENSE](LICENSE)). The license is GPLv3 because iMirror combines required GPLv3 components — the playfair FairPlay sources (read at runtime; mandatory for real-device mirroring) and a bundled GPLv3 FFmpeg build. See [THIRD_PARTY_NOTICES.txt](THIRD_PARTY_NOTICES.txt) for per-component provenance and [docs/specs/open-source-strategy.md](docs/specs/open-source-strategy.md) for the licensing rationale.

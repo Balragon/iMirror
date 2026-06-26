@@ -4,7 +4,7 @@
 
 iMirror is positioning as an open source Windows developer tool with **transparent development** (public repository, public CI, public roadmap) while maintaining clear boundaries around **audience, contributions, and licensing**. This document establishes the policies governing the public GitHub repository and external engagement.
 
-**Key decision: iMirror adopts MIT license** for the core project, enabling maximum permissiveness for the developer audience while clearly respecting GPLv3 obligations for bundled components (FFmpeg, playfair).
+**Key decision: iMirror is licensed under GPLv3.** This is not a preference — it is *forced* by the codebase. iMirror combines two GPLv3 components that it cannot ship without: the **playfair** FairPlay sources (read at runtime; FairPlay is required for real-device mirroring) and a bundled **GPLv3 FFmpeg** build. A required GPLv3 component makes the distributed work a GPLv3 combined work; a permissive (MIT) license on the whole would misrepresent that. See "Licensing Decision" below for the full analysis, including why an LGPL-FFmpeg swap would *not* unlock MIT.
 
 ---
 
@@ -25,57 +25,81 @@ iMirror is positioning as an open source Windows developer tool with **transpare
 
 ---
 
-## Licensing Decision: MIT for iMirror Core
+## Licensing Decision: GPLv3 for iMirror
 
-### iMirror Core License: **MIT**
+### iMirror License: **GPLv3** (forced by required GPL components)
 
-**License text** (SPDX: MIT):
-```
-MIT License
+**Action:** `LICENSE` at the repository root is the full GNU General Public
+License v3 text, prefixed with iMirror's copyright/grant notice and a pointer to
+`THIRD_PARTY_NOTICES.txt`. SPDX: `GPL-3.0-or-later`.
 
-Copyright (c) 2024-present Balragon Contributors
+### Why GPLv3, and why MIT is not available
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+MIT was the initial instinct (permissive, developer-friendly). It does not
+survive contact with the codebase. Two GPLv3 components are **structurally
+required** by every shipped build:
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+1. **playfair (GPLv3) — the decisive one.** `MacMirrorReceiver.csproj` ships the
+   playfair `.c`/`.h` files into the publish output, and
+   `AirPlayPlayFair.cs` **reads them at runtime** to extract the FairPlay
+   constant tables (S-boxes, keys, IVs), throwing `FileNotFoundException` if they
+   are absent. FairPlay is mandatory for real-device AirPlay mirroring, so iMirror
+   is **non-functional without playfair**. That is a combined/derivative work, and
+   GPL is one-directional: you may pull MIT *into* GPL, but you cannot wrap a
+   required GPLv3 component in an MIT product and call the whole MIT. playfair is a
+   FairPlay reverse-engineering project published GPLv3-only — **there is no LGPL
+   or permissive alternative**.
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-```
+2. **FFmpeg (Gyan "essentials", GPLv3) — bundled, but not the blocker.** iMirror
+   invokes `ffmpeg.exe` as a *separate child process* (documented in the notices:
+   "not statically or dynamically linked"). That arm's-length call does **not**
+   propagate copyleft into iMirror's own code; it only imposes redistribution
+   duties on the bundled binary (license text + source offer), already satisfied.
+   **An LGPL FFmpeg build would therefore not unlock MIT** — it would relax a
+   bundled-binary obligation that is already met, while playfair (#1) keeps the
+   work GPL regardless.
 
-**Action:** Add `LICENSE` file (above text) at repository root.
+**Conclusion:** GPLv3 is the only honest license for the distributed work. A bare
+MIT `LICENSE` would assert freedoms the playfair dependency does not grant. The
+"permissive developer tool" positioning is simply unavailable unless FairPlay is
+re-implemented without playfair — see "Path back to permissive" below.
 
-### Rationale for MIT
+### Consequences of GPLv3 for users and contributors
 
-- **Permissive:** Allows commercial use, modification, and redistribution without restriction. Aligns with goal of enabling developer tools and derivative projects.
-- **Clear:** Simple, non-derivative, no reciprocal (copyleft) obligations. Developers understand it immediately.
-- **Copyleft boundary:** GPLv3 dependencies (FFmpeg, playfair) remain under GPL. iMirror's MIT license does **not** "upgrade" them — bundled GPL components stay GPL, documented in `THIRD_PARTY_NOTICES.txt`.
-- **Practical:** Enables use in closed-source tools, commercial products, and embedded contexts. Removes friction for teams that can't adopt GPL.
+- **Source availability:** anyone who receives an iMirror binary is entitled to
+  the complete corresponding source (the public repo + the bundled GPL component
+  sources). Already addressed by the public repository and `THIRD_PARTY_NOTICES.txt`
+  §6 source offers.
+- **Derivatives stay GPL:** forks/redistributions of iMirror (or its binaries)
+  must remain GPLv3. iMirror cannot be embedded in closed-source products.
+- **Contributions are GPLv3:** by submitting a PR, contributors agree their
+  changes are licensed GPLv3 (inbound = outbound). Stated in `CONTRIBUTING.md`.
+- **Appropriate Legal Notices (GPLv3 §5(d)):** because iMirror has an interactive
+  WPF UI, an About/Settings notice should display copyright + "no warranty" + a
+  pointer to the license. The existing Settings/Updates surface is the natural
+  home; track as a small follow-up.
 
-### Bundled Components & Compliance
+### Bundled / combined components & compliance
 
-| Component | License | Role | Bundled | Source |
+| Component | License | Coupling | In release? | Source obligation |
 |---|---|---|---|---|
-| **iMirror** | MIT | Core application | Yes (exe, assemblies) | Repository |
-| **FFmpeg** (Gyan build) | GPLv3 | Software video fallback, AAC-ELD decode | Yes (`tools/ffmpeg/bin/`) | External release asset (pinned SHA) |
-| **playfair** | GPLv3 | FairPlay reference validation | No (source in tree, not bundled in release) | `ThirdParty/playfair/` |
+| **iMirror** (first-party) | GPLv3 | — | Yes (exe, assemblies) | This repository |
+| **playfair** | GPLv3 | **Combined** — sources shipped, read at runtime; required | Yes (`ThirdParty/playfair/`) | Source shipped in-tree ✅ |
+| **FFmpeg** (Gyan essentials) | GPLv3 | **Aggregated** — separate child process | Yes (`tools/ffmpeg/bin/ffmpeg.exe`) | `THIRD_PARTY_NOTICES.txt` §6(d) offer ✅ |
+| .NET runtime / BCL | MIT | Bundled (self-contained) | Yes | MIT, compatible into GPL |
+| BouncyCastle / NAudio / WPF-UI / SharpDX | MIT | Linked | Yes | MIT, compatible into GPL |
 
-**Compliance flow:**
-1. Released packages bundle FFmpeg executables → must include GPLv3 license text in `THIRD_PARTY_NOTICES.txt` (already done). ✅
-2. Source tree contains playfair under GPLv3 → source is publicly visible; distributed under GPL. ✅
-3. iMirror's MIT license is **not** a license on FFmpeg — FFmpeg users must also accept GPLv3.
-4. Release artifact inspection (v0.4 acceptance criteria) confirms both licenses are present.
+**Compatibility note:** MIT → GPLv3 is fine (MIT is GPL-compatible; those
+components keep their MIT notices in `THIRD_PARTY_NOTICES.txt` while the combined
+work is GPLv3). The reverse — GPL → MIT — is what is impossible here.
+
+### Path back to permissive (if ever wanted)
+
+The *only* way iMirror could become MIT/permissive is to **remove the playfair
+dependency** (re-implement or drop FairPlay) **and** swap FFmpeg to an LGPL
+build. Removing FairPlay would break real-device AirPlay mirroring, so this is
+not a near-term option. Until then, GPLv3 is correct and final. Documented so the
+question is not re-litigated.
 
 ---
 
@@ -203,8 +227,8 @@ When iMirror reaches general-audience distribution or handles untrusted network 
 
 ### Files to Add (Immediate)
 
-1. **LICENSE** — MIT license (see text above).
-2. **CONTRIBUTING.md** — contributor guide (outlines workflow, testing, CoC).
+1. **LICENSE** — GPLv3 full text + iMirror notice (done; see "Licensing Decision").
+2. **CONTRIBUTING.md** — contributor guide (workflow, testing, CoC, inbound=GPLv3).
 3. **CODE_OF_CONDUCT.md** — Contributor Covenant 2.1 standard template.
 4. **CHANGELOG.md** — releases (v0.2, v0.3, v0.4 summaries); updated per release.
 
@@ -246,7 +270,7 @@ Enforce:
 - **Description:** "Windows AirPlay mirroring receiver for developers and QA teams."
 - **URL:** https://github.com/Balragon/iMirror
 - **Topics:** `airplay`, `mirroring`, `windows`, `developer-tools`, `gpu-video`, `real-device-testing`.
-- **License:** MIT (set in GitHub UI; populated from LICENSE file).
+- **License:** GPL-3.0 (GitHub auto-detects from the LICENSE file).
 - **Visibility:** Public.
 - **Discussions:** disabled (issues only for now).
 - **Wikis:** disabled (use docs/ folder).
@@ -276,41 +300,26 @@ Enforce:
 | Item | Status | Action |
 |---|---|---|
 | **Repository visibility** | Public | No change; confirm in GitHub Settings |
-| **iMirror license** | MIT | Create `LICENSE` file (copy text above) |
-| **Bundled component compliance** | GPLv3 + MIT | Already documented in `THIRD_PARTY_NOTICES.txt` ✅; no change needed |
-| **CONTRIBUTING.md** | Missing | Create (outline contribution workflow, testing, CoC) |
-| **CODE_OF_CONDUCT.md** | Missing | Add Contributor Covenant 2.1 template |
-| **CHANGELOG.md** | Missing | Create with v0.2/v0.3/v0.4 summaries; update per release |
-| **SECURITY.md** | Deferred | Add after Phase 3 (signing) decision to expand to general users |
+| **iMirror license** | GPLv3 | `LICENSE` (GPLv3 + notice) added ✅ |
+| **Bundled/combined compliance** | GPLv3 (playfair combined, FFmpeg aggregated) + MIT deps | Documented in `THIRD_PARTY_NOTICES.txt`; playfair combined-work note updated ✅ |
+| **CONTRIBUTING.md** | Added ✅ | Includes inbound=GPLv3 (DCO-style) statement |
+| **CODE_OF_CONDUCT.md** | Added ✅ | Contributor Covenant 2.1 |
+| **CHANGELOG.md** | Added ✅ | v0.2/v0.3/v0.4 summaries; update per release |
+| **GPLv3 §5(d) in-app notice** | Follow-up | Add copyright + no-warranty + license pointer to Settings/About |
+| **SECURITY.md** | Deferred | Add after general-audience decision (tracks with signing) |
 | **GitHub branch protection** | Unconfigured | Add PR review + CI gate to `main` |
-| **Repository topics** | Not set | Add: airplay, mirroring, windows, developer-tools, gpu-video, real-device-testing |
+| **Repository topics** | Not set | airplay, mirroring, windows, developer-tools, gpu-video, real-device-testing |
 
 ---
 
-## Appendix: MIT License (Full Text)
+## Appendix: License Files
 
-Placed in `LICENSE` file at repository root:
-
-```
-MIT License
-
-Copyright (c) 2024-present Balragon Contributors
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-```
+- **`LICENSE`** (repository root) — the full GNU General Public License v3 text,
+  prefixed with iMirror's copyright/grant notice and a pointer to
+  `THIRD_PARTY_NOTICES.txt`. SPDX identifier: `GPL-3.0-or-later`.
+- **`ThirdParty/playfair/LICENSE.md`** — the same GPLv3 text as shipped with the
+  playfair component (verbatim, markdown-formatted); the root `LICENSE` is derived
+  from it.
+- **`THIRD_PARTY_NOTICES.txt`** — per-component provenance, coupling, and GPLv3
+  §6 corresponding-source offers for the combined/bundled GPL parts, plus the MIT
+  notices for the permissively-licensed dependencies.

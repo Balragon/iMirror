@@ -2,6 +2,10 @@
 
 Thank you for your interest in contributing to iMirror! This document outlines how to get started, what kinds of contributions we accept, and our development process.
 
+## Licensing of Contributions
+
+iMirror is licensed under the **GNU General Public License v3** (see [LICENSE](LICENSE)). By submitting a pull request, you agree that your contribution is licensed under **GPLv3** as well (inbound = outbound). Do not submit code you cannot license under GPLv3, and do not paste in code from incompatible (e.g. proprietary or permissive-only-with-conflicting-terms) sources. If a change pulls in a new third-party dependency, note its license in the PR so it can be checked for GPLv3 compatibility.
+
 ## Code of Conduct
 
 iMirror adopts the [Contributor Covenant 2.1](CODE_OF_CONDUCT.md). Please review it before participating. We expect respectful, inclusive discourse; violations are taken seriously.
