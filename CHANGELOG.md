@@ -10,6 +10,10 @@ For detailed release notes, see [GitHub Releases](https://github.com/Balragon/iM
 
 Features planned for v0.6 and beyond. See [`docs/specs/v05-plus-roadmap.md`](docs/specs/v05-plus-roadmap.md).
 
+---
+
+## [0.5.1] - 2026-06-27
+
 ### Fixed
 
 - Serialized AirPlay stream-config reset/restart handling so SPS/PPS parameter sets seed the fresh H.264 gate before the next IDR is processed, preventing long-run Mac mirroring from freezing video while audio continues.
@@ -18,10 +22,11 @@ Features planned for v0.6 and beyond. See [`docs/specs/v05-plus-roadmap.md`](doc
 
 ### Validation
 
-- GitHub CI passed on PR #30.
-- Built and installed a main-based `0.5.1-rc.1+1d5a75a` candidate with bundled FFmpeg.
+- GitHub CI passed on PR #30 and PR #31.
+- Built and installed a main-based `0.5.1-rc.2+446b1a4` candidate with bundled FFmpeg.
 - Synthetic soak-gate checks now fail the v0.5.0-style video-freeze/audio-continues pattern and pass a healthy A/V-progress pattern.
-- Real-device 30-minute, 2-hour, and overnight soak validation remains pending before the final v0.5.1 tag.
+- Real-device iPhone smoke passed the 30-minute soak gate (`00:31:20` evidence, no crash/corruption/video-audio-freeze/keyframe-starvation markers).
+- Real-device Mac AirPlay smoke passed the 30-minute soak gate (`00:30:00` evidence, `worstP95=26ms`, `worstMax=52ms`, no crash/corruption/video-audio-freeze/keyframe-starvation markers).
 
 ---
 
