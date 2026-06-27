@@ -67,6 +67,7 @@ public sealed class AirPlayProbeService : IDisposable
 #endif
 
 	private readonly CancellationTokenSource _cts = new CancellationTokenSource();
+	private readonly int _mdnsPort;
 	private readonly string _displayName;
 	private readonly string _hostName;
 	private readonly string _airPlayInstanceName;
@@ -153,8 +154,10 @@ public sealed class AirPlayProbeService : IDisposable
 		string displayName,
 		bool advertiseAudio = AdvertiseAudioCapabilitiesDefault,
 		bool writeDiagnostics = false,
-		bool dumpAudio = false)
+		bool dumpAudio = false,
+		int mdnsPort = MdnsPort)
 	{
+		_mdnsPort = mdnsPort;
 		_displayName = SanitizeLabel(displayName);
 		_hostName = SanitizeLabel(Environment.MachineName) + ".local";
 		_deviceId = ResolveDeviceId();
@@ -233,7 +236,7 @@ public sealed class AirPlayProbeService : IDisposable
 			mdnsClient = new UdpClient(AddressFamily.InterNetwork);
 			mdnsClient.Client.ExclusiveAddressUse = false;
 			mdnsClient.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, optionValue: true);
-			mdnsClient.Client.Bind(new IPEndPoint(IPAddress.Any, MdnsPort));
+			mdnsClient.Client.Bind(new IPEndPoint(IPAddress.Any, _mdnsPort));
 			mdnsClient.JoinMulticastGroup(MulticastAddress);
 			// Publish the socket to the field only after bind+join succeed. A failure above (most
 			// commonly UDP 5353 already held by Bonjour/iTunes) then leaves _mdnsClient null, so the
