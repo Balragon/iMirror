@@ -109,12 +109,106 @@ public sealed class UpdateServiceTests
 	}
 
 	[Fact]
+	public async Task DownloadSetupAsync_FailsClosed_WhenNoChecksumAssetAvailable()
+	{
+		byte[] setupBytes = Encoding.UTF8.GetBytes("fake setup bytes");
+		UpdateInfo update = SetupUpdate(setupBytes.Length, sha256SumsAssetUrl: null);
+		var client = new HttpClient(new StubHttpMessageHandler(_ => BytesResponse(setupBytes)));
+		string downloadDirectory = CreateTempDirectory();
+		var service = new UpdateService(client, "0.3.0", downloadDirectory);
+
+		await Assert.ThrowsAsync<InvalidOperationException>(
+			() => service.DownloadSetupAsync(update, progress: null, CancellationToken.None));
+
+		AssertNoSetupLeftBehind(downloadDirectory);
+	}
+
+	[Fact]
+	public async Task DownloadSetupAsync_FailsClosed_WhenChecksumDownloadFails()
+	{
+		byte[] setupBytes = Encoding.UTF8.GetBytes("fake setup bytes");
+		UpdateInfo update = SetupUpdate(setupBytes.Length, "https://example.test/SHA256SUMS");
+		var client = new HttpClient(new StubHttpMessageHandler(request =>
+			IsChecksumRequest(request)
+				? new HttpResponseMessage(HttpStatusCode.NotFound)
+				: BytesResponse(setupBytes)));
+		string downloadDirectory = CreateTempDirectory();
+		var service = new UpdateService(client, "0.3.0", downloadDirectory);
+
+		await Assert.ThrowsAsync<InvalidOperationException>(
+			() => service.DownloadSetupAsync(update, progress: null, CancellationToken.None));
+
+		AssertNoSetupLeftBehind(downloadDirectory);
+	}
+
+	[Fact]
+	public async Task DownloadSetupAsync_FailsClosed_WhenChecksumOmitsTheSetupAsset()
+	{
+		byte[] setupBytes = Encoding.UTF8.GetBytes("fake setup bytes");
+		string unrelatedHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes("other"))).ToLowerInvariant();
+		string sha256Sums = unrelatedHash + "  iMirror-0.4.0-win-x64.zip"; // no line for the setup.exe asset
+		UpdateInfo update = SetupUpdate(setupBytes.Length, "https://example.test/SHA256SUMS");
+		var client = new HttpClient(new StubHttpMessageHandler(request =>
+			IsChecksumRequest(request) ? TextResponse(sha256Sums) : BytesResponse(setupBytes)));
+		string downloadDirectory = CreateTempDirectory();
+		var service = new UpdateService(client, "0.3.0", downloadDirectory);
+
+		await Assert.ThrowsAsync<InvalidOperationException>(
+			() => service.DownloadSetupAsync(update, progress: null, CancellationToken.None));
+
+		AssertNoSetupLeftBehind(downloadDirectory);
+	}
+
+	[Fact]
+	public async Task DownloadSetupAsync_FailsClosed_WhenHashDoesNotMatch()
+	{
+		byte[] setupBytes = Encoding.UTF8.GetBytes("fake setup bytes");
+		string wrongHash = new string('a', 64);
+		string sha256Sums = wrongHash + "  iMirror-0.4.0-setup.exe";
+		UpdateInfo update = SetupUpdate(setupBytes.Length, "https://example.test/SHA256SUMS");
+		var client = new HttpClient(new StubHttpMessageHandler(request =>
+			IsChecksumRequest(request) ? TextResponse(sha256Sums) : BytesResponse(setupBytes)));
+		string downloadDirectory = CreateTempDirectory();
+		var service = new UpdateService(client, "0.3.0", downloadDirectory);
+
+		await Assert.ThrowsAsync<InvalidOperationException>(
+			() => service.DownloadSetupAsync(update, progress: null, CancellationToken.None));
+
+		AssertNoSetupLeftBehind(downloadDirectory);
+	}
+
+	[Fact]
 	public void TryParseSha256Sums_SupportsClassicAndOpenSslFormats()
 	{
 		const string hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
 		Assert.Equal(hash, UpdateService.TryParseSha256Sums(hash + " *iMirror-0.4.0-setup.exe", "iMirror-0.4.0-setup.exe"));
 		Assert.Equal(hash, UpdateService.TryParseSha256Sums("SHA256(iMirror-0.4.0-setup.exe)= " + hash, "iMirror-0.4.0-setup.exe"));
+	}
+
+	private static UpdateInfo SetupUpdate(long setupAssetSize, string? sha256SumsAssetUrl)
+	{
+		return new UpdateInfo(
+			"0.4.0",
+			IsNewer: true,
+			IsPrerelease: false,
+			"iMirror-0.4.0-setup.exe",
+			"https://example.test/iMirror-0.4.0-setup.exe",
+			setupAssetSize,
+			sha256SumsAssetUrl,
+			"https://github.com/Balragon/iMirror/releases/tag/v0.4.0");
+	}
+
+	private static bool IsChecksumRequest(HttpRequestMessage request)
+	{
+		return request.RequestUri?.AbsolutePath.EndsWith("SHA256SUMS", StringComparison.OrdinalIgnoreCase) == true;
+	}
+
+	private static void AssertNoSetupLeftBehind(string downloadDirectory)
+	{
+		string finalPath = Path.Combine(downloadDirectory, "iMirror-0.4.0-setup.exe");
+		Assert.False(File.Exists(finalPath), "fail-closed download must not leave an installable setup file");
+		Assert.False(File.Exists(finalPath + ".download"), "fail-closed download must not leave a partial file");
 	}
 
 	private static string CreateTempDirectory()
