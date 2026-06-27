@@ -37,6 +37,24 @@ public sealed class H264AnnexBStreamGateTests
 	}
 
 	[Fact]
+	public void Process_PrependsSpsAndPpsWhenParameterSetsArriveInSeparatePackets()
+	{
+		var gate = new H264AnnexBStreamGate();
+		byte[] sps = Sps();
+		byte[] pps = Pps();
+		byte[] idr = Idr();
+
+		Assert.Null(gate.Process(sps));
+		Assert.Null(gate.Process(pps));
+		byte[]? forwarded = gate.Process(idr);
+
+		Assert.NotNull(forwarded);
+		Assert.True(gate.IsStarted);
+		Assert.Equal("prepended buffered SPS/PPS to keyframe", gate.LastDecision);
+		Assert.Equal(sps.Concat(pps).Concat(idr).ToArray(), forwarded);
+	}
+
+	[Fact]
 	public void Process_DropsPacketWithoutAnnexBNalUnits()
 	{
 		var gate = new H264AnnexBStreamGate();
@@ -143,11 +161,17 @@ public sealed class H264AnnexBStreamGateTests
 
 	private static byte[] SpsPps()
 	{
-		return new byte[]
-		{
-			0x00, 0x00, 0x00, 0x01, 0x67, 0x42, 0x00, 0x1F,
-			0x00, 0x00, 0x00, 0x01, 0x68, 0xCE, 0x06, 0xE2
-		};
+		return Sps().Concat(Pps()).ToArray();
+	}
+
+	private static byte[] Sps()
+	{
+		return new byte[] { 0x00, 0x00, 0x00, 0x01, 0x67, 0x42, 0x00, 0x1F };
+	}
+
+	private static byte[] Pps()
+	{
+		return new byte[] { 0x00, 0x00, 0x00, 0x01, 0x68, 0xCE, 0x06, 0xE2 };
 	}
 
 	private static byte[] Idr()
