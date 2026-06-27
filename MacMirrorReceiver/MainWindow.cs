@@ -874,7 +874,7 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 
 	private void HandleAirPlayStreamConfig(StreamConfig config, int generation)
 	{
-		base.Dispatcher.BeginInvoke(new Action(delegate
+		void ApplyStreamConfig()
 		{
 			if (!IsCurrentGeneration(generation, Volatile.Read(ref _connectionGeneration)))
 			{
@@ -910,7 +910,17 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 
 			ResetH264Gate();
 			StartDecoder(config);
-		}), DispatcherPriority.Background);
+		}
+
+		if (base.Dispatcher.CheckAccess())
+		{
+			ApplyStreamConfig();
+			return;
+		}
+
+		// AirPlay emits SPS/PPS immediately after the config callback. Apply the reset synchronously
+		// so those parameter sets seed the fresh H.264 gate before the next IDR arrives.
+		base.Dispatcher.Invoke(new Action(ApplyStreamConfig), DispatcherPriority.Send);
 	}
 
 	private void HandleAirPlayVideoPayload(byte[] payload, ulong sourceTimestampNanos, long receivedTick, int generation)

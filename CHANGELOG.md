@@ -12,6 +12,24 @@ Features planned for v0.6 and beyond. See [`docs/specs/v05-plus-roadmap.md`](doc
 
 ---
 
+## [0.5.1] - 2026-06-27
+
+### Fixed
+
+- Serialized AirPlay stream-config reset/restart handling so SPS/PPS parameter sets seed the fresh H.264 gate before the next IDR is processed, preventing long-run Mac mirroring from freezing video while audio continues.
+- Added H.264 gate tests for buffered SPS/PPS being prepended to the next keyframe.
+- Updated the soak acceptance report to fail when audio continues after video decode/render progress stalls, or when the H.264 gate remains stuck waiting for SPS/PPS.
+
+### Validation
+
+- GitHub CI passed on PR #30 and PR #31.
+- Built and installed a main-based `0.5.1-rc.2+446b1a4` candidate with bundled FFmpeg.
+- Synthetic soak-gate checks now fail the v0.5.0-style video-freeze/audio-continues pattern and pass a healthy A/V-progress pattern.
+- Real-device iPhone smoke passed the 30-minute soak gate (`00:31:20` evidence, no crash/corruption/video-audio-freeze/keyframe-starvation markers).
+- Real-device Mac AirPlay smoke passed the 30-minute soak gate (`00:30:00` evidence, `worstP95=26ms`, `worstMax=52ms`, no crash/corruption/video-audio-freeze/keyframe-starvation markers).
+
+---
+
 ## [0.5.0] - 2026-06-27
 
 ### Changed
