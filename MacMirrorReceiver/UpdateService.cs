@@ -124,14 +124,22 @@ internal sealed class UpdateService
 					$"Downloaded update size mismatch. Expected {updateInfo.SetupAssetSize:N0} bytes, got {downloadedBytes:N0} bytes.");
 			}
 
+			// Fail closed: an auto-update is installed only when its SHA-256 verifies against the release
+			// SHA256SUMS. A missing SHA asset, an unreachable/unparseable SHA file, or a hash mismatch all
+			// abort the install (the installer ships unsigned, so the checksum is the only integrity gate).
+			// Every release built by .github/workflows/release.yml publishes SHA256SUMS, so this never
+			// blocks a legitimate update; the caller surfaces failures as "install manually from Releases".
 			string? expectedSha256 = await TryGetExpectedSha256Async(updateInfo, cancellationToken).ConfigureAwait(false);
-			if (!string.IsNullOrWhiteSpace(expectedSha256))
+			if (string.IsNullOrWhiteSpace(expectedSha256))
 			{
-				string actualSha256 = await ComputeSha256Async(partialPath, cancellationToken).ConfigureAwait(false);
-				if (!string.Equals(expectedSha256, actualSha256, StringComparison.OrdinalIgnoreCase))
-				{
-					throw new InvalidOperationException("Downloaded update SHA-256 did not match SHA256SUMS.");
-				}
+				throw new InvalidOperationException(
+					"Cannot verify this update: no SHA-256 checksum is available for the release. Install manually from the Releases page.");
+			}
+
+			string actualSha256 = await ComputeSha256Async(partialPath, cancellationToken).ConfigureAwait(false);
+			if (!string.Equals(expectedSha256, actualSha256, StringComparison.OrdinalIgnoreCase))
+			{
+				throw new InvalidOperationException("Downloaded update SHA-256 did not match SHA256SUMS.");
 			}
 
 			if (File.Exists(finalPath))

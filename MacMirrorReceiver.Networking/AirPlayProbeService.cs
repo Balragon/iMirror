@@ -227,13 +227,18 @@ public sealed class AirPlayProbeService : IDisposable
 			return;
 		}
 
+		UdpClient? mdnsClient = null;
 		try
 		{
-			_mdnsClient = new UdpClient(AddressFamily.InterNetwork);
-			_mdnsClient.Client.ExclusiveAddressUse = false;
-			_mdnsClient.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, optionValue: true);
-			_mdnsClient.Client.Bind(new IPEndPoint(IPAddress.Any, MdnsPort));
-			_mdnsClient.JoinMulticastGroup(MulticastAddress);
+			mdnsClient = new UdpClient(AddressFamily.InterNetwork);
+			mdnsClient.Client.ExclusiveAddressUse = false;
+			mdnsClient.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, optionValue: true);
+			mdnsClient.Client.Bind(new IPEndPoint(IPAddress.Any, MdnsPort));
+			mdnsClient.JoinMulticastGroup(MulticastAddress);
+			// Publish the socket to the field only after bind+join succeed. A failure above (most
+			// commonly UDP 5353 already held by Bonjour/iTunes) then leaves _mdnsClient null, so the
+			// entry guard does not wedge a half-started receiver and StartAsync can be retried.
+			_mdnsClient = mdnsClient;
 			_mdnsBound = true;
 
 			_airPlayListener = TryStartListener(AirPlayPort, "AirPlay");
@@ -257,7 +262,39 @@ public sealed class AirPlayProbeService : IDisposable
 		{
 			SetStatus("AirPlay receiver unavailable: " + ex.Message);
 			AppLog.Write("AirPlay receiver failed to start: " + ex);
+			CleanupPartialStart(mdnsClient);
 		}
+	}
+
+	// Undo a partially completed StartAsync so the entry guard does not wedge a half-started receiver
+	// and a later StartAsync can retry cleanly (e.g. after UDP 5353 was momentarily held). The mDNS
+	// socket local is passed so a bind/join failure before the field assignment is still disposed.
+	// Any listeners that started are stopped; their accept loops and the mDNS receive loop terminate on
+	// the resulting ObjectDisposedException. _cts is the shared session token and is left untouched so a
+	// retry can reuse it.
+	private void CleanupPartialStart(UdpClient? mdnsClient)
+	{
+		try
+		{
+			mdnsClient?.Dispose();
+		}
+		catch
+		{
+		}
+
+		_mdnsClient = null;
+		_mdnsBound = false;
+
+		_airPlayListener?.Stop();
+		_raopListener?.Stop();
+		_dataListener?.Stop();
+		_eventListener?.Stop();
+		_timingListener?.Stop();
+		_airPlayListener = null;
+		_raopListener = null;
+		_dataListener = null;
+		_eventListener = null;
+		_timingListener = null;
 	}
 
 	private TcpListener? TryStartListener(int port, string label)
