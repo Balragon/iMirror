@@ -14,7 +14,7 @@ namespace MacMirrorReceiver.Video;
 // present at ~10fps regardless of surface size; a swap chain flips directly to the window at the
 // display refresh rate with minimal latency. The video processor converts NV12 -> BGRA and scales
 // the decoded native frame to the window directly into the swap chain back buffer.
-public sealed class D3D11SwapChainVideoPresenter : HwndHost
+public sealed class D3D11SwapChainVideoPresenter : HwndHost, IHighResolutionD3DPresenter
 {
 	private const int WS_CHILD = 0x40000000;
 	private const int WS_VISIBLE = 0x10000000;
@@ -51,9 +51,21 @@ public sealed class D3D11SwapChainVideoPresenter : HwndHost
 
 	public D3D11.Device Device => _d3d11Device;
 
+	public FrameworkElement View => this;
+
 	public bool IsMultithreadProtected { get; private set; }
 
 	public event Action<string>? StatusChanged;
+
+	public void PresentFrame(IHighResolutionD3DFrame frame)
+	{
+		if (frame is not D3D11VideoFrame d3dFrame)
+		{
+			throw new ArgumentException("SharpDX presenter requires a SharpDX D3D11 video frame.", nameof(frame));
+		}
+
+		PresentNv12Texture(d3dFrame.Texture, d3dFrame.SubresourceIndex, d3dFrame.Width, d3dFrame.Height, d3dFrame.Fps);
+	}
 
 	private void EnableMultithreadProtection()
 	{

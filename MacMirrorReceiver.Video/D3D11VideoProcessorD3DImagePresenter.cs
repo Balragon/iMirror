@@ -51,6 +51,16 @@ public sealed class D3D11VideoProcessorD3DImagePresenter : IDisposable
 
 	public event Action<string>? StatusChanged;
 
+	public void PresentFrame(IHighResolutionD3DFrame frame)
+	{
+		if (frame is not D3D11VideoFrame d3dFrame)
+		{
+			throw new ArgumentException("SharpDX D3DImage presenter requires a SharpDX D3D11 video frame.", nameof(frame));
+		}
+
+		PresentNv12Texture(d3dFrame.Texture, d3dFrame.SubresourceIndex, d3dFrame.Width, d3dFrame.Height, d3dFrame.Fps);
+	}
+
 	public D3D11VideoProcessorD3DImagePresenter(IntPtr windowHandle)
 	{
 		_windowHandle = windowHandle;
