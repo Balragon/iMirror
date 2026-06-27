@@ -342,7 +342,7 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 		await _browser.StartAsync();
 		await _airPlayProbe.StartAsync();
 		PreflightReport report = await StartupDiagnostics.RunAsync(_airPlayProbe);
-		AppLog.Write($"Preflight: {report.Worst} ??" +
+		AppLog.Write($"Preflight: {report.Worst} - " +
 			string.Join("; ", System.Linq.Enumerable.Select(report.Checks, check => $"{check.Id}={check.Status}")));
 		BindReadinessStrip(report);
 		_ = CheckForUpdatesOnStartupAsync();
@@ -410,12 +410,12 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 		else if (HasDiagnosticIssue(report, "ffmpeg"))
 		{
 			brush = (SolidColorBrush)FindResource("DangerBrush");
-			text = "FFmpeg not found ??video decode unavailable";
+			text = "FFmpeg not found - video decode unavailable";
 		}
 		else if (listenerBlocked)
 		{
 			brush = (SolidColorBrush)FindResource("WarningBrush");
-			text = "Firewall may be blocking AirPlay ??check Windows Firewall";
+			text = "Firewall may be blocking AirPlay - check Windows Firewall";
 		}
 		else if (HasDiagnosticIssue(report, "network"))
 		{

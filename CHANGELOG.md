@@ -10,6 +10,25 @@ For detailed release notes, see [GitHub Releases](https://github.com/Balragon/iM
 
 Features planned for v0.6 and beyond. See [`docs/specs/v05-plus-roadmap.md`](docs/specs/v05-plus-roadmap.md).
 
+### Security
+
+- Auto-update now fails closed: `DownloadSetupAsync` aborts the install when the release SHA-256 cannot be verified (missing, unreachable, or unparseable `SHA256SUMS`, or a hash mismatch) instead of running the unsigned setup unverified. Verified end-to-end against the real `v0.5.1` release plus four negative cases.
+
+### Fixed
+
+- AirPlay receiver startup no longer wedges on a partial mDNS start: the mDNS socket is published only after bind+join succeed, and partial state is cleaned up, so a transiently held UDP 5353 can be retried.
+- `AirPlayAudioReceiver.Start` tears down sockets/CTS/dump on a partial-start failure so resources do not leak and `IsRunning` no longer reports a false positive.
+- H.264 stream gate retains the latest SPS and PPS independently, so parameter sets that arrive in separate packets are both prepended (SPS then PPS) to the next IDR.
+- Fixed mangled `??` separators in the readiness and log strings.
+
+### Known limitations
+
+- The FFmpeg software-decode fallback exceeds the 150ms latency gate (real-device B3: Mac p95 ~228ms, iPhone p95 ~174ms) while remaining functional; the GPU path meets the gate. See [`docs/b3-hardening-evidence-2026-06-27.md`](docs/b3-hardening-evidence-2026-06-27.md) and [#32](https://github.com/Balragon/iMirror/issues/32).
+
+### Validation
+
+- B3 real-device gate: GPU path PASS (Mac 2h `worstP95=91ms`; iPhone smoke/reconnect), auto-update fail-closed PASS, FFmpeg fallback functional but latency-failing (tracked in #32).
+
 ---
 
 ## [0.5.1] - 2026-06-27

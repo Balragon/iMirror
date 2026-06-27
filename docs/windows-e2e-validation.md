@@ -1,22 +1,16 @@
 # Windows Real-Device E2E Validation Checklist
 
-Use this checklist before merging `claude/magical-faraday-6ex3c7` into `main`.
+Run this checklist on a Windows machine with a real Mac/iPhone sender before promoting a release
+build. It is the manual gate that the automated unit tests cannot cover: real AirPlay discovery,
+GPU/FFmpeg decode, audio, reconnect, and latency under an actual mirroring session.
 
-## Current Status
-
-**Branch:** `claude/magical-faraday-6ex3c7` (12 commits ahead of `main`)
-
-| Feature | Frontend | Backend | Static validation | Build | Real device |
-|---|---|---|---|---|---|
-| **P1.0 Settings UI** | Done | Done | Done | Done | Pending |
-| **P1.1 First-Run Diagnostics** | Done | Done | Done | Done | Pending |
-| **FFmpeg Packaging (Essentials)** | N/A | Done | Done | N/A | Pending |
-
-Remaining gate: **one Windows real-device E2E validation run**.
+Record the run (logs + screenshots) against the candidate build so every release has evidence the
+gate was executed. If any item fails, do not promote the build; attach the relevant log and
+screenshot to the follow-up fix.
 
 ## 0. Preparation
 
-- [ ] Download the published release zip, or build locally with `powershell -ExecutionPolicy Bypass -File .\scripts\publish-win-x64.ps1 -Version 0.2.0`.
+- [ ] Download the published release zip, or build locally with `powershell -ExecutionPolicy Bypass -File .\scripts\publish-win-x64.ps1 -Version <version>`.
 - [ ] If building locally, make Gyan.FFmpeg.Essentials available via `tools\ffmpeg\bin\ffmpeg.exe`, `PATH`, or `-FfmpegPath`.
 - [ ] Confirm packaging log prints `Bundled FFmpeg: ...Gyan.FFmpeg.Essentials...` or a local `tools\ffmpeg\bin\ffmpeg.exe` verified as `essentials_build`.
 - [ ] Confirm no `full_build` warning is printed.
@@ -64,8 +58,8 @@ dotnet run --project .\tools\LatencyAcceptanceReport\LatencyAcceptanceReport.csp
 - [ ] Confirm p95 latency is `<= 150ms`.
 - [ ] Confirm the report passes on a fresh session log. The previous log failed with `contiguousEvidence=False`, so it should not be reused.
 
-## Merge Decision
+## Release Decision
 
-After every item passes, merge `claude/magical-faraday-6ex3c7` into `main`.
+After every item passes, the build is cleared for release promotion.
 
-If any item fails, keep the branch open and attach the relevant log and screenshot to the follow-up fix.
+If any item fails, hold promotion and attach the relevant log and screenshot to the follow-up fix.

@@ -10,6 +10,7 @@ The product path is now centered on native GPU video: AirPlay control and media 
 - Mac and iPhone screen mirroring have been validated on real devices.
 - The default video engine is Media Foundation/D3D11 when hardware decode is available.
 - FFmpeg remains required for the software video fallback and AAC-ELD audio decode.
+- Known limitation: the FFmpeg software-decode fallback exceeds the 150ms latency target (real-device B3: Mac p95 ~228ms, iPhone p95 ~174ms) while staying functional; the GPU path meets the target. Tracked in [#32](https://github.com/Balragon/iMirror/issues/32).
 - Local diagnostic dumps can contain private screen content or session material and must not be committed.
 
 ## Repository Layout
