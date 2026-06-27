@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Linq;
 
 namespace MacMirrorReceiver.Video;
 
@@ -13,7 +12,9 @@ public sealed class H264AnnexBStreamGate
 			public int Length => End - Start;
 		}
 
-		private readonly List<NalRange> _parameterSetRanges = new List<NalRange>();
+		private NalRange? _latestSpsRange;
+
+		private NalRange? _latestPpsRange;
 
 		public bool HasSps { get; private set; }
 
@@ -43,11 +44,11 @@ public sealed class H264AnnexBStreamGate
 				{
 				case 7:
 					h264NalInfo.HasSps = true;
-					h264NalInfo._parameterSetRanges.Add(new NalRange(start, FindNalEnd(payload, num + 1)));
+					h264NalInfo._latestSpsRange = new NalRange(start, FindNalEnd(payload, num + 1));
 					break;
 				case 8:
 					h264NalInfo.HasPps = true;
-					h264NalInfo._parameterSetRanges.Add(new NalRange(start, FindNalEnd(payload, num + 1)));
+					h264NalInfo._latestPpsRange = new NalRange(start, FindNalEnd(payload, num + 1));
 					break;
 				case 5:
 					h264NalInfo.HasIdr = true;
@@ -58,19 +59,25 @@ public sealed class H264AnnexBStreamGate
 			return h264NalInfo;
 		}
 
-		public byte[] ExtractParameterSets(byte[] payload)
+		public byte[] ExtractLatestSps(byte[] payload)
 		{
-			if (_parameterSetRanges.Count == 0)
+			return ExtractRange(payload, _latestSpsRange);
+		}
+
+		public byte[] ExtractLatestPps(byte[] payload)
+		{
+			return ExtractRange(payload, _latestPpsRange);
+		}
+
+		private static byte[] ExtractRange(byte[] payload, NalRange? maybeRange)
+		{
+			if (!maybeRange.HasValue)
 			{
 				return Array.Empty<byte>();
 			}
-			byte[] array = new byte[_parameterSetRanges.Sum((NalRange range) => range.Length)];
-			int num = 0;
-			foreach (NalRange parameterSetRange in _parameterSetRanges)
-			{
-				Buffer.BlockCopy(payload, parameterSetRange.Start, array, num, parameterSetRange.Length);
-				num += parameterSetRange.Length;
-			}
+			NalRange range = maybeRange.Value;
+			byte[] array = new byte[range.Length];
+			Buffer.BlockCopy(payload, range.Start, array, 0, range.Length);
 			return array;
 		}
 
@@ -115,7 +122,9 @@ public sealed class H264AnnexBStreamGate
 
 	private bool _started;
 
-	private byte[] _pendingParameterSets = Array.Empty<byte>();
+	private byte[] _pendingSps = Array.Empty<byte>();
+
+	private byte[] _pendingPps = Array.Empty<byte>();
 
 	public bool IsStarted => _started;
 
@@ -137,7 +146,7 @@ public sealed class H264AnnexBStreamGate
 		H264NalInfo h264NalInfo = H264NalInfo.FromAnnexB(payload);
 		if (h264NalInfo.HasSps || h264NalInfo.HasPps)
 		{
-			_pendingParameterSets = LatestParameterSets(_pendingParameterSets, payload, h264NalInfo);
+			UpdatePendingParameterSets(payload, h264NalInfo);
 			_hasSps |= h264NalInfo.HasSps;
 			_hasPps |= h264NalInfo.HasPps;
 		}
@@ -150,7 +159,7 @@ public sealed class H264AnnexBStreamGate
 				LastDecision = ((h264NalInfo.HasSps || h264NalInfo.HasPps) ? "found SPS/PPS keyframe" : "prepended buffered SPS/PPS to keyframe");
 				if (!h264NalInfo.HasSps || !h264NalInfo.HasPps)
 				{
-					return Combine(_pendingParameterSets, payload);
+					return Combine(PendingParameterSets(), payload);
 				}
 				return payload;
 			}
@@ -168,20 +177,30 @@ public sealed class H264AnnexBStreamGate
 		_hasSps = false;
 		_hasPps = false;
 		_started = false;
-		_pendingParameterSets = Array.Empty<byte>();
+		_pendingSps = Array.Empty<byte>();
+		_pendingPps = Array.Empty<byte>();
 		DroppedPackets = 0L;
 		ForwardedPackets = 0L;
 		LastDecision = "waiting for SPS/PPS keyframe";
 	}
 
-	private static byte[] LatestParameterSets(byte[] existing, byte[] payload, H264NalInfo info)
+	private void UpdatePendingParameterSets(byte[] payload, H264NalInfo info)
 	{
-		byte[] array = info.ExtractParameterSets(payload);
-		if (array.Length == 0)
+		byte[] latestSps = info.ExtractLatestSps(payload);
+		if (latestSps.Length > 0)
 		{
-			return existing;
+			_pendingSps = latestSps;
 		}
-		return array;
+		byte[] latestPps = info.ExtractLatestPps(payload);
+		if (latestPps.Length > 0)
+		{
+			_pendingPps = latestPps;
+		}
+	}
+
+	private byte[] PendingParameterSets()
+	{
+		return Combine(_pendingSps, _pendingPps);
 	}
 
 	private static byte[] Combine(byte[] first, byte[] second)
