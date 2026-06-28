@@ -60,6 +60,13 @@ windows rather than a decoder process stall:
   tier on 2026-06-28: `worstP95=229ms`, `worstMax=241ms`, breach windows `0`,
   `severeMax=pass`, `contiguousEvidence=True`. The earlier 10.2s startup
   max spike did not reproduce.
+- Mac FFmpeg same-process reconnect validation passed on 2026-06-28
+  (`mac-ffmpeg-reconnect-3x-20260628-193855.log`): the forced software-fallback
+  iMirror process produced five fresh stream sessions, five FFmpeg video decoder
+  starts with `-threads 4 -thread_type frame`, twelve teardown lines, and zero
+  exception/failure markers. Stale-frame drops appeared only around manual
+  teardown/reconnect transitions, and later render windows recovered without
+  multi-second max spikes.
 
 ## Validation Required Before Closing #32
 
@@ -74,13 +81,20 @@ Then capture real-device FFmpeg fallback evidence:
 1. Mac sender, at least 30 minutes. Done on 2026-06-28 for PR #39.
 2. iPhone sender, at least 30 minutes. Done on 2026-06-28 for PR #39.
 3. At least three connect/disconnect/reconnect cycles in the same process if the
-   run is being used to close the reconnect/stale-frame portion of #32.
+   run is being used to close the reconnect/stale-frame portion of #32. Done on
+   2026-06-28 for PR #39 with Mac sender.
 
 Evaluate each log with:
 
 ```powershell
 dotnet run --project .\tools\LatencyAcceptanceReport\LatencyAcceptanceReport.csproj -c Release -- <log> 250 30
 ```
+
+Use the latency report for continuous soak logs. Reconnect-only slices contain
+intentional sender gaps and stream-counter resets, so they should be reviewed for
+fresh session IDs, fresh FFmpeg decoder starts, teardown completion, exception
+markers, stale-frame recurrence outside startup/reconnect warmup, and repeated
+multi-second max spikes rather than treated as duration-contiguous soak evidence.
 
 Acceptance for closing #32:
 
