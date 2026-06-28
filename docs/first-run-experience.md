@@ -79,23 +79,18 @@ imperative; full detail goes to the log, not the panel.
 
 ### Firewall remediation
 
-**Decision (locked for v0.2): instructions-only.** No automation, no elevation,
-no `netsh`. On a `Blocked` listener verdict the strip shows a short inline panel:
+**Current decision:** provide a guided **Allow in Firewall** action without
+running the whole app elevated. When clicked, iMirror launches a short
+PowerShell firewall installer through UAC and creates/enables an inbound
+program rule for the currently running `iMirror.exe`.
 
-> Windows Firewall is blocking AirPlay. Open **Windows Security → Firewall &
-> network protection → Allow an app through firewall**, find **iMirror**, and
-> check it for **Private** networks. (Ports: TCP 7000/7100, UDP 5353.)
+The rule allows the app for Private and Public Windows Firewall profiles because
+AirPlay video, RAOP, mDNS, and audio RTP do not all use one fixed port set.
+Audio RTP is negotiated dynamically during SETUP, so the remediation must allow
+the application itself rather than only TCP 7000/5000 or UDP 5353.
 
-The **Allow in Firewall** button therefore opens this help text (or the Windows
-Firewall settings page via `ms-settings:windowsdefender` / the firewall control
-panel) rather than mutating any rule. Zero UAC, zero risk of a failed elevated
-call.
-
-> A guided one-click path (elevated `netsh advfirewall firewall add rule` on
-> button click) is deferred to a follow-up. It is *not* part of v0.2 — the
-> elevated-helper pattern it requires (a manifest `requireAdministrator` would
-> force UAC on *every* launch, which is unacceptable) is exactly the complexity
-> we are avoiding for the first cut.
+If the user cancels UAC or the rule install fails, iMirror keeps the warning and
+opens Windows Firewall settings as a manual fallback.
 
 ### FFmpeg: bundle vs. detect
 
@@ -203,9 +198,9 @@ unit-testable.
    existing resolver / `NetworkInterface` APIs, returning `PreflightReport`.
 2. Surface the bound-port result out of `AirPlayProbeService.StartAsync()` so
    check 2 reads real state instead of re-binding.
-3. Firewall remediation: **instructions-only** (decided). The **Allow in
-   Firewall** button opens the help text / Windows Firewall settings page; it
-   must not run `netsh` or request elevation. No elevated helper in v0.2.
+3. Firewall remediation: **guided rule install**. The **Allow in Firewall**
+   button launches an elevated PowerShell helper through UAC and creates/enables
+   an inbound Windows Firewall program rule for the current `iMirror.exe`.
 4. Release packaging: bundle `ffmpeg.exe` under `tools/ffmpeg/bin/` in the zip so
    check 1 passes out of the box (tracked in `release.md`).
 
@@ -214,5 +209,5 @@ unit-testable.
 - **FFmpeg bundling:** confirm we have a redistribution-compliant FFmpeg build
   to ship (LGPL/GPL terms) before assuming check 1 is a rare edge.
 
-Resolved: **firewall remediation is instructions-only for v0.2** (no elevation,
-no `netsh`); a guided one-click path is a deferred follow-up.
+Resolved: **firewall remediation is a guided UAC action**; the app itself still
+runs unelevated during normal mirroring.

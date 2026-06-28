@@ -3,9 +3,9 @@ using System;
 using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Interop;
-using SharpDX.Mathematics.Interop;
-using D3D11 = SharpDX.Direct3D11;
-using DXGI = SharpDX.DXGI;
+using Vortice;
+using D3D11 = Vortice.Direct3D11;
+using DXGI = Vortice.DXGI;
 
 namespace MacMirrorReceiver.Video;
 
@@ -14,7 +14,7 @@ namespace MacMirrorReceiver.Video;
 // present at ~10fps regardless of surface size; a swap chain flips directly to the window at the
 // display refresh rate with minimal latency. The video processor converts NV12 -> BGRA and scales
 // the decoded native frame to the window directly into the swap chain back buffer.
-public sealed class D3D11SwapChainVideoPresenter : HwndHost
+public sealed class VorticeD3D11SwapChainVideoPresenter : HwndHost, IHighResolutionD3DPresenter
 {
 	private const int WS_CHILD = 0x40000000;
 	private const int WS_VISIBLE = 0x10000000;
@@ -22,15 +22,16 @@ public sealed class D3D11SwapChainVideoPresenter : HwndHost
 	private const int WS_CLIPCHILDREN = 0x02000000;
 
 	private readonly object _gate = new object();
-	private readonly D3D11.Device _d3d11Device;
-	private readonly D3D11.VideoDevice _videoDevice;
-	private readonly D3D11.VideoContext _videoContext;
-	private D3D11.Multithread? _multithread;
+	private readonly D3D11.ID3D11Device _d3d11Device;
+	private readonly D3D11.ID3D11DeviceContext _d3d11Context;
+	private readonly D3D11.ID3D11VideoDevice _videoDevice;
+	private readonly D3D11.ID3D11VideoContext _videoContext;
+	private D3D11.ID3D11Multithread? _multithread;
 
 	private IntPtr _childWindow;
-	private DXGI.SwapChain1? _swapChain;
-	private D3D11.VideoProcessorEnumerator? _enumerator;
-	private D3D11.VideoProcessor? _processor;
+	private DXGI.IDXGISwapChain1? _swapChain;
+	private D3D11.ID3D11VideoProcessorEnumerator? _enumerator;
+	private D3D11.ID3D11VideoProcessor? _processor;
 	private int _inputWidth;
 	private int _inputHeight;
 	private int _swapWidth;
@@ -39,27 +40,40 @@ public sealed class D3D11SwapChainVideoPresenter : HwndHost
 	private bool _loggedInvalidInputSubresource;
 	private bool _disposed;
 
-	public D3D11SwapChainVideoPresenter()
+	public VorticeD3D11SwapChainVideoPresenter()
 	{
-		_d3d11Device = new D3D11.Device(
-			SharpDX.Direct3D.DriverType.Hardware,
+		_d3d11Device = D3D11.D3D11.D3D11CreateDevice(
+			Vortice.Direct3D.DriverType.Hardware,
 			D3D11.DeviceCreationFlags.BgraSupport | D3D11.DeviceCreationFlags.VideoSupport);
 		EnableMultithreadProtection();
-		_videoDevice = _d3d11Device.QueryInterface<D3D11.VideoDevice>();
-		_videoContext = _d3d11Device.ImmediateContext.QueryInterface<D3D11.VideoContext>();
+		_videoDevice = _d3d11Device.QueryInterface<D3D11.ID3D11VideoDevice>();
+		_d3d11Context = _d3d11Device.ImmediateContext;
+		_videoContext = _d3d11Context.QueryInterface<D3D11.ID3D11VideoContext>();
 	}
 
-	public D3D11.Device Device => _d3d11Device;
+	public D3D11.ID3D11Device Device => _d3d11Device;
+
+	public FrameworkElement View => this;
 
 	public bool IsMultithreadProtected { get; private set; }
 
 	public event Action<string>? StatusChanged;
 
+	public void PresentFrame(IHighResolutionD3DFrame frame)
+	{
+		if (frame is not VorticeD3D11VideoFrame d3dFrame)
+		{
+			throw new ArgumentException("Vortice presenter requires a Vortice D3D11 video frame.", nameof(frame));
+		}
+
+		PresentNv12Texture(d3dFrame.Texture, d3dFrame.SubresourceIndex, d3dFrame.Width, d3dFrame.Height, d3dFrame.Fps);
+	}
+
 	private void EnableMultithreadProtection()
 	{
 		try
 		{
-			_multithread = _d3d11Device.QueryInterface<D3D11.Multithread>();
+			_multithread = _d3d11Device.QueryInterface<D3D11.ID3D11Multithread>();
 			_multithread.SetMultithreadProtected(true);
 			IsMultithreadProtected = _multithread.GetMultithreadProtected();
 		}
@@ -71,7 +85,7 @@ public sealed class D3D11SwapChainVideoPresenter : HwndHost
 		}
 	}
 
-	public void PresentNv12Texture(D3D11.Texture2D inputTexture, int subresourceIndex, int width, int height, int fps)
+	public void PresentNv12Texture(D3D11.ID3D11Texture2D inputTexture, int subresourceIndex, int width, int height, int fps)
 	{
 		lock (_gate)
 		{
@@ -105,16 +119,16 @@ public sealed class D3D11SwapChainVideoPresenter : HwndHost
 				return;
 			}
 
-			using D3D11.Texture2D backBuffer = _swapChain.GetBackBuffer<D3D11.Texture2D>(0);
+			using D3D11.ID3D11Texture2D backBuffer = _swapChain.GetBuffer<D3D11.ID3D11Texture2D>(0);
 			_videoDevice.CreateVideoProcessorOutputView(
 				backBuffer,
 				_enumerator,
 				new D3D11.VideoProcessorOutputViewDescription
 				{
-					Dimension = D3D11.VpovDimension.Texture2D,
-					Texture2D = new D3D11.Texture2DVpov { MipSlice = 0 }
+					ViewDimension = D3D11.VideoProcessorOutputViewDimension.Texture2D,
+					Texture2D = new D3D11.Texture2DVideoProcessorOutputView { MipSlice = 0u }
 				},
-				out D3D11.VideoProcessorOutputView outputView);
+				out D3D11.ID3D11VideoProcessorOutputView outputView);
 			using (outputView)
 			{
 				_videoDevice.CreateVideoProcessorInputView(
@@ -123,17 +137,17 @@ public sealed class D3D11SwapChainVideoPresenter : HwndHost
 					new D3D11.VideoProcessorInputViewDescription
 					{
 						FourCC = 0,
-						Dimension = D3D11.VpivDimension.Texture2D,
-						Texture2D = new D3D11.Texture2DVpiv { MipSlice = 0, ArraySlice = subresourceIndex }
+						ViewDimension = D3D11.VideoProcessorInputViewDimension.Texture2D,
+						Texture2D = new D3D11.Texture2DVideoProcessorInputView { MipSlice = 0u, ArraySlice = (uint)subresourceIndex }
 					},
-					out D3D11.VideoProcessorInputView inputView);
+					out D3D11.ID3D11VideoProcessorInputView inputView);
 				using (inputView)
 				{
-					var sourceRect = new RawRectangle(0, 0, width, height);
+					var sourceRect = new RawRect(0, 0, width, height);
 					// Stretch-fill the child window (clean, no per-frame clear, no resize artifacts).
 					// Aspect ratio is preserved by WPF sizing the host window to the source aspect; the
 					// letterbox/pillarbox bars are the (black) WPF background around the host window.
-					var destRect = new RawRectangle(0, 0, _swapWidth, _swapHeight);
+					var destRect = new RawRect(0, 0, _swapWidth, _swapHeight);
 					_videoContext.VideoProcessorSetStreamFrameFormat(_processor, 0, D3D11.VideoFrameFormat.Progressive);
 					_videoContext.VideoProcessorSetStreamSourceRect(_processor, 0, true, sourceRect);
 					_videoContext.VideoProcessorSetStreamDestRect(_processor, 0, true, destRect);
@@ -148,10 +162,10 @@ public sealed class D3D11SwapChainVideoPresenter : HwndHost
 							InputFrameOrField = 0,
 							PastFrames = 0,
 							FutureFrames = 0,
-							PInputSurface = inputView
+							InputSurface = inputView
 						}
 					};
-					_videoContext.VideoProcessorBlt(_processor, outputView, 0, streams.Length, streams);
+					_videoContext.VideoProcessorBlt(_processor, outputView, 0, (uint)streams.Length, streams);
 				}
 			}
 
@@ -171,22 +185,22 @@ public sealed class D3D11SwapChainVideoPresenter : HwndHost
 		{
 			var desc = new DXGI.SwapChainDescription1
 			{
-				Width = width,
-				Height = height,
+				Width = (uint)width,
+				Height = (uint)height,
 				Format = DXGI.Format.B8G8R8A8_UNorm,
 				Stereo = false,
 				SampleDescription = new DXGI.SampleDescription(1, 0),
-				Usage = DXGI.Usage.RenderTargetOutput,
-				BufferCount = 2,
+				BufferUsage = DXGI.Usage.RenderTargetOutput,
+				BufferCount = 2u,
 				Scaling = DXGI.Scaling.Stretch,
 				SwapEffect = DXGI.SwapEffect.FlipDiscard,
 				AlphaMode = DXGI.AlphaMode.Ignore,
 				Flags = DXGI.SwapChainFlags.None
 			};
-			using var dxgiDevice = _d3d11Device.QueryInterface<DXGI.Device>();
-			using DXGI.Adapter adapter = dxgiDevice.Adapter;
-			using var factory = adapter.GetParent<DXGI.Factory2>();
-			_swapChain = new DXGI.SwapChain1(factory, _d3d11Device, _childWindow, ref desc);
+			using var dxgiDevice = _d3d11Device.QueryInterface<DXGI.IDXGIDevice>();
+			using DXGI.IDXGIAdapter adapter = dxgiDevice.GetAdapter();
+			using var factory = adapter.GetParent<DXGI.IDXGIFactory2>();
+			_swapChain = factory.CreateSwapChainForHwnd(_d3d11Device, _childWindow, desc);
 			_swapWidth = width;
 			_swapHeight = height;
 			StatusChanged?.Invoke($"D3D11 swap-chain created on child window: {width}x{height}, flip-discard, multithreadProtected={IsMultithreadProtected}.");
@@ -195,7 +209,7 @@ public sealed class D3D11SwapChainVideoPresenter : HwndHost
 
 		// Resize: the video-processor output target depends on the swap size, so drop it too.
 		DisposeVideoProcessor();
-		_swapChain.ResizeBuffers(2, width, height, DXGI.Format.B8G8R8A8_UNorm, DXGI.SwapChainFlags.None);
+		_swapChain.ResizeBuffers(2u, (uint)width, (uint)height, DXGI.Format.B8G8R8A8_UNorm, DXGI.SwapChainFlags.None);
 		_swapWidth = width;
 		_swapHeight = height;
 	}
@@ -217,12 +231,12 @@ public sealed class D3D11SwapChainVideoPresenter : HwndHost
 		var content = new D3D11.VideoProcessorContentDescription
 		{
 			InputFrameFormat = D3D11.VideoFrameFormat.Progressive,
-			InputFrameRate = new DXGI.Rational(_fps, 1),
-			InputWidth = inputWidth,
-			InputHeight = inputHeight,
-			OutputFrameRate = new DXGI.Rational(_fps, 1),
-			OutputWidth = outputWidth,
-			OutputHeight = outputHeight,
+			InputFrameRate = new DXGI.Rational((uint)_fps, 1u),
+			InputWidth = (uint)inputWidth,
+			InputHeight = (uint)inputHeight,
+			OutputFrameRate = new DXGI.Rational((uint)_fps, 1u),
+			OutputWidth = (uint)outputWidth,
+			OutputHeight = (uint)outputHeight,
 			Usage = D3D11.VideoUsage.PlaybackNormal
 		};
 		_videoDevice.CreateVideoProcessorEnumerator(ref content, out _enumerator);
@@ -230,12 +244,12 @@ public sealed class D3D11SwapChainVideoPresenter : HwndHost
 		_videoDevice.CreateVideoProcessor(_enumerator, 0, out _processor);
 	}
 
-	private static void ValidateFormatSupport(D3D11.VideoProcessorEnumerator enumerator)
+	private static void ValidateFormatSupport(D3D11.ID3D11VideoProcessorEnumerator enumerator)
 	{
-		enumerator.CheckVideoProcessorFormat(DXGI.Format.NV12, out int nv12Flags);
-		enumerator.CheckVideoProcessorFormat(DXGI.Format.B8G8R8A8_UNorm, out int bgraFlags);
-		bool nv12Input = (nv12Flags & (int)D3D11.VideoProcessorFormatSupport.Input) != 0;
-		bool bgraOutput = (bgraFlags & (int)D3D11.VideoProcessorFormatSupport.Output) != 0;
+		enumerator.CheckVideoProcessorFormat(DXGI.Format.NV12, out D3D11.VideoProcessorFormatSupport nv12Flags);
+		enumerator.CheckVideoProcessorFormat(DXGI.Format.B8G8R8A8_UNorm, out D3D11.VideoProcessorFormatSupport bgraFlags);
+		bool nv12Input = (nv12Flags & D3D11.VideoProcessorFormatSupport.Input) != 0;
+		bool bgraOutput = (bgraFlags & D3D11.VideoProcessorFormatSupport.Output) != 0;
 		if (!nv12Input || !bgraOutput)
 		{
 			throw new InvalidOperationException($"D3D11 video processor format support is insufficient. nv12Input={nv12Input}, bgraOutput={bgraOutput}");
@@ -319,6 +333,7 @@ public sealed class D3D11SwapChainVideoPresenter : HwndHost
 				_videoContext.Dispose();
 				_videoDevice.Dispose();
 				_multithread?.Dispose();
+				_d3d11Context.Dispose();
 				_d3d11Device.Dispose();
 			}
 		}

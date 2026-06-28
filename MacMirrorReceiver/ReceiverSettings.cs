@@ -40,6 +40,11 @@ internal sealed record ReceiverSettingsSnapshot(
 	ReceiverSettingsOverrides Overrides,
 	string SettingsPath);
 
+internal sealed record UpdateNotificationState(
+	string? LastNotifiedVersion,
+	DateTimeOffset? LastNotifiedAt,
+	string? DismissedVersion);
+
 internal static class ReceiverSettings
 {
 	public const int CurrentSchemaVersion = 1;
@@ -67,17 +72,54 @@ internal static class ReceiverSettings
 
 	private static readonly object FileGate = new object();
 
-	public static string SettingsPath
+	// Settings live under %LOCALAPPDATA%\iMirror\Config (via AppPaths), alongside
+	// logs/diagnostics/dumps. The install directory is read-only, so there is no
+	// fallback to AppContext.BaseDirectory — AppPaths already degrades to the
+	// per-user temp directory if LocalAppData itself is unavailable.
+	public static string SettingsPath => Path.Combine(AppPaths.ConfigDirectory, SettingsFileName);
+
+	// Pre-v0.3 builds stored settings under Roaming AppData\iMirror\settings.json.
+	// Surfaced so a one-time migration can preserve an existing user's choices when
+	// the file moves to the consolidated LocalAppData location.
+	private static string LegacySettingsPath
 	{
 		get
 		{
-			string appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
-			if (string.IsNullOrWhiteSpace(appData))
+			string roaming = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+			if (string.IsNullOrWhiteSpace(roaming))
 			{
-				appData = AppContext.BaseDirectory;
+				return string.Empty;
 			}
 
-			return Path.Combine(appData, SettingsDirectoryName, SettingsFileName);
+			return Path.Combine(roaming, SettingsDirectoryName, SettingsFileName);
+		}
+	}
+
+	// Copies a pre-v0.3 Roaming settings file to the new location once, if the new
+	// file does not exist yet. Best-effort: any failure leaves the app to start
+	// from defaults rather than blocking startup. Must be called under FileGate.
+	private static void MigrateLegacySettingsIfNeeded()
+	{
+		try
+		{
+			string current = SettingsPath;
+			if (File.Exists(current))
+			{
+				return;
+			}
+
+			string legacy = LegacySettingsPath;
+			if (string.IsNullOrEmpty(legacy) || !File.Exists(legacy))
+			{
+				return;
+			}
+
+			File.Copy(legacy, current, overwrite: false);
+			AppLog.Write("Migrated legacy settings from " + legacy + " to " + current + ".");
+		}
+		catch (Exception ex)
+		{
+			AppLog.Write("Legacy settings migration skipped: " + ex.Message);
 		}
 	}
 
@@ -87,6 +129,8 @@ internal static class ReceiverSettings
 	{
 		lock (FileGate)
 		{
+			MigrateLegacySettingsIfNeeded();
+
 			string path = SettingsPath;
 			if (!File.Exists(path))
 			{
@@ -131,6 +175,57 @@ internal static class ReceiverSettings
 
 			File.WriteAllText(path, JsonSerializer.Serialize(dto, JsonOptions));
 		}
+	}
+
+	public static UpdateNotificationState LoadUpdateNotificationState()
+	{
+		ReceiverUpdateNotificationsDto? updates = LoadDto().Updates;
+		return new UpdateNotificationState(
+			updates?.LastNotifiedVersion,
+			updates?.LastNotifiedAt,
+			updates?.DismissedVersion);
+	}
+
+	public static bool ShouldShowAutomaticUpdateNotice(UpdateInfo updateInfo, DateTimeOffset now)
+	{
+		if (updateInfo == null || !updateInfo.IsNewer)
+		{
+			return false;
+		}
+
+		UpdateNotificationState state = LoadUpdateNotificationState();
+		if (string.Equals(state.DismissedVersion, updateInfo.LatestVersion, StringComparison.OrdinalIgnoreCase))
+		{
+			return false;
+		}
+
+		if (string.Equals(state.LastNotifiedVersion, updateInfo.LatestVersion, StringComparison.OrdinalIgnoreCase)
+			&& state.LastNotifiedAt.HasValue
+			&& now - state.LastNotifiedAt.Value < TimeSpan.FromDays(1))
+		{
+			return false;
+		}
+
+		return true;
+	}
+
+	public static void MarkUpdateNoticeShown(string version, DateTimeOffset now)
+	{
+		UpdateDto(dto =>
+		{
+			dto.Updates ??= new ReceiverUpdateNotificationsDto();
+			dto.Updates.LastNotifiedVersion = version;
+			dto.Updates.LastNotifiedAt = now;
+		});
+	}
+
+	public static void DismissUpdateNotice(string version)
+	{
+		UpdateDto(dto =>
+		{
+			dto.Updates ??= new ReceiverUpdateNotificationsDto();
+			dto.Updates.DismissedVersion = version;
+		});
 	}
 
 	public static ReceiverSettingsSnapshot Load()
@@ -322,6 +417,7 @@ internal sealed class ReceiverSettingsDto
 	public bool? AudioEnabled { get; set; }
 	public int? AudioSyncOffsetMs { get; set; }
 	public ReceiverDiagnosticsDto? Diagnostics { get; set; }
+	public ReceiverUpdateNotificationsDto? Updates { get; set; }
 }
 
 internal sealed class ReceiverDiagnosticsDto
@@ -329,4 +425,11 @@ internal sealed class ReceiverDiagnosticsDto
 	public bool? WriteDiagnostics { get; set; }
 	public bool? DumpH264 { get; set; }
 	public bool? DumpAudio { get; set; }
+}
+
+internal sealed class ReceiverUpdateNotificationsDto
+{
+	public string? LastNotifiedVersion { get; set; }
+	public DateTimeOffset? LastNotifiedAt { get; set; }
+	public string? DismissedVersion { get; set; }
 }

@@ -16,6 +16,7 @@ Manual release validation checklist to be completed before publishing the GitHub
 - [ ] Mac screen mirroring connects and displays video
 - [ ] iPhone screen mirroring connects and displays video
 - [ ] Audio plays through Windows speakers when audio is enabled
+- [ ] If video works but audio is silent, app warns that Windows Firewall may be blocking audio UDP
 - [ ] Disconnect from sender — app returns to empty state cleanly
 - [ ] Reconnect after disconnect — no hang or crash
 - [ ] App exits cleanly from tray icon
@@ -33,7 +34,9 @@ Manual release validation checklist to be completed before publishing the GitHub
 - [ ] Empty state shows correct status dot (green = ready, warning = firewall/FFmpeg issue)
 - [ ] "Re-check" link re-runs diagnostics after user fixes firewall
 - [ ] FFmpeg missing → orange dot + "FFmpeg not found" message shown
-- [ ] Windows Firewall prompt appears on first launch (allow both network types)
+- [ ] Windows Firewall prompt appears on first launch; allow `iMirror.exe` for both Private and Public network types
+- [ ] If the firewall prompt was missed, "Allow in Firewall" launches UAC and installs an inbound program rule for the current `iMirror.exe`
+- [ ] Firewall guidance says audio uses dynamic UDP ports and must allow the app itself, not only fixed ports
 
 ## GPU & video engine
 

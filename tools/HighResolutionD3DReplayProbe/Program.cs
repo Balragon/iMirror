@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
@@ -52,65 +53,129 @@ internal static class Program
 		long decodedFrames = 0;
 		long presentedFrames = 0;
 		long firstDecodedTick = 0;
-		using var presenter = new D3D11VideoProcessorD3DImagePresenter(windowHandle);
-		Console.WriteLine("d3d11MultithreadProtected=" + presenter.IsMultithreadProtected);
-		using var decoder = new MediaFoundationD3D11Decoder(geometry.Width, geometry.Height, geometry.Fps, presenter.Device);
-		decoder.StatusChanged += message => Console.WriteLine("status: " + message);
-		decoder.InputQueueOverflowed += () => Console.WriteLine("status: input queue overflowed");
-		decoder.FrameDecoded += frame =>
+		using var decodedFrameQueue = new BlockingCollection<IHighResolutionD3DFrame>();
+		using IDisposable presenter = CreateReplayBinding(
+			geometry,
+			windowHandle,
+			out IHighResolutionD3DDecoder decoder,
+			out Action<IHighResolutionD3DFrame> presentFrame,
+			out bool isMultithreadProtected);
+		using (decoder)
 		{
-			try
+			Console.WriteLine("gpuBinding=Vortice");
+			Console.WriteLine("d3d11MultithreadProtected=" + isMultithreadProtected);
+			decoder.StatusChanged += message => Console.WriteLine("status: " + message);
+			decoder.FrameDecoded += frame =>
+		{
+			if (Interlocked.Increment(ref decodedFrames) == 1)
 			{
-				if (Interlocked.Increment(ref decodedFrames) == 1)
-				{
-					firstDecodedTick = Stopwatch.GetTimestamp();
-				}
-				presenter.PresentNv12Texture(frame.Texture, frame.SubresourceIndex, frame.Width, frame.Height, frame.Fps);
-				Interlocked.Increment(ref presentedFrames);
+				firstDecodedTick = Stopwatch.GetTimestamp();
 			}
-			finally
+			if (!decodedFrameQueue.IsAddingCompleted)
 			{
-				frame.Dispose();
+				decodedFrameQueue.Add(frame);
+				return;
 			}
+			frame.Dispose();
 		};
 
-		long startTick = Stopwatch.GetTimestamp();
-		decoder.Start();
-		for (int i = 0; i < unitsToFeed; i++)
+		void DrainDecodedFrames()
 		{
-			AccessUnit accessUnit = accessUnits[i];
-			var payload = new byte[accessUnit.Length];
-			Buffer.BlockCopy(data, accessUnit.Offset, payload, 0, payload.Length);
-			if (!decoder.QueueH264(payload, 0, Stopwatch.GetTimestamp()))
+			while (decodedFrameQueue.TryTake(out IHighResolutionD3DFrame? frame))
 			{
-				Console.WriteLine($"QueueH264 returned false at accessUnit={i + 1:N0}");
-				break;
+				try
+				{
+					presentFrame(frame);
+					Interlocked.Increment(ref presentedFrames);
+				}
+				finally
+				{
+					frame.Dispose();
+				}
 			}
 		}
 
-		WaitForReplayToSettle(decoder, () => Interlocked.Read(ref decodedFrames), TimeSpan.FromSeconds(13.0));
+		void DisposeQueuedFrames()
+		{
+			while (decodedFrameQueue.TryTake(out IHighResolutionD3DFrame? frame))
+			{
+				frame.Dispose();
+			}
+		}
+
+		long startTick = Stopwatch.GetTimestamp();
+		try
+		{
+			decoder.Start();
+			for (int i = 0; i < unitsToFeed; i++)
+			{
+				AccessUnit accessUnit = accessUnits[i];
+				var payload = new byte[accessUnit.Length];
+				Buffer.BlockCopy(data, accessUnit.Offset, payload, 0, payload.Length);
+				if (!decoder.QueueH264(payload, 0, Stopwatch.GetTimestamp()))
+				{
+					Console.WriteLine($"QueueH264 returned false at accessUnit={i + 1:N0}");
+					break;
+				}
+			}
+
+			WaitForReplayToSettle(
+				decoder,
+				() => Interlocked.Read(ref decodedFrames),
+				() => Interlocked.Read(ref presentedFrames),
+				DrainDecodedFrames,
+				TimeSpan.FromSeconds(13.0));
+		}
+		finally
+		{
+			decodedFrameQueue.CompleteAdding();
+			DisposeQueuedFrames();
+		}
 		long elapsedMs = ElapsedMilliseconds(startTick, Stopwatch.GetTimestamp());
 		long firstDecodedMs = firstDecodedTick == 0 ? -1 : ElapsedMilliseconds(startTick, firstDecodedTick);
 		Console.WriteLine("== Summary ==");
 		Console.WriteLine($"queuedRemaining={decoder.QueuedInputPackets:N0}, accepted={decoder.AcceptedInputPackets:N0}, submitted={decoder.WrittenInputPackets:N0}, dropped={decoder.DroppedInputPackets:N0}");
 		Console.WriteLine($"decodedFrames={decodedFrames:N0}, presentedFrames={presentedFrames:N0}, firstDecodedMs={firstDecodedMs}, elapsedMs={elapsedMs:N0}");
-		bool pass = decodedFrames > 0 && presentedFrames > 0;
-		Console.WriteLine((pass ? "PASS" : "FAIL") + ": product MF/D3D11 decode-to-D3DImage replay");
-		return pass ? 0 : 1;
+			bool pass = decodedFrames > 0 && presentedFrames > 0;
+			Console.WriteLine((pass ? "PASS" : "FAIL") + ": product MF/D3D11 decode-to-D3DImage replay");
+			return pass ? 0 : 1;
+		}
 	}
 
-	private static void WaitForReplayToSettle(MediaFoundationD3D11Decoder decoder, Func<long> decodedFrames, TimeSpan timeout)
+	private static IDisposable CreateReplayBinding(
+		VideoGeometry geometry,
+		IntPtr windowHandle,
+		out IHighResolutionD3DDecoder decoder,
+		out Action<IHighResolutionD3DFrame> presentFrame,
+		out bool isMultithreadProtected)
+	{
+		var presenter = new VorticeD3D11VideoProcessorD3DImagePresenter(windowHandle);
+		decoder = new VorticeMediaFoundationD3D11Decoder(geometry.Width, geometry.Height, geometry.Fps, presenter.Device);
+		presentFrame = presenter.PresentFrame;
+		isMultithreadProtected = presenter.IsMultithreadProtected;
+		return presenter;
+	}
+
+	private static void WaitForReplayToSettle(
+		IHighResolutionD3DDecoder decoder,
+		Func<long> decodedFrames,
+		Func<long> presentedFrames,
+		Action drainDecodedFrames,
+		TimeSpan timeout)
 	{
 		long deadline = Environment.TickCount64 + (long)timeout.TotalMilliseconds;
 		while (Environment.TickCount64 < deadline)
 		{
-			if (decoder.QueuedInputPackets == 0 && decodedFrames() > 0)
+			drainDecodedFrames();
+			if (decoder.QueuedInputPackets == 0 && decodedFrames() > 0 && presentedFrames() > 0)
 			{
 				Thread.Sleep(500);
+				drainDecodedFrames();
 				return;
 			}
 			Thread.Sleep(25);
 		}
+		drainDecodedFrames();
 	}
 
 	private static bool TryParseGeometry(string text, out VideoGeometry geometry)

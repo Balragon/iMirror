@@ -1,9 +1,7 @@
 using System;
 using System.CodeDom.Compiler;
 using System.Diagnostics;
-using System.IO;
-using System.Reflection;
-using System.Runtime.Loader;
+using System.Threading;
 using System.Windows;
 using System.Windows.Interop;
 using System.Windows.Threading;
@@ -13,9 +11,16 @@ namespace MacMirrorReceiver;
 
 public class App : Application
 {
+	private readonly Mutex? _applicationMutex;
+
 	public App()
+		: this(null)
 	{
-		InstallSharpDxAssemblyResolver();
+	}
+
+	private App(Mutex? applicationMutex)
+	{
+		_applicationMutex = applicationMutex;
 		AppLog.Write("App constructed.");
 		Resources.MergedDictionaries.Add(new Wpf.Ui.Markup.ThemesDictionary
 		{
@@ -27,29 +32,6 @@ public class App : Application
 		{
 			AppLog.Write("Unhandled domain exception: " + args.ExceptionObject);
 		};
-	}
-
-	private static void InstallSharpDxAssemblyResolver()
-	{
-#if HIGH_RESOLUTION_D3D
-		AssemblyLoadContext.Default.Resolving += delegate(AssemblyLoadContext context, AssemblyName assemblyName)
-		{
-			if (assemblyName.Name?.StartsWith("SharpDX", StringComparison.OrdinalIgnoreCase) != true)
-			{
-				return null;
-			}
-
-			string assemblyPath = Path.Combine(AppContext.BaseDirectory, assemblyName.Name + ".dll");
-			if (!File.Exists(assemblyPath))
-			{
-				AppLog.Write("SharpDX assembly resolve failed; file not found: " + assemblyPath);
-				return null;
-			}
-
-			AppLog.Write("SharpDX assembly resolve loading: " + assemblyPath);
-			return context.LoadFromAssemblyPath(assemblyPath);
-		};
-#endif
 	}
 
 	protected override void OnStartup(StartupEventArgs e)
@@ -71,6 +53,12 @@ public class App : Application
 		AppLog.Write("MainWindow.Show returned.");
 	}
 
+	protected override void OnExit(ExitEventArgs e)
+	{
+		_applicationMutex?.Dispose();
+		base.OnExit(e);
+	}
+
 	private static void OnDispatcherUnhandledException(object sender, DispatcherUnhandledExceptionEventArgs e)
 	{
 		AppLog.Write("Dispatcher exception: " + e.Exception);
@@ -81,6 +69,13 @@ public class App : Application
 	[GeneratedCode("PresentationBuildTasks", "8.0.27.0")]
 	public static void Main()
 	{
-		new App().Run();
+		using Mutex applicationMutex = new Mutex(initiallyOwned: true, AppUpdateConstants.ApplicationMutexName, out bool createdNew);
+		if (!createdNew)
+		{
+			AppLog.Write("Another iMirror instance is already running; exiting duplicate instance.");
+			return;
+		}
+
+		new App(applicationMutex).Run();
 	}
 }

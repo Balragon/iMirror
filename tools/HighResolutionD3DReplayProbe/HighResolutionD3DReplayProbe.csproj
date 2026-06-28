@@ -1,22 +1,26 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <OutputType>Exe</OutputType>
-    <TargetFramework>net8.0-windows</TargetFramework>
+    <TargetFramework>net10.0-windows</TargetFramework>
     <UseWPF>true</UseWPF>
     <Nullable>enable</Nullable>
-    <LangVersion>11.0</LangVersion>
+    <LangVersion>12.0</LangVersion>
     <PlatformTarget>x64</PlatformTarget>
     <HighResolutionD3D>true</HighResolutionD3D>
     <DefineConstants>$(DefineConstants);HIGH_RESOLUTION_D3D</DefineConstants>
   </PropertyGroup>
   <ItemGroup>
-    <PackageReference Include="SharpDX.Direct3D11" Version="4.2.0" />
-    <PackageReference Include="SharpDX.Direct3D9" Version="4.2.0" />
-    <PackageReference Include="SharpDX.DXGI" Version="4.2.0" />
+    <PackageReference Include="Vortice.Direct3D11" Version="3.8.3" />
+    <PackageReference Include="Vortice.Direct3D9" Version="3.8.3" />
+    <PackageReference Include="Vortice.DXGI" Version="3.8.3" />
+    <PackageReference Include="Vortice.Mathematics" Version="2.1.0" />
   </ItemGroup>
   <ItemGroup>
-    <Compile Include="..\..\MacMirrorReceiver.Video\D3D11VideoFrame.cs" Link="Product\D3D11VideoFrame.cs" />
-    <Compile Include="..\..\MacMirrorReceiver.Video\D3D11VideoProcessorD3DImagePresenter.cs" Link="Product\D3D11VideoProcessorD3DImagePresenter.cs" />
-    <Compile Include="..\..\MacMirrorReceiver.Video\MediaFoundationD3D11Decoder.cs" Link="Product\MediaFoundationD3D11Decoder.cs" />
+    <Compile Include="..\..\MacMirrorReceiver\AppPaths.cs" Link="Product\AppPaths.cs" />
+    <Compile Include="..\..\MacMirrorReceiver.Video\HighResolutionD3DInterfaces.cs" Link="Product\HighResolutionD3DInterfaces.cs" />
+    <Compile Include="..\..\MacMirrorReceiver.Video\MediaFoundationNative.cs" Link="Product\MediaFoundationNative.cs" />
+    <Compile Include="..\..\MacMirrorReceiver.Video\VorticeD3D11VideoFrame.cs" Link="Product\VorticeD3D11VideoFrame.cs" />
+    <Compile Include="..\..\MacMirrorReceiver.Video\VorticeD3D11VideoProcessorD3DImagePresenter.cs" Link="Product\VorticeD3D11VideoProcessorD3DImagePresenter.cs" />
+    <Compile Include="..\..\MacMirrorReceiver.Video\VorticeMediaFoundationD3D11Decoder.cs" Link="Product\VorticeMediaFoundationD3D11Decoder.cs" />
   </ItemGroup>
 </Project>

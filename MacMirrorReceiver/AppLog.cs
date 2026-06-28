@@ -8,7 +8,7 @@ internal static class AppLog
 	private static readonly object Gate = new object();
 
 	private static readonly string LogPath = Path.Combine(
-		AppContext.BaseDirectory,
+		AppPaths.LogsDirectory,
 #if HARDWARE_PROBE
 			"iMirror-hwprobe.log");
 #else
@@ -19,7 +19,19 @@ internal static class AppLog
 	{
 		lock (Gate)
 		{
-			File.AppendAllText(LogPath, $"[{DateTimeOffset.Now:O}] {message}{Environment.NewLine}");
+			try
+			{
+				string? directory = Path.GetDirectoryName(LogPath);
+				if (!string.IsNullOrWhiteSpace(directory))
+				{
+					Directory.CreateDirectory(directory);
+				}
+
+				File.AppendAllText(LogPath, $"[{DateTimeOffset.Now:O}] {message}{Environment.NewLine}");
+			}
+			catch
+			{
+			}
 		}
 	}
 }

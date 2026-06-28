@@ -106,6 +106,10 @@ internal sealed class AirPlayAudioReceiver : IDisposable
 			catch (Exception ex)
 			{
 				AppLog.Write("AirPlay audio receiver failed to start: " + ex.Message);
+				// Tear down any sockets/CTS/dump created before the failure so a partial start does
+				// not leak resources or leave IsRunning reporting true. StopInternal re-enters _gate,
+				// which is safe because the monitor lock is reentrant on the same thread.
+				StopInternal();
 				return false;
 			}
 		}
@@ -389,7 +393,7 @@ internal sealed class AirPlayAudioReceiver : IDisposable
 				string stamp = DateTime.Now.ToString("yyyyMMdd-HHmmss", CultureInfo.InvariantCulture);
 				if (string.IsNullOrWhiteSpace(setting) || setting == "1" || string.Equals(setting, "true", StringComparison.OrdinalIgnoreCase))
 				{
-					directory = AppContext.BaseDirectory;
+					directory = AppPaths.DumpsDirectory;
 				}
 				else
 				{

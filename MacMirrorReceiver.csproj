@@ -4,8 +4,9 @@
     <OutputType>WinExe</OutputType>
     <UseWPF>True</UseWPF>
     <UseWindowsForms>True</UseWindowsForms>
-    <TargetFramework>net8.0-windows</TargetFramework>
+    <TargetFramework>net10.0-windows</TargetFramework>
     <PlatformTarget>x64</PlatformTarget>
+    <RuntimeIdentifiers>win-x64</RuntimeIdentifiers>
     <Nullable>enable</Nullable>
   </PropertyGroup>
   <!-- Version metadata is release-driven (docs/specs/v02-decisions.md: version-policy).
@@ -25,8 +26,13 @@
     <GenerateAssemblyTitleAttribute>false</GenerateAssemblyTitleAttribute>
   </PropertyGroup>
   <PropertyGroup>
-    <LangVersion>11.0</LangVersion>
+    <LangVersion>12.0</LangVersion>
     <AllowUnsafeBlocks>True</AllowUnsafeBlocks>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)' == 'Release'">
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>true</SelfContained>
+    <PublishSingleFile>false</PublishSingleFile>
   </PropertyGroup>
   <PropertyGroup>
     <RootNamespace>MacMirrorReceiver</RootNamespace>
@@ -46,6 +52,7 @@
     <Compile Remove="MacMirrorReceiver.Tests\**\*.cs" />
   </ItemGroup>
   <ItemGroup>
+    <Content Include="THIRD_PARTY_NOTICES.txt" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="ThirdParty\playfair\LICENSE.md" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="ThirdParty\playfair\hand_garble.c" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="ThirdParty\playfair\modified_md5.c" CopyToOutputDirectory="PreserveNewest" />
@@ -54,8 +61,9 @@
     <Content Include="ThirdParty\playfair\sap_hash.c" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
   <ItemGroup>
-    <PackageReference Include="SharpDX.Direct3D11" Version="4.2.0" />
-    <PackageReference Include="SharpDX.Direct3D9" Version="4.2.0" />
-    <PackageReference Include="SharpDX.DXGI" Version="4.2.0" />
+    <PackageReference Include="Vortice.Direct3D11" Version="3.8.3" />
+    <PackageReference Include="Vortice.Direct3D9" Version="3.8.3" />
+    <PackageReference Include="Vortice.DXGI" Version="3.8.3" />
+    <PackageReference Include="Vortice.Mathematics" Version="2.1.0" />
   </ItemGroup>
 </Project>

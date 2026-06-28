@@ -7,7 +7,7 @@ iMirror is organized around a small WPF host, AirPlay networking services, and s
 1. `AirPlayProbeService` advertises the receiver over mDNS and handles AirPlay/RAOP control traffic.
 2. Pairing, pair-verify, FairPlay setup, mirror `SETUP`, and `RECORD` establish the encrypted media session.
 3. Mirror video payloads are decrypted, normalized to Annex B H.264, and passed through `H264AnnexBStreamGate`.
-4. The preferred video path decodes H.264 with `MediaFoundationD3D11Decoder` and presents GPU frames with `D3D11SwapChainVideoPresenter`.
+4. The preferred video path decodes H.264 with `VorticeMediaFoundationD3D11Decoder` and presents GPU frames with `VorticeD3D11SwapChainVideoPresenter`.
 5. If the GPU path cannot start or faults at runtime, the app falls back to `FfmpegDecoder` and WPF bitmap presentation.
 6. AirPlay audio RTP packets are received by `AirPlayAudioReceiver`, decrypted, decoded by `FfmpegAudioDecoder`, and submitted to `WasapiAudioOutput`.
 

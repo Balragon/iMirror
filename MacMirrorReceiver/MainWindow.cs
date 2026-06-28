@@ -47,9 +47,16 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 
 	private const int HighResolutionMaxRenderFps = 30;
 
+	private const long HighResolutionMaxLiveFrameAgeMilliseconds = 200;
+
+	private const long SoftwareMaxLiveFrameAgeMilliseconds = 240;
+
 	private const int MaxAutoReconnectAttempts = 5;
 
-	private const int MaxPendingVideoPacketsBeforeSink = 8;
+	// Keep the initial SPS/PPS/IDR burst while the decoder/render sink spins up.
+	// Small AirPlay slice packets can exceed single digits before WPF/FFmpeg/MF is ready;
+	// the byte cap below remains the hard memory guard.
+	private const int MaxPendingVideoPacketsBeforeSink = 512;
 
 	private const long MaxPendingVideoBytesBeforeSink = 8L * 1024L * 1024L;
 
@@ -62,6 +69,11 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 	private const double RemoteCursorMaxScale = 1.0;
 
 	private static readonly TimeSpan AutoReconnectDelay = TimeSpan.FromSeconds(2.0);
+
+	private static readonly TimeSpan AudioRtpStartupTimeout = TimeSpan.FromSeconds(8.0);
+
+	private const string AudioFirewallWarningMessage =
+		"Audio is blocked by Windows Firewall. Allow iMirror for Private and Public networks.";
 
 	private static readonly bool SyntheticCursorOverlayEnabled = false;
 
@@ -108,6 +120,8 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 
 	private readonly Queue<PendingVideoPayload> _pendingVideoBeforeSink = new Queue<PendingVideoPayload>();
 
+	private volatile bool _videoSinkAcceptingInput;
+
 	private readonly object _audioGate = new object();
 
 	// 3s warmup grace: BeginWarmup fires at decoder (re)start, but frames only flow after FFmpeg/MF
@@ -126,11 +140,15 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 	private WriteableBitmap? _bitmap;
 
 #if HIGH_RESOLUTION_D3D
-	private D3D11SwapChainVideoPresenter? _highResolutionD3DPresenter;
+	private IHighResolutionD3DPresenter? _highResolutionD3DPresenter;
 
-	private MediaFoundationD3D11Decoder? _mediaFoundationD3DDecoder;
+	private IHighResolutionD3DDecoder? _mediaFoundationD3DDecoder;
 
-	private D3D11VideoFrame? _pendingD3DFrame;
+	private IHighResolutionD3DFrame? _pendingD3DFrame;
+
+	private long _staleD3DFramesDropped;
+
+	private long _lastStaleD3DFrameDropLogTick;
 #endif
 
 	private VideoFrame? _pendingFrame;
@@ -152,6 +170,10 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 	private long _renderedFrames;
 
 	private long _renderDroppedFrames;
+
+	private long _staleSoftwareFramesDropped;
+
+	private long _lastStaleSoftwareFrameDropLogTick;
 
 	private long _latestReceiveToRenderMs;
 
@@ -186,6 +208,10 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 	private long _audioPcmFrames;
 
 	private long _audioPcmBytes;
+
+	private CancellationTokenSource? _audioRtpWatchdogCts;
+
+	private volatile bool _audioFirewallWarningActive;
 
 	// Set when the GPU engine faults at runtime (device-lost/TDR); the session then stays on the
 	// software decoder until the next connection. Reset in ResetStreamStateForNewConnection.
@@ -240,6 +266,12 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 	private readonly WindowLifecycleState _lifecycle = new WindowLifecycleState();
 
 	private SettingsWindow? _settingsWindow;
+
+	private readonly UpdateService _updateService = new UpdateService();
+
+	private UpdateInfo? _pendingUpdate;
+
+	private bool _startupUpdateCheckStarted;
 
 	private Forms.NotifyIcon? _trayIcon;
 
@@ -316,9 +348,10 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 		await _browser.StartAsync();
 		await _airPlayProbe.StartAsync();
 		PreflightReport report = await StartupDiagnostics.RunAsync(_airPlayProbe);
-		AppLog.Write($"Preflight: {report.Worst} — " +
+		AppLog.Write($"Preflight: {report.Worst} - " +
 			string.Join("; ", System.Linq.Enumerable.Select(report.Checks, check => $"{check.Id}={check.Status}")));
 		BindReadinessStrip(report);
+		_ = CheckForUpdatesOnStartupAsync();
 	}
 
 	private void BindReadinessStrip(PreflightReport report)
@@ -373,6 +406,8 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 	{
 		SolidColorBrush brush = (SolidColorBrush)FindResource("WarningBrush");
 		string text = "Checking network...";
+		PreflightCheck? listenerIssue = FindDiagnosticIssue(report, "listeners");
+		bool listenerBlocked = listenerIssue?.Status == PreflightStatus.Blocked;
 
 		if (report.Worst == PreflightStatus.Ok)
 		{
@@ -384,10 +419,10 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 			brush = (SolidColorBrush)FindResource("DangerBrush");
 			text = ffmpeg.Message;
 		}
-		else if (FindDiagnosticIssue(report, "listeners") is PreflightCheck listeners)
+		else if (listenerIssue != null)
 		{
 			brush = (SolidColorBrush)FindResource("WarningBrush");
-			text = listeners.Message;
+			text = listenerIssue.Message;
 		}
 		else if (FindDiagnosticIssue(report, "network") is PreflightCheck network)
 		{
@@ -397,6 +432,7 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 
 		DiagStatusDot.Fill = brush;
 		DiagStatusText.Text = text;
+		FirewallAllowInlineButton.Visibility = listenerBlocked ? Visibility.Visible : Visibility.Collapsed;
 	}
 
 	private void SetEmptyStateDiagnosticRechecking()
@@ -461,6 +497,71 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 
 	private async void FirewallHelpButton_Click(object sender, RoutedEventArgs e)
 	{
+		await AllowInFirewallAsync();
+	}
+
+	private async void FirewallAllowButton_Click(object sender, RoutedEventArgs e)
+	{
+		await AllowInFirewallAsync();
+	}
+
+	private async Task AllowInFirewallAsync()
+	{
+		SetFirewallAllowButtonsEnabled(false);
+		SetFirewallAllowButtonsContent("Allowing...");
+		SetStatus("Requesting Windows Firewall access...");
+		SetEmptyStateDiagnosticRechecking();
+
+		try
+		{
+			FirewallRuleInstallResult result = await WindowsFirewallRuleInstaller.AllowCurrentExecutableAsync();
+			AppLog.Write($"Windows Firewall allow rule result: {result.Status}: {result.Message}");
+
+			if (result.Status == FirewallRuleInstallStatus.Success)
+			{
+				ClearAudioFirewallWarning(
+					"Windows Firewall allow rule completed; clearing audio firewall warning.",
+					"waiting for audio after firewall allow");
+				SetStatus("Windows Firewall now allows iMirror. Reconnect only if audio does not resume.");
+				await Task.Delay(500);
+				await RecheckReadinessAsync();
+				return;
+			}
+
+			if (result.Status == FirewallRuleInstallStatus.Cancelled)
+			{
+				SetStatus("Windows Firewall permission was cancelled.");
+				return;
+			}
+
+			SetStatus(result.Message);
+			OpenWindowsFirewallSettings();
+		}
+		finally
+		{
+			SetFirewallAllowButtonsEnabled(true);
+			SetFirewallAllowButtonsContent("Allow");
+			FirewallAllowInlineButton.Content = "Allow in Firewall";
+			FirewallHelpButton.Content = "Allow in Firewall";
+		}
+	}
+
+	private void SetFirewallAllowButtonsEnabled(bool isEnabled)
+	{
+		FirewallAllowButton.IsEnabled = isEnabled;
+		FirewallAllowInlineButton.IsEnabled = isEnabled;
+		FirewallHelpButton.IsEnabled = isEnabled;
+	}
+
+	private void SetFirewallAllowButtonsContent(string content)
+	{
+		FirewallAllowButton.Content = content;
+		FirewallAllowInlineButton.Content = content;
+		FirewallHelpButton.Content = content;
+	}
+
+	private static void OpenWindowsFirewallSettings()
+	{
 		try
 		{
 			Process.Start(new ProcessStartInfo
@@ -472,10 +573,6 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 		catch
 		{
 		}
-
-		SetEmptyStateDiagnosticRechecking();
-		await Task.Delay(500);
-		await RecheckReadinessAsync();
 	}
 
 	private void Window_Closing(object? sender, CancelEventArgs e)
@@ -505,7 +602,7 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 			{
 				RestoreFromTray();
 			};
-			var settingsItem = new Forms.ToolStripMenuItem("Settings…");
+			var settingsItem = new Forms.ToolStripMenuItem("Settings...");
 			settingsItem.Click += delegate
 			{
 				RestoreFromTray();
@@ -655,6 +752,16 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 		return RestartApplicationAsync();
 	}
 
+	Task<UpdateCheckResult> ISettingsHost.CheckForUpdatesAsync(bool manual)
+	{
+		return CheckForUpdatesAsync(manual);
+	}
+
+	Task<bool> ISettingsHost.InstallUpdateAsync(UpdateInfo updateInfo, IProgress<double>? progress)
+	{
+		return InstallUpdateAsync(updateInfo, progress);
+	}
+
 	void ISettingsHost.SetStatusMessage(string message)
 	{
 		SetStatus(message);
@@ -733,11 +840,12 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 		int generation = Interlocked.Increment(ref _connectionGeneration);
 		Volatile.Write(ref _airPlaySessionGeneration, activeSession ? generation : 0);
 		CleanupGuards.RunStep("video watchdog stop", StopVideoWatchdog);
+		_videoSinkAcceptingInput = false;
 		FfmpegDecoder? decoder = _decoder;
 		_decoder = null;
 		CleanupGuards.RunStep("ffmpeg decoder dispose", () => decoder?.Dispose());
 #if HIGH_RESOLUTION_D3D
-		MediaFoundationD3D11Decoder? mediaFoundationD3DDecoder = _mediaFoundationD3DDecoder;
+		IHighResolutionD3DDecoder? mediaFoundationD3DDecoder = _mediaFoundationD3DDecoder;
 		_mediaFoundationD3DDecoder = null;
 		CleanupGuards.RunStep("Media Foundation D3D decoder dispose", () => mediaFoundationD3DDecoder?.Dispose());
 		CleanupGuards.RunStep("D3D presenter dispose", DisposeHighResolutionD3DPresenter);
@@ -783,7 +891,7 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 
 	private void HandleAirPlayStreamConfig(StreamConfig config, int generation)
 	{
-		base.Dispatcher.BeginInvoke(new Action(delegate
+		void ApplyStreamConfig()
 		{
 			if (!IsCurrentGeneration(generation, Volatile.Read(ref _connectionGeneration)))
 			{
@@ -805,7 +913,10 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 #if HIGH_RESOLUTION_D3D
 				if (_mediaFoundationD3DDecoder != null)
 				{
-					AppLog.Write("AirPlay stream config repeated for high-resolution D3D path; refreshing renderer for new sender session.");
+					AppLog.Write("AirPlay stream config repeated for high-resolution D3D path; keeping active renderer.");
+					UpdateHighResolutionD3DPresenterLayout();
+					UpdateDiagnostics();
+					return;
 				}
 				else
 #endif
@@ -814,29 +925,19 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 				}
 			}
 
-#if HIGH_RESOLUTION_D3D
-			if (sameStreamConfig && _mediaFoundationD3DDecoder == null)
-			{
-				return;
-			}
-#endif
+			ResetH264Gate();
+			StartDecoder(config);
+		}
 
-			if (sameStreamConfig)
-			{
-#if HIGH_RESOLUTION_D3D
-				RequireH264Keyframe();
-#else
-				ResetH264Gate();
-#endif
-				StartFreshDecoder(config, "AirPlay session refresh");
-				UpdateDiagnostics();
-			}
-			else
-			{
-				ResetH264Gate();
-				StartDecoder(config);
-			}
-		}), DispatcherPriority.Background);
+		if (base.Dispatcher.CheckAccess())
+		{
+			ApplyStreamConfig();
+			return;
+		}
+
+		// AirPlay emits SPS/PPS immediately after the config callback. Apply the reset synchronously
+		// so those parameter sets seed the fresh H.264 gate before the next IDR arrives.
+		base.Dispatcher.Invoke(new Action(ApplyStreamConfig), DispatcherPriority.Send);
 	}
 
 	private void HandleAirPlayVideoPayload(byte[] payload, ulong sourceTimestampNanos, long receivedTick, int generation)
@@ -868,6 +969,10 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 				StopAudioPipelineLocked();
 			}
 			StartAudioPipelineLocked("AirPlay audio stream setup");
+			if (_audioDecoder != null && _audioOutput != null)
+			{
+				RestartAudioRtpWatchdogLocked(generation);
+			}
 		}
 	}
 
@@ -878,6 +983,7 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 			return;
 		}
 
+		ClearAudioFirewallWarning();
 		Interlocked.Increment(ref _audioFramesReceived);
 		long receivedTick = Stopwatch.GetTimestamp();
 		FfmpegAudioDecoder? decoder;
@@ -901,6 +1007,109 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 			Interlocked.Increment(ref _audioFramesQueued);
 		}
 		QueueDiagnosticsUpdate();
+	}
+
+	private void RestartAudioRtpWatchdogLocked(int generation)
+	{
+		CancelAudioRtpWatchdogLocked();
+		long frameBaseline = Interlocked.Read(ref _audioFramesReceived);
+		_audioRtpWatchdogCts = new CancellationTokenSource();
+		_ = WatchAudioRtpStartupAsync(generation, frameBaseline, _audioRtpWatchdogCts.Token);
+	}
+
+	private void CancelAudioRtpWatchdogLocked()
+	{
+		CancellationTokenSource? cts = _audioRtpWatchdogCts;
+		_audioRtpWatchdogCts = null;
+		try
+		{
+			cts?.Cancel();
+		}
+		catch
+		{
+		}
+	}
+
+	private async Task WatchAudioRtpStartupAsync(int generation, long frameBaseline, CancellationToken token)
+	{
+		try
+		{
+			await Task.Delay(AudioRtpStartupTimeout, token);
+		}
+		catch (OperationCanceledException)
+		{
+			return;
+		}
+		catch (ObjectDisposedException)
+		{
+			return;
+		}
+
+		if (!IsCurrentGeneration(generation, Volatile.Read(ref _connectionGeneration)) ||
+			Interlocked.Read(ref _audioFramesReceived) > frameBaseline)
+		{
+			return;
+		}
+
+		bool shouldNotify = false;
+		lock (_audioGate)
+		{
+			if (token.IsCancellationRequested ||
+				Interlocked.Read(ref _audioFramesReceived) > frameBaseline ||
+				_audioFirewallWarningActive)
+			{
+				return;
+			}
+
+			_audioFirewallWarningActive = true;
+			_audioStatus = AudioFirewallWarningMessage;
+			shouldNotify = true;
+		}
+
+		if (!shouldNotify)
+		{
+			return;
+		}
+
+		AppLog.Write(
+			$"AirPlay audio RTP did not arrive within {AudioRtpStartupTimeout.TotalSeconds:N0}s after SETUP; " +
+			"Windows Firewall may be blocking the dynamic UDP audio ports. Allow iMirror for Private and Public networks.");
+		_ = base.Dispatcher.BeginInvoke(new Action(delegate
+		{
+			SetStatus(AudioFirewallWarningMessage);
+			UpdateDiagnostics();
+		}), DispatcherPriority.Background);
+	}
+
+	private void ClearAudioFirewallWarning(string logMessage = "AirPlay audio RTP reached the decoder; clearing firewall warning.", string? replacementAudioStatus = null)
+	{
+		bool changed = false;
+		lock (_audioGate)
+		{
+			CancelAudioRtpWatchdogLocked();
+			if (_audioFirewallWarningActive)
+			{
+				_audioFirewallWarningActive = false;
+				changed = true;
+			}
+			if (replacementAudioStatus != null && _audioStatus == AudioFirewallWarningMessage)
+			{
+				_audioStatus = replacementAudioStatus;
+				changed = true;
+			}
+		}
+
+		if (!changed)
+		{
+			return;
+		}
+
+		AppLog.Write(logMessage);
+		base.Dispatcher.BeginInvoke(new Action(delegate
+		{
+			UpdateReceiverChrome();
+			UpdateDiagnostics();
+		}), DispatcherPriority.Background);
 	}
 
 	internal static bool IsCurrentGeneration(int payloadGeneration, int currentGeneration)
@@ -987,6 +1196,8 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 	{
 		FfmpegAudioDecoder? decoder = _audioDecoder;
 		WasapiAudioOutput? output = _audioOutput;
+		CancelAudioRtpWatchdogLocked();
+		_audioFirewallWarningActive = false;
 		_audioDecoder = null;
 		_audioOutput = null;
 		try
@@ -1138,12 +1349,14 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 				_videoBytes = 0L;
 				_cursorMessages = 0L;
 			_decodedFrames = 0L;
-		_renderedFrames = 0L;
-		_renderDroppedFrames = 0L;
-		_latestReceiveToRenderMs = 0L;
-		_latestDecodeToRenderMs = 0L;
-		_receiveToPresentLatencyWindow.Reset();
-		_lastRenderLogTick = 0L;
+			_renderedFrames = 0L;
+			_renderDroppedFrames = 0L;
+			_staleSoftwareFramesDropped = 0L;
+			_lastStaleSoftwareFrameDropLogTick = 0L;
+			_latestReceiveToRenderMs = 0L;
+			_latestDecodeToRenderMs = 0L;
+			_receiveToPresentLatencyWindow.Reset();
+			_lastRenderLogTick = 0L;
 			_lastVideoHealthLogTick = 0L;
 			_lastVideoHealthPackets = 0L;
 			_lastVideoHealthDecodedFrames = 0L;
@@ -1153,15 +1366,20 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 			_lastGateLogTick = 0L;
 			_pendingVideoDroppedBeforeSink = 0L;
 			_lastPendingVideoDropLogTick = 0L;
+#if HIGH_RESOLUTION_D3D
+			_staleD3DFramesDropped = 0L;
+			_lastStaleD3DFrameDropLogTick = 0L;
+#endif
 			_audioFramesReceived = 0L;
 			_audioFramesQueued = 0L;
 			_audioPcmFrames = 0L;
 			_audioPcmBytes = 0L;
 			_audioStatus = "waiting for stream";
 			StopAudioPipeline();
-				_streamConfig = null;
-				ResetRemoteCursorState();
-				_decoderStatus = "waiting for stream config";
+			_streamConfig = null;
+			ResetRemoteCursorState();
+			_decoderStatus = "waiting for stream config";
+			_videoSinkAcceptingInput = false;
 			ClearPendingVideoBeforeSink();
 			ResetH264Gate();
 			UpdateDiagnostics();
@@ -1194,7 +1412,7 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 
 		FfmpegDecoder? decoder = _decoder;
 #if HIGH_RESOLUTION_D3D
-		MediaFoundationD3D11Decoder? mediaFoundationD3DDecoder = _mediaFoundationD3DDecoder;
+		IHighResolutionD3DDecoder? mediaFoundationD3DDecoder = _mediaFoundationD3DDecoder;
 #endif
 		byte[]? array = ProcessH264Payload(payload, out long h264ForwardedPackets, out string h264LastDecision);
 #if HIGH_RESOLUTION_D3D
@@ -1248,6 +1466,11 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 
 	private bool HasVideoSinkReady()
 	{
+		if (!_videoSinkAcceptingInput)
+		{
+			return false;
+		}
+
 		if (_decoder != null)
 		{
 			return true;
@@ -1630,6 +1853,140 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 		await ShutdownApplicationAsync();
 	}
 
+	private async Task CheckForUpdatesOnStartupAsync()
+	{
+		if (_startupUpdateCheckStarted || _shutdownStarted)
+		{
+			return;
+		}
+
+		_startupUpdateCheckStarted = true;
+		try
+		{
+			await Task.Delay(1500);
+			if (_shutdownStarted)
+			{
+				return;
+			}
+
+			UpdateCheckResult result = await CheckForUpdatesAsync(manual: false);
+			UpdateInfo? update = result.Update;
+			if (update?.IsNewer != true)
+			{
+				return;
+			}
+
+			DateTimeOffset now = DateTimeOffset.Now;
+			if (!ReceiverSettings.ShouldShowAutomaticUpdateNotice(update, now))
+			{
+				return;
+			}
+
+			ReceiverSettings.MarkUpdateNoticeShown(update.LatestVersion, now);
+			ShowUpdateNotice(update);
+		}
+		catch (Exception ex)
+		{
+			AppLog.Write("Startup update check failed: " + ex.Message);
+		}
+	}
+
+	private async Task<UpdateCheckResult> CheckForUpdatesAsync(bool manual)
+	{
+		UpdateInfo? update = await _updateService.CheckAsync(includePrerelease: false, CancellationToken.None);
+		if (update == null)
+		{
+			return new UpdateCheckResult(
+				null,
+				manual ? "Could not check for updates. Open Releases and install manually." : string.Empty,
+				Failed: true);
+		}
+
+		if (!update.IsNewer)
+		{
+			return new UpdateCheckResult(null, "You're on the latest iMirror.", Failed: false);
+		}
+
+		_pendingUpdate = update;
+		if (manual)
+		{
+			ShowUpdateNotice(update);
+		}
+
+		return new UpdateCheckResult(update, $"iMirror {update.LatestVersion} is available.", Failed: false);
+	}
+
+	private void ShowUpdateNotice(UpdateInfo update)
+	{
+		_pendingUpdate = update;
+		UpdateNoticeTextBlock.Text = $"iMirror {update.LatestVersion} is available.";
+		UpdateNoticeInstallButton.Content = "Update";
+		UpdateNoticeInstallButton.IsEnabled = true;
+		UpdateNoticeDismissButton.IsEnabled = true;
+		UpdateNoticeBorder.Visibility = Visibility.Visible;
+	}
+
+	private void HideUpdateNotice()
+	{
+		UpdateNoticeBorder.Visibility = Visibility.Collapsed;
+	}
+
+	private async Task<bool> InstallUpdateAsync(UpdateInfo updateInfo, IProgress<double>? progress)
+	{
+		try
+		{
+			_pendingUpdate = updateInfo;
+			UpdateNoticeBorder.Visibility = Visibility.Visible;
+			UpdateNoticeInstallButton.IsEnabled = false;
+			UpdateNoticeDismissButton.IsEnabled = false;
+			UpdateNoticeTextBlock.Text = $"Downloading iMirror {updateInfo.LatestVersion}...";
+			SetStatus($"Downloading iMirror {updateInfo.LatestVersion} update...");
+
+			string setupPath = await _updateService.DownloadSetupAsync(updateInfo, progress, CancellationToken.None);
+			UpdateNoticeTextBlock.Text = "Starting update installer...";
+			SetStatus("Starting update installer...");
+			UpdateLauncher.Launch(setupPath);
+			SetStatus("Update installer started. iMirror will close when setup is ready.");
+			return true;
+		}
+		catch (Exception ex)
+		{
+			AppLog.Write("Update install failed: " + ex);
+			SetStatus("Update could not be installed: " + ex.Message);
+			UpdateNoticeTextBlock.Text = "Update could not be installed. Open Releases and install manually.";
+			UpdateNoticeInstallButton.Content = "Retry";
+			UpdateNoticeInstallButton.IsEnabled = true;
+			UpdateNoticeDismissButton.IsEnabled = true;
+			return false;
+		}
+	}
+
+	private async void UpdateNoticeInstallButton_Click(object sender, RoutedEventArgs e)
+	{
+		UpdateInfo? update = _pendingUpdate;
+		if (update == null)
+		{
+			return;
+		}
+
+		var progress = new Progress<double>(value =>
+		{
+			int percent = Math.Clamp((int)Math.Round(value * 100.0), 0, 100);
+			UpdateNoticeTextBlock.Text = $"Downloading iMirror {update.LatestVersion}... {percent}%";
+		});
+		await InstallUpdateAsync(update, progress);
+	}
+
+	private void UpdateNoticeDismissButton_Click(object sender, RoutedEventArgs e)
+	{
+		UpdateInfo? update = _pendingUpdate;
+		if (update != null)
+		{
+			ReceiverSettings.DismissUpdateNotice(update.LatestVersion);
+		}
+		HideUpdateNotice();
+	}
+
 	private static string ResolveExecutablePath()
 	{
 		string? executablePath = Environment.ProcessPath;
@@ -1770,6 +2127,10 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 	// Lower floor used while mirroring so a portrait phone stream can use a
 	// tall, narrow window instead of being letterboxed inside a wide one.
 	private const double MirroringMinWindowEdge = 320;
+	private const double PortraitMirroringMaxWorkAreaWidthRatio = 0.45;
+	private const double PortraitMirroringMaxWorkAreaHeightRatio = 0.68;
+	private const double PortraitMirroringMaxWidth = 520;
+	private const double PortraitMirroringMaxHeight = 760;
 
 	private void ResizeWindowToStream(StreamConfig config)
 	{
@@ -1780,8 +2141,18 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 
 		double aspect = (double)config.Width / config.Height;
 		Rect work = SystemParameters.WorkArea;
+		bool isPortrait = config.Height > config.Width;
 		double maxWidth = work.Width * 0.9;
 		double maxHeight = work.Height * 0.9;
+		if (isPortrait)
+		{
+			maxWidth = Math.Min(
+				maxWidth,
+				Math.Min(work.Width * PortraitMirroringMaxWorkAreaWidthRatio, PortraitMirroringMaxWidth));
+			maxHeight = Math.Min(
+				maxHeight,
+				Math.Min(work.Height * PortraitMirroringMaxWorkAreaHeightRatio, PortraitMirroringMaxHeight));
+		}
 
 		double targetWidth = maxWidth;
 		double targetHeight = targetWidth / aspect;
@@ -1799,7 +2170,8 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 		Left = work.Left + (work.Width - Width) / 2.0;
 		Top = work.Top + (work.Height - Height) / 2.0;
 
-		AppLog.Write($"Resized window to stream {config.Width}x{config.Height} (aspect {aspect:F3}) -> {Width:F0}x{Height:F0}.");
+		string resizeProfile = isPortrait ? "portrait" : "landscape";
+		AppLog.Write($"Resized window to {resizeProfile} stream {config.Width}x{config.Height} (aspect {aspect:F3}) -> {Width:F0}x{Height:F0}.");
 	}
 
 	private void RestoreDefaultWindowSize()
@@ -1821,6 +2193,7 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 	private void StartFreshDecoder(StreamConfig config, string reason)
 	{
 		StopVideoWatchdog();
+		_videoSinkAcceptingInput = false;
 		_decoder?.Dispose();
 		_decoder = null;
 #if HIGH_RESOLUTION_D3D
@@ -1840,6 +2213,7 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 		{
 			_decoderMaxRenderWidth = config.Width;
 			_decoderOutputFps = Math.Clamp(config.Fps, 1, HighResolutionMaxRenderFps);
+			_videoSinkAcceptingInput = true;
 			FlushPendingVideoToSink();
 			AppLog.Write("Media Foundation D3D11 renderer started for " + reason + ".");
 			StartVideoWatchdog(config, _connectionGeneration);
@@ -1905,6 +2279,7 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 		};
 		_decoder.Start();
 		_decoderStatus = "started";
+		_videoSinkAcceptingInput = true;
 		FlushPendingVideoToSink();
 		AppLog.Write("FFmpeg software decoder started for " + reason + ".");
 		StartVideoWatchdog(config, _connectionGeneration);
@@ -1929,16 +2304,17 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 		return videoEngine != ReceiverVideoEngineSetting.Software
 			&& qualityRenderModeEnabled
 			&& gpuQualityRequested
-			&& config.Width > ResponsiveMaxRenderWidth
-			&& config.Height > 1080;
+			&& (config.Width > ResponsiveMaxRenderWidth || config.Height > 1080);
 	}
 
 	private bool TryStartHighResolutionD3DPath(StreamConfig config, string reason)
 	{
 		try
 		{
-			var presenter = new D3D11SwapChainVideoPresenter();
-			var decoder = new MediaFoundationD3D11Decoder(config.Width, config.Height, config.Fps, presenter.Device);
+			var vorticePresenter = new VorticeD3D11SwapChainVideoPresenter();
+			IHighResolutionD3DPresenter presenter = vorticePresenter;
+			IHighResolutionD3DDecoder decoder = new VorticeMediaFoundationD3D11Decoder(config.Width, config.Height, config.Fps, vorticePresenter.Device);
+
 			decoder.DumpH264Enabled = StartupReceiverSettings.Effective.DumpH264;
 			_highResolutionD3DPresenter = presenter;
 			_mediaFoundationD3DDecoder = decoder;
@@ -1946,9 +2322,9 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 			VideoImage.Visibility = Visibility.Collapsed;
 			VideoImage.Source = null;
 			_bitmap = null;
-			VideoStage.Children.Insert(0, presenter);
-			presenter.HorizontalAlignment = HorizontalAlignment.Center;
-			presenter.VerticalAlignment = VerticalAlignment.Center;
+			VideoStage.Children.Insert(0, presenter.View);
+			presenter.View.HorizontalAlignment = HorizontalAlignment.Center;
+			presenter.View.VerticalAlignment = VerticalAlignment.Center;
 			UpdateHighResolutionD3DPresenterLayout(presenter, config);
 			VideoStage.UpdateLayout();
 			presenter.StatusChanged += delegate(string message)
@@ -1980,18 +2356,9 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 				}), DispatcherPriority.Background);
 			};
 			decoder.FrameDecoded += QueueD3DFrameForPresentation;
-			decoder.InputQueueOverflowed += delegate
-			{
-				base.Dispatcher.BeginInvoke(new Action(delegate
-				{
-					RequireH264Keyframe();
-					AppLog.Write("Media Foundation D3D11 decoder input queue overflowed; holding video until next keyframe.");
-					UpdateDiagnostics();
-				}));
-			};
 			decoder.Start();
 			_decoderStatus = "Media Foundation D3D11 decoder started";
-			AppLog.Write($"High-resolution D3D path active for {reason}: {config.Width}x{config.Height}@{config.Fps}, d3d11MultithreadProtected={presenter.IsMultithreadProtected}.");
+			AppLog.Write($"High-resolution D3D path active for {reason}: {config.Width}x{config.Height}@{config.Fps}, gpuBinding=Vortice, d3d11MultithreadProtected={presenter.IsMultithreadProtected}.");
 			return true;
 		}
 		catch (Exception ex)
@@ -2008,7 +2375,7 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 
 	private void UpdateHighResolutionD3DPresenterLayout()
 	{
-		D3D11SwapChainVideoPresenter? presenter = _highResolutionD3DPresenter;
+		IHighResolutionD3DPresenter? presenter = _highResolutionD3DPresenter;
 		StreamConfig? config = _streamConfig;
 		if (presenter == null || config == null)
 		{
@@ -2017,7 +2384,7 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 		UpdateHighResolutionD3DPresenterLayout(presenter, config);
 	}
 
-	private void UpdateHighResolutionD3DPresenterLayout(D3D11SwapChainVideoPresenter presenter, StreamConfig config)
+	private void UpdateHighResolutionD3DPresenterLayout(IHighResolutionD3DPresenter presenter, StreamConfig config)
 	{
 		double stageWidthDip = VideoStage.ActualWidth;
 		double stageHeightDip = VideoStage.ActualHeight;
@@ -2030,17 +2397,33 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 		double dpiScaleX = dpi.DpiScaleX > 0.0 ? dpi.DpiScaleX : 1.0;
 		double dpiScaleY = dpi.DpiScaleY > 0.0 ? dpi.DpiScaleY : 1.0;
 		double stageWidthPixels = stageWidthDip * dpiScaleX;
-		double stageHeightPixels = stageHeightDip * dpiScaleY;
-		double scale = Math.Min(stageWidthPixels / config.Width, stageHeightPixels / config.Height);
+		double topInsetDip = ResolveHighResolutionD3DTopInsetDip(stageHeightDip);
+		double availableHeightDip = Math.Max(1.0, stageHeightDip - topInsetDip);
+		double availableHeightPixels = availableHeightDip * dpiScaleY;
+		double scale = Math.Min(stageWidthPixels / config.Width, availableHeightPixels / config.Height);
 		double fitWidthPixels = Math.Max(1.0, Math.Round(config.Width * scale));
 		double fitHeightPixels = Math.Max(1.0, Math.Round(config.Height * scale));
 		double fitWidthDip = Math.Min(stageWidthDip, fitWidthPixels / dpiScaleX);
-		double fitHeightDip = Math.Min(stageHeightDip, fitHeightPixels / dpiScaleY);
+		double fitHeightDip = Math.Min(availableHeightDip, fitHeightPixels / dpiScaleY);
 
-		presenter.Width = fitWidthDip;
-		presenter.Height = fitHeightDip;
-		presenter.HorizontalAlignment = HorizontalAlignment.Center;
-		presenter.VerticalAlignment = VerticalAlignment.Center;
+		FrameworkElement presenterView = presenter.View;
+		presenterView.Width = fitWidthDip;
+		presenterView.Height = fitHeightDip;
+		presenterView.Margin = new Thickness(0.0, topInsetDip, 0.0, 0.0);
+		presenterView.HorizontalAlignment = HorizontalAlignment.Center;
+		presenterView.VerticalAlignment = topInsetDip > 0.0 ? VerticalAlignment.Top : VerticalAlignment.Center;
+	}
+
+	private double ResolveHighResolutionD3DTopInsetDip(double stageHeightDip)
+	{
+		if (!_audioFirewallWarningActive || ReceiverCardBorder.Visibility != Visibility.Visible)
+		{
+			return 0.0;
+		}
+
+		double cardHeightDip = ReceiverCardBorder.ActualHeight > 0.0 ? ReceiverCardBorder.ActualHeight : 44.0;
+		double desiredInsetDip = ReceiverCardBorder.Margin.Top + cardHeightDip + 12.0;
+		return Math.Min(Math.Max(0.0, desiredInsetDip), Math.Max(0.0, stageHeightDip - 1.0));
 	}
 
 	private void HandleHighResolutionD3DFatal(string message)
@@ -2154,7 +2537,7 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 	}
 
 #if HIGH_RESOLUTION_D3D
-	private void QueueD3DFrameForPresentation(D3D11VideoFrame frame)
+	private void QueueD3DFrameForPresentation(IHighResolutionD3DFrame frame)
 	{
 		Interlocked.Increment(ref _decodedFrames);
 		lock (_frameGate)
@@ -2197,7 +2580,7 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 	{
 		VideoFrame? pendingFrame;
 #if HIGH_RESOLUTION_D3D
-		D3D11VideoFrame? pendingD3DFrame;
+		IHighResolutionD3DFrame? pendingD3DFrame;
 #endif
 		lock (_frameGate)
 		{
@@ -2273,6 +2656,19 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 		long renderStartTick = Stopwatch.GetTimestamp();
 		try
 		{
+			if (frame.ReceivedTick > 0)
+			{
+				long ageMs = ElapsedMilliseconds(frame.ReceivedTick, renderStartTick);
+				if (ageMs > SoftwareMaxLiveFrameAgeMilliseconds)
+				{
+					Interlocked.Increment(ref _renderDroppedFrames);
+					long staleDropped = Interlocked.Increment(ref _staleSoftwareFramesDropped);
+					LogStaleSoftwareFrameDropThrottled(ageMs, staleDropped);
+					QueueDiagnosticsUpdate();
+					return;
+				}
+			}
+
 			PresentFrameToActiveRenderer(frame);
 			long renderDoneTick = Stopwatch.GetTimestamp();
 			long renderedFrames = Interlocked.Increment(ref _renderedFrames);
@@ -2386,12 +2782,13 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 		}
 
 #if HIGH_RESOLUTION_D3D
-		D3D11SwapChainVideoPresenter? d3dPresenter = _highResolutionD3DPresenter;
-		if (d3dPresenter != null && d3dPresenter.ActualWidth > 0.0 && d3dPresenter.ActualHeight > 0.0)
+		IHighResolutionD3DPresenter? d3dPresenter = _highResolutionD3DPresenter;
+		FrameworkElement? d3dPresenterView = d3dPresenter?.View;
+		if (d3dPresenterView != null && d3dPresenterView.ActualWidth > 0.0 && d3dPresenterView.ActualHeight > 0.0)
 		{
-			double d3dLeft = Math.Max(0.0, (VideoStage.ActualWidth - d3dPresenter.ActualWidth) / 2.0);
-			double d3dTop = Math.Max(0.0, (VideoStage.ActualHeight - d3dPresenter.ActualHeight) / 2.0);
-			return new Rect(d3dLeft, d3dTop, d3dPresenter.ActualWidth, d3dPresenter.ActualHeight);
+			double d3dLeft = Math.Max(0.0, (VideoStage.ActualWidth - d3dPresenterView.ActualWidth) / 2.0);
+			double d3dTop = Math.Max(0.0, (VideoStage.ActualHeight - d3dPresenterView.ActualHeight) / 2.0);
+			return new Rect(d3dLeft, d3dTop, d3dPresenterView.ActualWidth, d3dPresenterView.ActualHeight);
 		}
 #endif
 
@@ -2569,12 +2966,13 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 			});
 
 			CleanupGuards.RunStep("video watchdog stop", StopVideoWatchdog);
+			_videoSinkAcceptingInput = false;
 			FfmpegDecoder? decoder = _decoder;
 			_decoder = null;
 			CleanupGuards.RunStep("ffmpeg decoder dispose", () => decoder?.Dispose());
 			CleanupGuards.RunStep("audio pipeline stop", StopAudioPipeline);
 #if HIGH_RESOLUTION_D3D
-			MediaFoundationD3D11Decoder? mediaFoundationD3DDecoder = _mediaFoundationD3DDecoder;
+			IHighResolutionD3DDecoder? mediaFoundationD3DDecoder = _mediaFoundationD3DDecoder;
 			_mediaFoundationD3DDecoder = null;
 			CleanupGuards.RunStep("Media Foundation D3D decoder dispose", () => mediaFoundationD3DDecoder?.Dispose());
 #endif
@@ -2608,7 +3006,7 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 #if HIGH_RESOLUTION_D3D
 	private void DisposeHighResolutionD3DPresenter()
 	{
-		D3D11SwapChainVideoPresenter? presenter = _highResolutionD3DPresenter;
+		IHighResolutionD3DPresenter? presenter = _highResolutionD3DPresenter;
 		if (presenter == null)
 		{
 			return;
@@ -2616,7 +3014,7 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 		_highResolutionD3DPresenter = null;
 		try
 		{
-			VideoStage.Children.Remove(presenter);
+			VideoStage.Children.Remove(presenter.View);
 		}
 		catch
 		{
@@ -2681,8 +3079,9 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 	{
 		bool connected = IsMirroringActive();
 		int deviceCount = _devices.Count;
+		bool audioFirewallWarning = _audioFirewallWarningActive;
 
-		HeaderSubtitleTextBlock.Text = ResolveReceiverSubtitle(connected, deviceCount);
+		HeaderSubtitleTextBlock.Text = ResolveReceiverSubtitle(connected, deviceCount, audioFirewallWarning);
 		DeviceSummaryTextBlock.Text = ResolveDeviceSummary(deviceCount);
 		ReceiverCardTitleTextBlock.Text = ResolveReceiverCardTitle(connected);
 		ReceiverStateBadgeTextBlock.Text = ResolveReceiverBadgeText(connected, deviceCount);
@@ -2692,14 +3091,17 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 		EmptyStateDetailTextBlock.Text = ResolveEmptyStateDetail(connected, deviceCount);
 		HowToMirrorCard.Visibility = connected || _isConnecting ? Visibility.Collapsed : Visibility.Visible;
 		StatusSummaryPanel.Visibility = connected || _isConnecting ? Visibility.Collapsed : Visibility.Visible;
-		// While mirroring, keep the stage clean: hide the top status pill so it
-		// doesn't cover the incoming video.
-		ReceiverCardBorder.Visibility = connected ? Visibility.Collapsed : Visibility.Visible;
+		// While mirroring, keep the stage clean unless there is an actionable warning.
+		ReceiverCardBorder.Visibility = connected && !audioFirewallWarning ? Visibility.Collapsed : Visibility.Visible;
+		FirewallAllowButton.Visibility = audioFirewallWarning ? Visibility.Visible : Visibility.Collapsed;
 
-		Brush statusBrush = ResolveReceiverStatusBrush(connected, deviceCount);
+		Brush statusBrush = ResolveReceiverStatusBrush(connected, deviceCount, audioFirewallWarning);
 		SidebarStatusDot.Fill = statusBrush;
 		EmptyStateStatusDot.Fill = statusBrush;
 		ReceiverStateBadge.Background = statusBrush;
+#if HIGH_RESOLUTION_D3D
+		UpdateHighResolutionD3DPresenterLayout();
+#endif
 	}
 
 	private bool IsMirroringActive()
@@ -2740,8 +3142,12 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 		return deviceCount > 0 ? "LEGACY" : "READY";
 	}
 
-	private string ResolveReceiverSubtitle(bool connected, int deviceCount)
+	private string ResolveReceiverSubtitle(bool connected, int deviceCount, bool audioFirewallWarning)
 	{
+		if (audioFirewallWarning)
+		{
+			return "Audio blocked by Windows Firewall";
+		}
 		if (connected)
 		{
 			return "Mirroring";
@@ -2791,8 +3197,12 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 			: "Open Control Center, tap Screen Mirroring, then choose iMirror.";
 	}
 
-	private Brush ResolveReceiverStatusBrush(bool connected, int deviceCount)
+	private Brush ResolveReceiverStatusBrush(bool connected, int deviceCount, bool audioFirewallWarning)
 	{
+		if (audioFirewallWarning)
+		{
+			return (Brush)FindResource("WarningBrush");
+		}
 		if (connected)
 		{
 			return (Brush)FindResource("SuccessBrush");
@@ -2844,12 +3254,25 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 	}
 
 #if HIGH_RESOLUTION_D3D
-	private void PresentD3DFrame(D3D11VideoFrame frame)
+	private void PresentD3DFrame(IHighResolutionD3DFrame frame)
 	{
 		long renderStartTick = Stopwatch.GetTimestamp();
 		try
 		{
-			D3D11SwapChainVideoPresenter? presenter = _highResolutionD3DPresenter;
+			if (frame.ReceivedTick > 0)
+			{
+				long ageMs = ElapsedMilliseconds(frame.ReceivedTick, renderStartTick);
+				if (ageMs > HighResolutionMaxLiveFrameAgeMilliseconds)
+				{
+					Interlocked.Increment(ref _renderDroppedFrames);
+					long staleDropped = Interlocked.Increment(ref _staleD3DFramesDropped);
+					LogStaleD3DFrameDropThrottled(ageMs, staleDropped);
+					QueueDiagnosticsUpdate();
+					return;
+				}
+			}
+
+			IHighResolutionD3DPresenter? presenter = _highResolutionD3DPresenter;
 			if (presenter == null)
 			{
 				return;
@@ -2857,7 +3280,7 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 
 			try
 			{
-				presenter.PresentNv12Texture(frame.Texture, frame.SubresourceIndex, frame.Width, frame.Height, frame.Fps);
+				presenter.PresentFrame(frame);
 			}
 			catch (Exception ex)
 			{
@@ -2888,7 +3311,35 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 			frame.Dispose();
 		}
 	}
+
+	private void LogStaleD3DFrameDropThrottled(long ageMs, long staleDropped)
+	{
+		long tickCount = Environment.TickCount64;
+		long previous = Interlocked.Read(ref _lastStaleD3DFrameDropLogTick);
+		if (tickCount - previous < 1000)
+		{
+			return;
+		}
+		Interlocked.Exchange(ref _lastStaleD3DFrameDropLogTick, tickCount);
+		AppLog.Write(
+			$"Dropped stale D3D frame: age={ageMs}ms, staleDropped={staleDropped:N0}, " +
+			$"decoderQueue={ActiveQueuedInputPackets} packets/{(double)ActiveQueuedInputBytes / 1024.0:N1}KB.");
+	}
 #endif
+
+	private void LogStaleSoftwareFrameDropThrottled(long ageMs, long staleDropped)
+	{
+		long tickCount = Environment.TickCount64;
+		long previous = Interlocked.Read(ref _lastStaleSoftwareFrameDropLogTick);
+		if (tickCount - previous < 1000)
+		{
+			return;
+		}
+		Interlocked.Exchange(ref _lastStaleSoftwareFrameDropLogTick, tickCount);
+		AppLog.Write(
+			$"Dropped stale FFmpeg frame: age={ageMs}ms, staleDropped={staleDropped:N0}, " +
+			$"decoderQueue={ActiveQueuedInputPackets} packets/{(double)ActiveQueuedInputBytes / 1024.0:N1}KB.");
+	}
 
 	private static string FormatLatencyWindow(LatencyWindowSnapshot snapshot)
 	{
@@ -2923,18 +3374,24 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 	{
 		FfmpegAudioDecoder? decoder;
 		WasapiAudioOutput? output;
+		bool audioFirewallWarning;
 		lock (_audioGate)
 		{
 			decoder = _audioDecoder;
 			output = _audioOutput;
+			audioFirewallWarning = _audioFirewallWarningActive;
 		}
+
+		string firewallHint = audioFirewallWarning
+			? " (no audio RTP after SETUP; allow iMirror in Windows Firewall for Private and Public networks)"
+			: string.Empty;
 
 		if (decoder == null || output == null)
 		{
-			return $"audio: {_audioStatus}, received={Interlocked.Read(ref _audioFramesReceived):N0}";
+			return $"audio: {_audioStatus}{firewallHint}, received={Interlocked.Read(ref _audioFramesReceived):N0}";
 		}
 
-		return $"audio: {_audioStatus}, received/queued={Interlocked.Read(ref _audioFramesReceived):N0}/{Interlocked.Read(ref _audioFramesQueued):N0}, " +
+		return $"audio: {_audioStatus}{firewallHint}, received/queued={Interlocked.Read(ref _audioFramesReceived):N0}/{Interlocked.Read(ref _audioFramesQueued):N0}, " +
 			$"dedup={decoder.DuplicateInputFrames:N0}, decoded={Interlocked.Read(ref _audioPcmFrames):N0} ({(double)Interlocked.Read(ref _audioPcmBytes) / 1024.0:N1} KB), " +
 			$"decoderQueue={decoder.QueuedInputFrames:N0}, audioBuffer={output.BufferedMilliseconds:N0}ms, " +
 			$"audioLatency={output.LatestEstimatedLatencyMilliseconds}/{output.SyncTargetLatencyMilliseconds}ms, " +

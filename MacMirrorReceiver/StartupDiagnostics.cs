@@ -115,10 +115,10 @@ internal static class StartupDiagnostics
 				"listeners",
 				"Firewall / discovery",
 				PreflightStatus.Blocked,
-				"Windows Firewall is blocking AirPlay. iMirror is not discoverable.",
-				$"Blocked: {string.Join(", ", missing)}. Open Windows Security → " +
-				"Firewall & network protection → Allow an app through firewall, " +
-				"find iMirror, and check Private networks.");
+				"Windows Firewall is blocking AirPlay discovery. Allow iMirror through Windows Firewall.",
+				$"Blocked: {string.Join(", ", missing)}. The receiver cannot appear in Screen Mirroring until Windows Firewall allows iMirror on both Private and Public networks. " +
+				"Use Allow in Firewall, or open Windows Security > Firewall & network protection > Allow an app through firewall. " +
+				"Audio uses dynamic UDP ports, so allow the iMirror app itself rather than only fixed ports.");
 		}
 
 		if (!raopBound)
@@ -190,7 +190,7 @@ internal static class StartupDiagnostics
 				}
 				else
 				{
-					localIp ??= $"{addrStr} ({nic.Name} — virtual)";
+					localIp ??= $"{addrStr} ({nic.Name} virtual)";
 				}
 			}
 		}

@@ -10,6 +10,7 @@ The product path is now centered on native GPU video: AirPlay control and media 
 - Mac and iPhone screen mirroring have been validated on real devices.
 - The default video engine is Media Foundation/D3D11 when hardware decode is available.
 - FFmpeg remains required for the software video fallback and AAC-ELD audio decode.
+- Known limitation: the FFmpeg software-decode fallback exceeds the 150ms latency target (real-device B3: Mac p95 ~228ms, iPhone p95 ~174ms) while staying functional; the GPU path meets the target. Tracked in [#32](https://github.com/Balragon/iMirror/issues/32).
 - Local diagnostic dumps can contain private screen content or session material and must not be committed.
 
 ## Repository Layout
@@ -33,7 +34,7 @@ The only other project is `MacMirrorReceiver.Tests`.
 dotnet build .\MacMirrorReceiver.csproj -c Release
 ```
 
-The project targets `net8.0-windows`, `x64`, and WPF.
+The project targets `net10.0-windows`, `x64`, and WPF.
 
 ## Publish
 
@@ -43,15 +44,16 @@ Create a self-contained Windows x64 zip package:
 powershell -ExecutionPolicy Bypass -File .\scripts\publish-win-x64.ps1
 ```
 
-The package is written under `artifacts\`. See `docs/release.md` for FFmpeg
-requirements and package smoke-test steps.
+The package is written under `artifacts\`. Public release zips bundle FFmpeg
+Essentials under `tools\ffmpeg\bin`; see `docs/release.md` for package
+smoke-test steps.
 
 ## Runtime Dependencies
 
-FFmpeg is intentionally not committed. Use **Gyan.FFmpeg.Essentials** for release
-packages, not the larger `full_build` variant. Confirm the exact FFmpeg license
-obligations from `ffmpeg -version` and the matching source package before
-redistribution.
+FFmpeg is intentionally not committed. Public release packages bundle a pinned
+**Gyan.FFmpeg.Essentials** build, not the larger `full_build` variant. Confirm
+the exact FFmpeg license obligations from `ffmpeg -version` and the matching
+source package before redistribution.
 
 ```powershell
 winget install Gyan.FFmpeg.Essentials
@@ -72,10 +74,22 @@ FFmpeg is used by:
 ## Run
 
 ```powershell
-.\bin\Release\net8.0-windows\iMirror.exe
+.\bin\Release\net10.0-windows\iMirror.exe
 ```
 
 Then open Control Center on the sender, choose Screen Mirroring, and select `iMirror`.
+
+If Windows Firewall prompts on first launch, allow `iMirror.exe` for both
+Private and Public networks. Video uses fixed AirPlay ports, but audio uses
+dynamic UDP ports negotiated during SETUP; allow the app itself rather than only
+opening fixed ports. If the prompt was missed or audio is blocked, click
+**Allow in Firewall** in iMirror and approve the Windows UAC prompt. This adds
+an inbound program rule for the currently running `iMirror.exe`; repeat it after
+running iMirror from a new extracted folder.
+
+For long-running iPhone validation, keep the iPhone awake and unlocked. iMirror
+is an AirPlay receiver, not Apple's iPhone Mirroring remote-control feature, so
+it cannot keep private iPhone content visible after iOS locks the device.
 
 ## Video Engine Controls
 
@@ -97,7 +111,7 @@ $env:IMIRROR_EXPERIMENTAL_QUALITY = "1"  # force the GPU path for local validati
 
 ## Diagnostics
 
-Logs are written next to the running app as `iMirror.log`.
+Logs are written under `%LOCALAPPDATA%\iMirror\Logs\iMirror.log`.
 
 Private diagnostic capture is opt-in:
 
@@ -115,7 +129,7 @@ Generated logs, H.264 dumps, audio dumps, and diagnostic snapshots can contain p
 Common checks:
 
 ```powershell
-dotnet run --project .\tools\LatencyAcceptanceReport\LatencyAcceptanceReport.csproj -c Release -- .\bin\Release\net8.0-windows\iMirror.log 150 10
+dotnet run --project .\tools\LatencyAcceptanceReport\LatencyAcceptanceReport.csproj -c Release -- .\bin\Release\net10.0-windows\iMirror.log 150 10
 
 dotnet run --project .\tools\MediaFoundationH264Probe\MediaFoundationH264Probe.csproj -c Release -- C:\temp\capture.d01.submitted.h264
 
@@ -129,3 +143,20 @@ See `docs/validation.md` for the recommended release gate.
 - `docs/architecture.md` - current product architecture.
 - `docs/release.md` - self-contained Windows zip packaging flow.
 - `docs/validation.md` - validation and acceptance workflow.
+
+## License
+
+iMirror is licensed under the **GNU General Public License v3** (the verbatim
+license text is in `LICENSE`; iMirror's copyright and combined-work statement are
+in `NOTICE`). The project is GPLv3 because it combines required GPLv3 components: the
+`ThirdParty/playfair` FairPlay sources (read at runtime; mandatory for
+real-device mirroring) and a bundled GPLv3 FFmpeg build. See
+`THIRD_PARTY_NOTICES.txt` for per-component provenance and corresponding-source
+offers, and `docs/specs/open-source-strategy.md` for the licensing rationale and
+distribution strategy.
+
+## Contributing
+
+Contributions are welcome under GPLv3 (inbound = outbound). See `CONTRIBUTING.md`
+for the workflow, testing requirements, and real-device validation procedure, and
+`CODE_OF_CONDUCT.md` for community expectations.

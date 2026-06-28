@@ -19,36 +19,66 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Setup .NET 8
+      - name: Setup .NET 10
         uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: '8.0.x'
+          dotnet-version: '10.0.x'
 
       - name: Test
         run: dotnet test MacMirrorReceiver.Tests/MacMirrorReceiver.Tests.csproj -c Release
+
+      - name: Download Gyan FFmpeg Essentials
+        shell: pwsh
+        run: |
+          # Pinned to a specific Gyan.FFmpeg.Essentials release for reproducible packages.
+          # Source: https://github.com/GyanD/codexffmpeg/releases (permanent versioned assets).
+          # To upgrade: bump the URL version and replace $expectedSha256 with the new zip hash.
+          $ffmpegUrl = "https://github.com/GyanD/codexffmpeg/releases/download/8.1.1/ffmpeg-8.1.1-essentials_build.zip"
+          $expectedSha256 = "6F58CE889F59C311410F7D2B18895B33C03456463486F3B1EBC93D97A0F54541"
+
+          $zipPath = "$env:RUNNER_TEMP\ffmpeg-essentials.zip"
+          $extractPath = "$env:RUNNER_TEMP\ffmpeg-essentials"
+
+          Write-Host "Downloading FFmpeg Essentials..."
+          Invoke-WebRequest -Uri $ffmpegUrl -OutFile $zipPath
+
+          $actual = (Get-FileHash $zipPath -Algorithm SHA256).Hash
+          if ($actual -ne $expectedSha256.ToUpperInvariant()) {
+            throw "FFmpeg checksum mismatch. Expected: $expectedSha256  Got: $actual"
+          }
+          Write-Host "FFmpeg checksum verified."
+
+          Expand-Archive -LiteralPath $zipPath -DestinationPath $extractPath -Force
+          $ffmpegExe = Get-ChildItem -LiteralPath $extractPath -Filter "ffmpeg.exe" -Recurse | Select-Object -First 1
+          if (-not $ffmpegExe) {
+            throw "ffmpeg.exe not found in extracted archive."
+          }
+
+          $versionText = (& $ffmpegExe.FullName -version 2>&1) -join "`n"
+          if ($versionText -notmatch "essentials_build") {
+            throw "Downloaded FFmpeg is not an essentials_build."
+          }
+
+          $ffmpegLicense = Get-ChildItem -LiteralPath $extractPath -File -Recurse |
+            Where-Object { $_.Name -in @("LICENSE", "LICENSE.txt", "COPYING", "COPYING.txt", "COPYING.GPLv3", "COPYING.LGPLv3") } |
+            Select-Object -First 1
+          if (-not $ffmpegLicense) {
+            throw "FFmpeg license/COPYING file not found in extracted archive."
+          }
+
+          $destDir = "tools\ffmpeg\bin"
+          New-Item -ItemType Directory -Force -Path $destDir | Out-Null
+          Copy-Item -LiteralPath $ffmpegExe.FullName -Destination "$destDir\ffmpeg.exe" -Force
+          Copy-Item -LiteralPath $ffmpegLicense.FullName -Destination "$destDir\LICENSE.txt" -Force
+          Write-Host "FFmpeg placed at $destDir\ffmpeg.exe"
+          Write-Host "FFmpeg license placed at $destDir\LICENSE.txt from $($ffmpegLicense.FullName)"
 
       - name: Publish Windows x64 package
         shell: pwsh
         run: |
           $version = "${{ github.ref_name }}".TrimStart("v")
 
-          $pathWithoutFfmpeg = foreach ($entry in ($env:PATH -split ";")) {
-            if ([string]::IsNullOrWhiteSpace($entry)) {
-              continue
-            }
-
-            try {
-              if (-not (Test-Path -LiteralPath (Join-Path $entry "ffmpeg.exe") -PathType Leaf)) {
-                $entry
-              }
-            }
-            catch {
-              $entry
-            }
-          }
-          $env:PATH = ($pathWithoutFfmpeg -join ";")
-
-          .\scripts\publish-win-x64.ps1 -Version $version -AllowMissingFfmpeg
+          .\scripts\publish-win-x64.ps1 -Version $version
 
       - name: Verify package zip
         shell: pwsh
@@ -64,19 +94,58 @@ jobs:
             $bundledFfmpeg = $zip.Entries | Where-Object {
               $_.FullName -replace "\\", "/" -match "(^|/)tools/ffmpeg/bin/ffmpeg\.exe$"
             }
-            if ($bundledFfmpeg) {
-              throw "FFmpeg must not be bundled in release packages."
+            if (-not $bundledFfmpeg) {
+              throw "Release package must include tools/ffmpeg/bin/ffmpeg.exe."
+            }
+            $bundledFfmpegLicense = $zip.Entries | Where-Object {
+              $_.FullName -replace "\\", "/" -match "(^|/)tools/ffmpeg/bin/LICENSE\.txt$"
+            }
+            if (-not $bundledFfmpegLicense) {
+              throw "Release package must include tools/ffmpeg/bin/LICENSE.txt."
             }
           }
           finally {
             $zip.Dispose()
           }
 
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup --no-progress -y
+
+      - name: Build installer
+        shell: pwsh
+        run: |
+          $version = "${{ github.ref_name }}".TrimStart("v")
+          .\scripts\build-installer.ps1 -Version $version
+
+      - name: Write release checksums
+        shell: pwsh
+        run: |
+          $assets = @(
+            Get-ChildItem -LiteralPath artifacts -Filter "*.zip" -File
+            Get-ChildItem -LiteralPath artifacts -Filter "*-setup.exe" -File
+          ) | Sort-Object Name
+
+          if ($assets.Count -lt 2) {
+            throw "Expected zip and setup assets before checksums."
+          }
+
+          $lines = foreach ($asset in $assets) {
+            $hash = (Get-FileHash -LiteralPath $asset.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$hash  $($asset.Name)"
+          }
+
+          Set-Content -LiteralPath "artifacts\SHA256SUMS" -Value $lines -Encoding ASCII
+          Get-Content -LiteralPath "artifacts\SHA256SUMS"
+
       - name: Upload package artifact
         uses: actions/upload-artifact@v4
         with:
           name: iMirror-windows-x64
-          path: artifacts/*.zip
+          path: |
+            artifacts/*.zip
+            artifacts/*-setup.exe
+            artifacts/SHA256SUMS
           if-no-files-found: error
 
       - name: Prepare release body
@@ -95,24 +164,34 @@ jobs:
           }
 
           if ([string]::IsNullOrWhiteSpace($body)) {
-            $body = @"
-          ## iMirror $tag
+            $body = @'
+          ## iMirror __TAG__
 
-          Windows x64 package for iMirror $version.
+          Windows x64 package for iMirror __VERSION__.
 
           ### Installation
 
-          1. Download the `iMirror-$version-win-x64.zip` asset.
+          Recommended:
+          1. Download and run `iMirror-__VERSION__-setup.exe`.
+
+          Portable fallback:
+          1. Download the `iMirror-__VERSION__-win-x64.zip` asset.
           2. Extract the zip.
-          3. Install FFmpeg: `winget install Gyan.FFmpeg.Essentials`
-          4. Run `iMirror.exe`.
+          3. Run `iMirror.exe`.
 
           ### Notes
 
           - This package is unsigned; Windows SmartScreen may show a warning.
-          - FFmpeg is not bundled.
-          - The app is self-contained for .NET 8.
-          "@
+          - FFmpeg Essentials is bundled under `tools\ffmpeg\bin` with its license file.
+          - The app is self-contained for .NET 10.
+          - SHA-256 checksums are published in `SHA256SUMS`.
+
+          ### License
+
+          iMirror is free software under the GNU General Public License v3 (GPLv3); see LICENSE and NOTICE. It combines required GPLv3 components -- the playfair FairPlay sources and a bundled Gyan FFmpeg build -- so the work as a whole is GPLv3, provided with no warranty. The complete corresponding source is this repository; per-component provenance and the written offers for source are in THIRD_PARTY_NOTICES.txt.
+          '@
+
+            $body = $body.Replace("__TAG__", $tag).Replace("__VERSION__", $version)
           }
 
           Set-Content -LiteralPath $bodyPath -Value $body -Encoding UTF8
@@ -123,5 +202,8 @@ jobs:
           tag_name: ${{ github.ref_name }}
           name: ${{ github.ref_name }}
           body_path: release-body.md
-          files: artifacts/*.zip
+          files: |
+            artifacts/*.zip
+            artifacts/*-setup.exe
+            artifacts/SHA256SUMS
           prerelease: ${{ contains(github.ref_name, '-') }}

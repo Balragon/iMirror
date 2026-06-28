@@ -98,6 +98,35 @@ function Test-FfmpegBuild([string]$Path)
 	}
 }
 
+function Find-FfmpegLicense([string]$FfmpegPath)
+{
+	$searchRoot = Split-Path -Parent $FfmpegPath
+	for ($i = 0; $i -lt 3 -and $searchRoot; $i++)
+	{
+		if ($searchRoot -eq [IO.Path]::GetPathRoot($searchRoot))
+		{
+			break
+		}
+
+		$license = Get-ChildItem -LiteralPath $searchRoot -File -Recurse -ErrorAction SilentlyContinue |
+			Where-Object { $_.Name -in @("LICENSE", "LICENSE.txt", "COPYING", "COPYING.txt", "COPYING.GPLv3", "COPYING.LGPLv3") } |
+			Select-Object -First 1
+		if ($license)
+		{
+			return $license.FullName
+		}
+
+		$parent = Split-Path -Parent $searchRoot
+		if ($parent -eq $searchRoot)
+		{
+			break
+		}
+		$searchRoot = $parent
+	}
+
+	return $null
+}
+
 $repoRoot = Resolve-RepoPath (Join-Path $PSScriptRoot "..")
 Push-Location $repoRoot
 try
@@ -162,12 +191,14 @@ try
 	New-Item -ItemType Directory -Force -Path $packageDir | Out-Null
 
 	Write-Host "Publishing iMirror ($Configuration, $Runtime, self-contained)..."
+	if ($Runtime -ne "win-x64")
+	{
+		throw "This release package is configured for win-x64 only. Runtime was '$Runtime'."
+	}
+
 	$publishArgs = @(
 		".\MacMirrorReceiver.csproj",
 		"-c", $Configuration,
-		"-r", $Runtime,
-		"--self-contained", "true",
-		"-p:PublishSingleFile=false",
 		"-p:DebugType=none",
 		"-p:DebugSymbols=false",
 		"-o", $publishDir
@@ -184,6 +215,7 @@ try
 		Where-Object { $_.Extension -in @(".pdb", ".log", ".h264", ".bgra") } |
 		Remove-Item -Force
 
+	$ffmpegBundled = $false
 	$resolvedFfmpeg = Find-Ffmpeg $repoRoot $FfmpegPath
 	if ($resolvedFfmpeg)
 	{
@@ -191,7 +223,15 @@ try
 		$packageFfmpegDir = Join-Path $packageDir "tools\ffmpeg\bin"
 		New-Item -ItemType Directory -Force -Path $packageFfmpegDir | Out-Null
 		Copy-Item -LiteralPath $resolvedFfmpeg -Destination (Join-Path $packageFfmpegDir "ffmpeg.exe") -Force
+		$ffmpegLicense = Find-FfmpegLicense $resolvedFfmpeg
+		if (-not $ffmpegLicense)
+		{
+			throw "FFmpeg license file was not found near '$resolvedFfmpeg'. Bundle a LICENSE/COPYING file with ffmpeg.exe before packaging."
+		}
+		Copy-Item -LiteralPath $ffmpegLicense -Destination (Join-Path $packageFfmpegDir "LICENSE.txt") -Force
+		$ffmpegBundled = $true
 		Write-Host "Bundled FFmpeg: $resolvedFfmpeg"
+		Write-Host "Bundled FFmpeg license: $ffmpegLicense"
 	}
 	elseif (-not $AllowMissingFfmpeg)
 	{
@@ -207,6 +247,15 @@ try
 		"iMirror.dll",
 		"iMirror.runtimeconfig.json",
 		"iMirror.deps.json",
+		# WPF runtime assemblies must ship in the self-contained output. .NET 9+
+		# can silently drop these from a self-contained publish, producing a
+		# package that fails to launch. Assert them explicitly so the net10
+		# migration (and any future SDK bump) cannot regress unnoticed.
+		"PresentationFramework.dll",
+		"PresentationCore.dll",
+		"WindowsBase.dll",
+		"THIRD_PARTY_NOTICES.txt",
+		"ThirdParty\playfair\LICENSE.md",
 		"ThirdParty\playfair\omg_hax.h",
 		"ThirdParty\playfair\omg_hax.c",
 		"ThirdParty\playfair\sap_hash.c"
@@ -227,6 +276,17 @@ try
 		{
 			throw "Package is missing bundled FFmpeg."
 		}
+		$packageFfmpegLicense = Join-Path $packageDir "tools\ffmpeg\bin\LICENSE.txt"
+		if (-not (Test-Path -LiteralPath $packageFfmpegLicense -PathType Leaf))
+		{
+			throw "Package is missing bundled FFmpeg license file."
+		}
+	}
+
+	$ffmpegNote = if ($ffmpegBundled) {
+		"  - FFmpeg is bundled under tools\ffmpeg\bin, with its license at tools\ffmpeg\bin\LICENSE.txt."
+	} else {
+		"  - FFmpeg was not bundled; put ffmpeg.exe on PATH or at tools\ffmpeg\bin before mirroring."
 	}
 
 	$readme = @"
@@ -242,9 +302,12 @@ Use:
 
 Notes:
   - This win-x64 package is self-contained; .NET does not need to be installed.
-  - FFmpeg is bundled under tools\ffmpeg\bin when available at package time.
-  - iMirror.log is written next to iMirror.exe and can contain local session details.
-  - Delete logs before sharing the package folder or screenshots.
+$ffmpegNote
+  - Logs, diagnostics and settings are written under %LOCALAPPDATA%\iMirror
+    (not next to iMirror.exe), so the app works when installed read-only.
+  - iMirror.log (under %LOCALAPPDATA%\iMirror\Logs) can contain local session
+    details; delete it before sharing logs or screenshots.
+  - Third-party license and source notices: see THIRD_PARTY_NOTICES.txt.
 "@
 	Set-Content -LiteralPath (Join-Path $packageDir "README.txt") -Value $readme -Encoding ASCII
 

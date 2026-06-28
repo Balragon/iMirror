@@ -1,0 +1,158 @@
+iMirror — THIRD-PARTY NOTICES
+=============================
+
+This file lists the third-party software redistributed in, or bundled with,
+the iMirror Windows package, together with the licenses and source/provenance
+information required to redistribute each component.
+
+iMirror itself is the work of the iMirror authors. The components below are
+owned by their respective authors and are governed by their own licenses.
+
+Two of the bundled components — FFmpeg and playfair — are licensed under the
+GNU General Public License, version 3 (GPLv3). The full text of GPLv3 is
+included in the package at:
+
+    ThirdParty/playfair/LICENSE.md
+
+That same text applies to both GPLv3 components listed below.
+
+
+================================================================================
+1. FFmpeg  (Gyan "essentials" build)
+================================================================================
+
+Role in package : Bundled executable, invoked by iMirror as a separate process
+                  (command-line child process — not statically or dynamically
+                  linked into iMirror). Shipped at:
+                      tools/ffmpeg/bin/ffmpeg.exe
+
+License         : GNU General Public License, version 3 (GPLv3).
+                  Gyan's "essentials_build" is a GPL build of FFmpeg.
+                  License text: tools/ffmpeg/bin/LICENSE.txt.
+                  GPLv3 text is also available at ThirdParty/playfair/LICENSE.md.
+                  FFmpeg legal information: https://ffmpeg.org/legal.html
+
+Provenance      : Downloaded at release-build time from a pinned, versioned
+                  Gyan release asset and verified by SHA-256 before bundling:
+
+                  Build    : ffmpeg-8.1.1-essentials_build
+                  URL      : https://github.com/GyanD/codexffmpeg/releases/download/8.1.1/ffmpeg-8.1.1-essentials_build.zip
+                  SHA-256  : 6F58CE889F59C311410F7D2B18895B33C03456463486F3B1EBC93D97A0F54541
+
+                  (See .github/workflows/release.yml — "Download Gyan FFmpeg
+                  Essentials" — for the exact, reproducible acquisition step.)
+
+Corresponding source (GPLv3 §6):
+                  The bundled ffmpeg.exe is Gyan's unmodified essentials build.
+                  The complete corresponding source is publicly available, at no
+                  charge, from the same distributor and from upstream FFmpeg:
+
+                    - Gyan build sources / scripts:
+                        https://github.com/GyanD/codexffmpeg
+                        (release tag matching the bundled build: 8.1.1)
+                    - Upstream FFmpeg source:
+                        https://ffmpeg.org/download.html
+                        https://git.ffmpeg.org/ffmpeg.git  (tag n8.1.1)
+
+                  This satisfies GPLv3 §6(d): the object code is offered from a
+                  designated place, and equivalent access to the corresponding
+                  source is offered from the locations above at no further charge.
+
+
+================================================================================
+2. playfair
+================================================================================
+
+Role in package : Source files redistributed (and used) by iMirror for AirPlay
+                  FairPlay SAP handling. Shipped at:
+                      ThirdParty/playfair/*.c, ThirdParty/playfair/*.h
+
+License         : GNU General Public License, version 3 (GPLv3).
+                  License text: ThirdParty/playfair/LICENSE.md
+
+Corresponding source (GPLv3 §6):
+                  The playfair source is itself included in the package under
+                  ThirdParty/playfair/, which constitutes the corresponding
+                  source for this component.
+
+Note            : playfair is GPLv3 and is COMBINED with iMirror — its sources
+                  are shipped in the package and read at runtime by
+                  MacMirrorReceiver.Networking/AirPlayPlayFair.cs to obtain the
+                  FairPlay tables, which are required for real-device mirroring.
+                  iMirror is therefore non-functional without playfair, making
+                  the distributed work a GPLv3 combined work. This is the
+                  determining reason iMirror as a whole is licensed under GPLv3
+                  (see the repository LICENSE and
+                  docs/specs/open-source-strategy.md). The combined-work licensing
+                  question is thus RESOLVED: the whole is GPLv3.
+
+
+================================================================================
+3. Microsoft .NET runtime and libraries
+================================================================================
+
+Role in package : iMirror is published self-contained for win-x64, so the .NET
+                  runtime and base class libraries are bundled in the package.
+
+License         : MIT License.
+Source/Homepage : https://github.com/dotnet/runtime
+
+
+================================================================================
+4. NuGet package dependencies (MIT-licensed)
+================================================================================
+
+The following managed dependencies are referenced by iMirror and their
+assemblies are redistributed in the self-contained package. Each is licensed
+under the MIT License (the Bouncy Castle License is an MIT-style license).
+
+  - BouncyCastle.Cryptography  2.5.1
+      License : MIT-style (Bouncy Castle License)
+      Source  : https://github.com/bcgit/bc-csharp
+
+  - NAudio  2.2.1
+      License : MIT
+      Source  : https://github.com/naudio/NAudio
+
+  - WPF-UI  4.3.0
+      License : MIT
+      Source  : https://github.com/lepoco/wpfui
+
+  - Vortice.Direct3D11   3.8.3
+  - Vortice.Direct3D9    3.8.3
+  - Vortice.DXGI         3.8.3
+  - Vortice.DirectX      3.8.3
+  - Vortice.Mathematics  2.1.0
+      License : MIT
+      Source  : https://github.com/amerkoleci/Vortice.Windows
+
+  - SharpGen.Runtime      2.4.2-beta
+  - SharpGen.Runtime.COM  2.4.2-beta
+      License : MIT
+      Source  : https://github.com/SharpGenTools/SharpGenTools
+
+
+--------------------------------------------------------------------------------
+MIT License (applies to the MIT-licensed components above)
+--------------------------------------------------------------------------------
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+(Each MIT-licensed component is © its respective authors. The full, original
+license text for each is available at the corresponding source URL above.)
