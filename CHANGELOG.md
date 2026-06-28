@@ -8,7 +8,9 @@ For detailed release notes, see [GitHub Releases](https://github.com/Balragon/iM
 
 ## [Unreleased] (main branch)
 
-No unreleased changes yet.
+### Fixed
+
+- Reinitialize the WASAPI output after render endpoint changes or playback invalidation, so display-audio endpoint power-cycles can recover without an AirPlay reconnect.
 
 ---
 
