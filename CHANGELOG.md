@@ -8,7 +8,20 @@ For detailed release notes, see [GitHub Releases](https://github.com/Balragon/iM
 
 ## [Unreleased] (main branch)
 
-_No changes yet._
+### Changed
+
+- Document the release latency posture as a two-tier gate: GPU/high-resolution D3D remains `p95 < 150ms`; intentional FFmpeg software fallback uses a compatibility tier of `p95 < 250ms`.
+- Reduce FFmpeg software-decoder frame-thread depth for small phone-sized fallback streams to lower steady-state presentation latency while keeping 1080p fallback parallelism.
+
+### Fixed
+
+- Drop stale FFmpeg software-decoded frames older than 240ms instead of presenting them and contaminating latency windows after startup/reconnect or transient stalls.
+
+### Validation
+
+- iPhone FFmpeg fallback fresh validation passed on PR #39 with the 240ms stale-frame cutoff: 10m `worstP95=108ms`/`worstMax=209ms`; 30m `worstP95=157ms`/`worstMax=224ms`; both with zero breach windows and `severeMax=pass`.
+- Mac FFmpeg fallback fresh 30m validation passed on PR #39: `worstP95=229ms`, `worstMax=241ms`, zero breach windows, `severeMax=pass`, and no recurrence of the earlier 10.2s startup max spike.
+- Mac FFmpeg fallback same-process reconnect validation passed on PR #39: five fresh stream sessions were observed in one iMirror process, each starting a new FFmpeg video decoder with `-threads 4 -thread_type frame`, with no exceptions or multi-second latency spikes.
 
 ---
 

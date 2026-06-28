@@ -397,13 +397,28 @@ public sealed class FfmpegDecoder : IDisposable
 		// mirror stream encodes one slice per frame, so SLICE threading gives no parallelism and
 		// kept FFmpeg pinned to ~1 core. FRAME threading decodes consecutive frames across cores
 		// and does parallelize this stream. It adds ~(threads) frames of pipeline delay (~50ms),
-		// which is negligible against the multi-second queue backlog it removes. 4 ~ physical
-		// cores on the tested i5-1135G7.
+		// which is negligible against the multi-second queue backlog it removes on 1080p-class
+		// streams. Smaller portrait/phone streams do not need that much parallelism; using fewer
+		// frame threads keeps the software fallback below its latency tier without reintroducing
+		// the old 1080p backlog.
+		int decoderThreads = ResolveDecoderThreadCount(_outputWidth, _outputHeight, _targetOutputFps);
 		return "-hide_banner -loglevel error -flags low_delay -probesize 1M -analyzeduration 200000 -avioflags direct -max_delay 0 "
 			+ GetDecoderInputArgument()
-			+ "-threads 4 -thread_type frame -f h264 -i pipe:0 "
+			+ $"-threads {decoderThreads} -thread_type frame -f h264 -i pipe:0 "
 			+ videoFilter
 			+ $"-fps_mode passthrough -f rawvideo -pix_fmt {OutputPixelFormat} pipe:1";
+	}
+
+	internal static int ResolveDecoderThreadCount(int outputWidth, int outputHeight, int targetOutputFps)
+	{
+		long outputPixels = (long)Math.Max(1, outputWidth) * Math.Max(1, outputHeight);
+		int fps = Math.Max(1, targetOutputFps);
+		if (outputPixels <= 1_000_000L && fps <= 60)
+		{
+			return 2;
+		}
+
+		return 4;
 	}
 
 	private string BuildVideoFilterArgument()

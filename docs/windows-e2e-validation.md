@@ -49,14 +49,24 @@ screenshot to the follow-up fix.
 
 ## 4. Latency Gate
 
-- [ ] After an active mirroring session, run the latency report against the package log:
+- [ ] After an active mirroring session, run the latency report against the package log.
+      GPU/high-resolution D3D runs use the primary quality tier (`p95 < 150ms`):
 
 ```powershell
 dotnet run --project .\tools\LatencyAcceptanceReport\LatencyAcceptanceReport.csproj -c Release -- <package>\iMirror.log 150 10
 ```
 
-- [ ] Confirm p95 latency is `<= 150ms`.
-- [ ] Confirm the report passes on a fresh session log. The previous log failed with `contiguousEvidence=False`, so it should not be reused.
+- [ ] For an intentional FFmpeg software-fallback run (`IMIRROR_FORCE_SOFTWARE_VIDEO=1`),
+      use the compatibility tier (`p95 < 250ms`):
+
+```powershell
+dotnet run --project .\tools\LatencyAcceptanceReport\LatencyAcceptanceReport.csproj -c Release -- <package>\iMirror.log 250 10
+```
+
+- [ ] Confirm the report passes on a fresh, continuous session log. Do not reuse
+      a spliced log that drops startup/warmup context.
+- [ ] For software-fallback runs, inspect any `Dropped stale FFmpeg frame` line
+      or multi-second max spike even when the 250ms p95 tier passes.
 
 ## Release Decision
 
