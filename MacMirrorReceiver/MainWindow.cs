@@ -334,6 +334,8 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 
 	private bool _previousNativeWindowStyleCaptured;
 
+	private bool _suppressFullscreenStateChange;
+
 	public MainWindow()
 	{
 		AppLog.Write("MainWindow constructor entered.");
@@ -830,6 +832,22 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 				}
 			}), DispatcherPriority.Background);
 		});
+	}
+
+	private void Window_StateChanged(object? sender, EventArgs e)
+	{
+		if (_suppressFullscreenStateChange || _isFullscreen || base.WindowState != WindowState.Maximized)
+		{
+			return;
+		}
+
+		base.Dispatcher.BeginInvoke(new Action(delegate
+		{
+			if (!_suppressFullscreenStateChange && !_isFullscreen && base.WindowState == WindowState.Maximized)
+			{
+				ToggleFullscreen();
+			}
+		}), DispatcherPriority.Background);
 	}
 
 #if HIGH_RESOLUTION_D3D
@@ -1836,35 +1854,43 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 	private void ExitFullscreenChrome()
 	{
 		IntPtr hwnd = new WindowInteropHelper(this).EnsureHandle();
-		base.WindowState = WindowState.Normal;
-		base.Topmost = _previousTopmost;
-		VideoImage.Stretch = _previousVideoStretch;
-		ExtendsContentIntoTitleBar = _previousExtendsContentIntoTitleBar;
-		WindowChrome.SetWindowChrome(this, _previousWindowChrome);
-		base.WindowStyle = _previousWindowStyle;
-		base.ResizeMode = _previousResizeMode;
-		RestoreNativeWindowStyles(hwnd);
-		if (_previousWindowState == WindowState.Normal && _previousWindowBounds.Width > 0.0 && _previousWindowBounds.Height > 0.0)
+		_suppressFullscreenStateChange = true;
+		try
 		{
-			Left = _previousWindowBounds.Left;
-			Top = _previousWindowBounds.Top;
-			Width = _previousWindowBounds.Width;
-			Height = _previousWindowBounds.Height;
+			base.WindowState = WindowState.Normal;
+			base.Topmost = _previousTopmost;
+			VideoImage.Stretch = _previousVideoStretch;
+			ExtendsContentIntoTitleBar = _previousExtendsContentIntoTitleBar;
+			WindowChrome.SetWindowChrome(this, _previousWindowChrome);
+			base.WindowStyle = _previousWindowStyle;
+			base.ResizeMode = _previousResizeMode;
+			RestoreNativeWindowStyles(hwnd);
+			if (_previousWindowState == WindowState.Normal && _previousWindowBounds.Width > 0.0 && _previousWindowBounds.Height > 0.0)
+			{
+				Left = _previousWindowBounds.Left;
+				Top = _previousWindowBounds.Top;
+				Width = _previousWindowBounds.Width;
+				Height = _previousWindowBounds.Height;
+			}
+			base.WindowState = _previousWindowState;
+			MainTitleBar.Visibility = Visibility.Visible;
+			if (!_previousTopmost)
+			{
+				_ = SetWindowPos(
+					hwnd,
+					HwndNotTopmost,
+					0,
+					0,
+					0,
+					0,
+					SetWindowPosNoMove | SetWindowPosNoSize | SetWindowPosNoActivate | SetWindowPosFrameChanged);
+			}
+			UpdateHighResolutionD3DPresenterLayout();
 		}
-		base.WindowState = _previousWindowState;
-		MainTitleBar.Visibility = Visibility.Visible;
-		if (!_previousTopmost)
+		finally
 		{
-			_ = SetWindowPos(
-				hwnd,
-				HwndNotTopmost,
-				0,
-				0,
-				0,
-				0,
-				SetWindowPosNoMove | SetWindowPosNoSize | SetWindowPosNoActivate | SetWindowPosFrameChanged);
+			_suppressFullscreenStateChange = false;
 		}
-		UpdateHighResolutionD3DPresenterLayout();
 	}
 
 	private void ScheduleFullscreenChromeEnforcement(IntPtr hwnd)

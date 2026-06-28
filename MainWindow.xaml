@@ -15,6 +15,7 @@
         Loaded="Window_Loaded"
         Closing="Window_Closing"
         SizeChanged="Window_SizeChanged"
+        StateChanged="Window_StateChanged"
         KeyDown="Window_KeyDown"
         PreviewKeyDown="Window_KeyDown"
         UseLayoutRounding="True"
