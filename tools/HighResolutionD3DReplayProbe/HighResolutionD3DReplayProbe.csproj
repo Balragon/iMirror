@@ -10,9 +10,6 @@
     <DefineConstants>$(DefineConstants);HIGH_RESOLUTION_D3D</DefineConstants>
   </PropertyGroup>
   <ItemGroup>
-    <PackageReference Include="SharpDX.Direct3D11" Version="4.2.0" />
-    <PackageReference Include="SharpDX.Direct3D9" Version="4.2.0" />
-    <PackageReference Include="SharpDX.DXGI" Version="4.2.0" />
     <PackageReference Include="Vortice.Direct3D11" Version="3.8.3" />
     <PackageReference Include="Vortice.Direct3D9" Version="3.8.3" />
     <PackageReference Include="Vortice.DXGI" Version="3.8.3" />
@@ -20,11 +17,8 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="..\..\MacMirrorReceiver\AppPaths.cs" Link="Product\AppPaths.cs" />
-    <Compile Include="..\..\MacMirrorReceiver.Video\D3DGpuBindingSelector.cs" Link="Product\D3DGpuBindingSelector.cs" />
-    <Compile Include="..\..\MacMirrorReceiver.Video\D3D11VideoFrame.cs" Link="Product\D3D11VideoFrame.cs" />
-    <Compile Include="..\..\MacMirrorReceiver.Video\D3D11VideoProcessorD3DImagePresenter.cs" Link="Product\D3D11VideoProcessorD3DImagePresenter.cs" />
     <Compile Include="..\..\MacMirrorReceiver.Video\HighResolutionD3DInterfaces.cs" Link="Product\HighResolutionD3DInterfaces.cs" />
-    <Compile Include="..\..\MacMirrorReceiver.Video\MediaFoundationD3D11Decoder.cs" Link="Product\MediaFoundationD3D11Decoder.cs" />
+    <Compile Include="..\..\MacMirrorReceiver.Video\MediaFoundationNative.cs" Link="Product\MediaFoundationNative.cs" />
     <Compile Include="..\..\MacMirrorReceiver.Video\VorticeD3D11VideoFrame.cs" Link="Product\VorticeD3D11VideoFrame.cs" />
     <Compile Include="..\..\MacMirrorReceiver.Video\VorticeD3D11VideoProcessorD3DImagePresenter.cs" Link="Product\VorticeD3D11VideoProcessorD3DImagePresenter.cs" />
     <Compile Include="..\..\MacMirrorReceiver.Video\VorticeMediaFoundationD3D11Decoder.cs" Link="Product\VorticeMediaFoundationD3D11Decoder.cs" />

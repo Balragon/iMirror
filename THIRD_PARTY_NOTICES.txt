@@ -118,14 +118,6 @@ under the MIT License (the Bouncy Castle License is an MIT-style license).
       License : MIT
       Source  : https://github.com/lepoco/wpfui
 
-  - SharpDX.Direct3D11  4.2.0
-  - SharpDX.Direct3D9    4.2.0
-  - SharpDX.DXGI         4.2.0
-      License : MIT
-      Source  : https://github.com/sharpdx/SharpDX
-      Note    : SharpDX is unmaintained (archived). It is retained during the
-                v0.7 feature-flag transition for A/B validation against Vortice.
-
   - Vortice.Direct3D11   3.8.3
   - Vortice.Direct3D9    3.8.3
   - Vortice.DXGI         3.8.3

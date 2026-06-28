@@ -14,6 +14,10 @@ Features planned for v0.6 and beyond. See [`docs/specs/v05-plus-roadmap.md`](doc
 
 - Auto-update now fails closed: `DownloadSetupAsync` aborts the install when the release SHA-256 cannot be verified (missing, unreachable, or unparseable `SHA256SUMS`, or a hash mismatch) instead of running the unsigned setup unverified. Verified end-to-end against the real `v0.5.1` release plus four negative cases.
 
+### Changed
+
+- Made Vortice.Windows the default and only high-resolution D3D GPU binding after Gate B A/B parity; removed the SharpDX packages and `IMIRROR_GPU_BINDING` feature flag.
+
 ### Fixed
 
 - AirPlay receiver startup no longer wedges on a partial mDNS start: the mDNS socket is published only after bind+join succeed, and partial state is cleaned up, so a transiently held UDP 5353 can be retried.
@@ -28,6 +32,7 @@ Features planned for v0.6 and beyond. See [`docs/specs/v05-plus-roadmap.md`](doc
 ### Validation
 
 - B3 real-device gate: GPU path PASS (Mac 2h `worstP95=91ms`; iPhone smoke/reconnect), auto-update fail-closed PASS, FFmpeg fallback functional but latency-failing (tracked in #32).
+- v0.7 Vortice Gate B A/B: Mac same-session SharpDX 30m PASS (`worstP95=38ms`, `worstMax=70ms`) vs Vortice 30m PASS (`worstP95=63ms`, `worstMax=68ms`); iPhone Vortice GPU, reconnect, probes, and software fallback checks passed. Monitor power-cycle audio loss is tracked separately as binding-independent #35.
 
 ---
 

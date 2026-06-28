@@ -2287,21 +2287,9 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 	{
 		try
 		{
-			D3DGpuBinding binding = D3DGpuBindingSelector.Current;
-			IHighResolutionD3DPresenter presenter;
-			IHighResolutionD3DDecoder decoder;
-			if (binding == D3DGpuBinding.Vortice)
-			{
-				var vorticePresenter = new VorticeD3D11SwapChainVideoPresenter();
-				presenter = vorticePresenter;
-				decoder = new VorticeMediaFoundationD3D11Decoder(config.Width, config.Height, config.Fps, vorticePresenter.Device);
-			}
-			else
-			{
-				var sharpDxPresenter = new D3D11SwapChainVideoPresenter();
-				presenter = sharpDxPresenter;
-				decoder = new MediaFoundationD3D11Decoder(config.Width, config.Height, config.Fps, sharpDxPresenter.Device);
-			}
+			var vorticePresenter = new VorticeD3D11SwapChainVideoPresenter();
+			IHighResolutionD3DPresenter presenter = vorticePresenter;
+			IHighResolutionD3DDecoder decoder = new VorticeMediaFoundationD3D11Decoder(config.Width, config.Height, config.Fps, vorticePresenter.Device);
 
 			decoder.DumpH264Enabled = StartupReceiverSettings.Effective.DumpH264;
 			_highResolutionD3DPresenter = presenter;
@@ -2346,7 +2334,7 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 			decoder.FrameDecoded += QueueD3DFrameForPresentation;
 			decoder.Start();
 			_decoderStatus = "Media Foundation D3D11 decoder started";
-			AppLog.Write($"High-resolution D3D path active for {reason}: {config.Width}x{config.Height}@{config.Fps}, gpuBinding={D3DGpuBindingSelector.CurrentName}, d3d11MultithreadProtected={presenter.IsMultithreadProtected}.");
+			AppLog.Write($"High-resolution D3D path active for {reason}: {config.Width}x{config.Height}@{config.Fps}, gpuBinding=Vortice, d3d11MultithreadProtected={presenter.IsMultithreadProtected}.");
 			return true;
 		}
 		catch (Exception ex)

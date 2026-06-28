@@ -16,8 +16,8 @@ the video pipeline.
 
 ### High-Resolution Render Path
 
-- Pipeline: `D3D11SwapChainVideoPresenter : HwndHost`.
-- File: `MacMirrorReceiver.Video/D3D11SwapChainVideoPresenter.cs`.
+- Pipeline: `VorticeD3D11SwapChainVideoPresenter : HwndHost`.
+- File: `MacMirrorReceiver.Video/VorticeD3D11SwapChainVideoPresenter.cs`.
 - Enabled by the `HIGH_RESOLUTION_D3D` compile constant, which is always defined.
 - Activates for Quality mode with streams above 1080p.
 - `HwndHost` is an airspace surface: WPF cannot reliably composite over it.
@@ -53,7 +53,7 @@ video.
 
 Cosmetic UI work must never touch FFmpeg decode, TCP receive, frame timing,
 decoder fallback, D3D presenter behavior, or
-`MacMirrorReceiver.Video/D3D11SwapChainVideoPresenter.cs`.
+`MacMirrorReceiver.Video/VorticeD3D11SwapChainVideoPresenter.cs`.
 
 Cosmetic UI work must never modify these `MainWindow.cs` symbols:
 
