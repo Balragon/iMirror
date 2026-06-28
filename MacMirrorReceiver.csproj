@@ -61,9 +61,6 @@
     <Content Include="ThirdParty\playfair\sap_hash.c" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
   <ItemGroup>
-    <PackageReference Include="SharpDX.Direct3D11" Version="4.2.0" />
-    <PackageReference Include="SharpDX.Direct3D9" Version="4.2.0" />
-    <PackageReference Include="SharpDX.DXGI" Version="4.2.0" />
     <PackageReference Include="Vortice.Direct3D11" Version="3.8.3" />
     <PackageReference Include="Vortice.Direct3D9" Version="3.8.3" />
     <PackageReference Include="Vortice.DXGI" Version="3.8.3" />

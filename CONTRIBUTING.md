@@ -33,7 +33,7 @@ Additional tests, edge-case coverage, or real-device validation reports are alwa
 
 - **Platform changes:** iMirror is Windows-only by design. Abstraction layers for cross-platform support are out of scope.
 - **New rendering backends:** GPU code is high-risk and high-maintenance. Discuss major rendering changes in an issue first.
-- **Dependency upgrades:** SharpDX, Media Foundation, WASAPI are core to the GPU path. Changes require real-device re-validation.
+- **Dependency upgrades:** Vortice.Windows, Media Foundation, and WASAPI are core to the GPU/audio path. Changes require real-device re-validation.
 - **Protocol extensions:** new AirPlay modes should be discussed in an issue before PR, to align with roadmap and confirm GPU/latency impact.
 
 ## Getting Started
