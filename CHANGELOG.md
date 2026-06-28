@@ -8,9 +8,20 @@ For detailed release notes, see [GitHub Releases](https://github.com/Balragon/iM
 
 ## [Unreleased] (main branch)
 
+_No changes yet._
+
+---
+
+## [0.7.1] - 2026-06-28
+
 ### Fixed
 
 - Reinitialize the WASAPI output after render endpoint changes or playback invalidation, so display-audio endpoint power-cycles can recover without an AirPlay reconnect.
+
+### Validation
+
+- GitHub CI passed on PR #38, and local `dotnet build -c Release` plus `dotnet test` passed after merge.
+- Real-device display-audio monitor power-cycle validation passed: WASAPI output restarted after endpoint invalidation/default endpoint changes, and audio recovered without an AirPlay reconnect. See #35.
 
 ---
 
