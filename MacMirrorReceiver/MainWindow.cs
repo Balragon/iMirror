@@ -16,6 +16,7 @@ using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Interop;
+using System.Windows.Shell;
 using System.Windows.Threading;
 using MacMirrorReceiver.Audio;
 using MacMirrorReceiver.Models;
@@ -283,7 +284,13 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 
 	private WindowStyle _previousWindowStyle;
 
+	private ResizeMode _previousResizeMode;
+
 	private WindowState _previousWindowState;
+
+	private bool _previousTopmost;
+
+	private WindowChrome? _previousWindowChrome;
 
 	public MainWindow()
 	{
@@ -1724,21 +1731,20 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 		if (!_isFullscreen)
 		{
 			_previousWindowStyle = base.WindowStyle;
+			_previousResizeMode = base.ResizeMode;
 			_previousWindowState = base.WindowState;
-			base.WindowStyle = WindowStyle.None;
-			base.WindowState = WindowState.Maximized;
+			_previousTopmost = base.Topmost;
+			_previousWindowChrome = WindowChrome.GetWindowChrome(this);
+			EnterFullscreenChrome();
 			_isFullscreen = true;
-			MainTitleBar.Visibility = Visibility.Collapsed;
 			FullscreenButton.Content = "Windowed";
 			CompactFullscreenButton.Content = "W";
 			CompactFullscreenButton.ToolTip = "Exit fullscreen";
 		}
 		else
 		{
-			base.WindowStyle = _previousWindowStyle;
-			base.WindowState = _previousWindowState;
+			ExitFullscreenChrome();
 			_isFullscreen = false;
-			MainTitleBar.Visibility = Visibility.Visible;
 			FullscreenButton.Content = "Fullscreen";
 			CompactFullscreenButton.Content = "F";
 			CompactFullscreenButton.ToolTip = "Fullscreen";
@@ -1747,6 +1753,35 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 		{
 			RestartDecoderIfRenderWidthChanged("display mode changed");
 		}), DispatcherPriority.Background);
+	}
+
+	private void EnterFullscreenChrome()
+	{
+		MainTitleBar.Visibility = Visibility.Collapsed;
+		base.WindowState = WindowState.Normal;
+		base.WindowStyle = WindowStyle.None;
+		base.ResizeMode = ResizeMode.NoResize;
+		WindowChrome.SetWindowChrome(this, new WindowChrome
+		{
+			CaptionHeight = 0,
+			ResizeBorderThickness = new Thickness(0),
+			GlassFrameThickness = new Thickness(0),
+			CornerRadius = new CornerRadius(0),
+			UseAeroCaptionButtons = false
+		});
+		base.Topmost = true;
+		base.WindowState = WindowState.Maximized;
+	}
+
+	private void ExitFullscreenChrome()
+	{
+		base.WindowState = WindowState.Normal;
+		base.Topmost = _previousTopmost;
+		WindowChrome.SetWindowChrome(this, _previousWindowChrome);
+		base.WindowStyle = _previousWindowStyle;
+		base.ResizeMode = _previousResizeMode;
+		base.WindowState = _previousWindowState;
+		MainTitleBar.Visibility = Visibility.Visible;
 	}
 
 	private void RenderModeComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
