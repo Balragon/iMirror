@@ -372,27 +372,27 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 	private void BindEmptyStateDiagnosticStatus(PreflightReport report)
 	{
 		SolidColorBrush brush = (SolidColorBrush)FindResource("WarningBrush");
-		string text = "Checking network…";
+		string text = "Checking network...";
 
 		if (report.Worst == PreflightStatus.Ok)
 		{
 			brush = (SolidColorBrush)FindResource("SuccessBrush");
 			text = "Ready on this network";
 		}
-		else if (HasDiagnosticIssue(report, "ffmpeg"))
+		else if (FindDiagnosticIssue(report, "ffmpeg") is PreflightCheck ffmpeg)
 		{
 			brush = (SolidColorBrush)FindResource("DangerBrush");
-			text = "FFmpeg not found — video decode unavailable";
+			text = ffmpeg.Message;
 		}
-		else if (HasDiagnosticIssue(report, "listeners", PreflightStatus.Blocked))
+		else if (FindDiagnosticIssue(report, "listeners") is PreflightCheck listeners)
 		{
 			brush = (SolidColorBrush)FindResource("WarningBrush");
-			text = "Firewall may be blocking AirPlay — check Windows Firewall";
+			text = listeners.Message;
 		}
-		else if (HasDiagnosticIssue(report, "network"))
+		else if (FindDiagnosticIssue(report, "network") is PreflightCheck network)
 		{
 			brush = (SolidColorBrush)FindResource("WarningBrush");
-			text = "No suitable network interface found";
+			text = network.Message;
 		}
 
 		DiagStatusDot.Fill = brush;
@@ -402,7 +402,14 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 	private void SetEmptyStateDiagnosticRechecking()
 	{
 		DiagStatusDot.Fill = (SolidColorBrush)FindResource("WarningBrush");
-		DiagStatusText.Text = "Re-checking…";
+		DiagStatusText.Text = "Re-checking...";
+	}
+
+	private static PreflightCheck? FindDiagnosticIssue(PreflightReport report, string id)
+	{
+		return report.Checks.FirstOrDefault(check =>
+			string.Equals(check.Id, id, StringComparison.OrdinalIgnoreCase) &&
+			check.Status != PreflightStatus.Ok);
 	}
 
 	private static bool HasDiagnosticIssue(PreflightReport report, string id)
