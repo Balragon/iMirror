@@ -49,6 +49,8 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 
 	private const long HighResolutionMaxLiveFrameAgeMilliseconds = 200;
 
+	private const long SoftwareMaxLiveFrameAgeMilliseconds = 240;
+
 	private const int MaxAutoReconnectAttempts = 5;
 
 	// Keep the initial SPS/PPS/IDR burst while the decoder/render sink spins up.
@@ -168,6 +170,10 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 	private long _renderedFrames;
 
 	private long _renderDroppedFrames;
+
+	private long _staleSoftwareFramesDropped;
+
+	private long _lastStaleSoftwareFrameDropLogTick;
 
 	private long _latestReceiveToRenderMs;
 
@@ -1327,12 +1333,14 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 				_videoBytes = 0L;
 				_cursorMessages = 0L;
 			_decodedFrames = 0L;
-		_renderedFrames = 0L;
-		_renderDroppedFrames = 0L;
-		_latestReceiveToRenderMs = 0L;
-		_latestDecodeToRenderMs = 0L;
-		_receiveToPresentLatencyWindow.Reset();
-		_lastRenderLogTick = 0L;
+			_renderedFrames = 0L;
+			_renderDroppedFrames = 0L;
+			_staleSoftwareFramesDropped = 0L;
+			_lastStaleSoftwareFrameDropLogTick = 0L;
+			_latestReceiveToRenderMs = 0L;
+			_latestDecodeToRenderMs = 0L;
+			_receiveToPresentLatencyWindow.Reset();
+			_lastRenderLogTick = 0L;
 			_lastVideoHealthLogTick = 0L;
 			_lastVideoHealthPackets = 0L;
 			_lastVideoHealthDecodedFrames = 0L;
@@ -2632,6 +2640,19 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 		long renderStartTick = Stopwatch.GetTimestamp();
 		try
 		{
+			if (frame.ReceivedTick > 0)
+			{
+				long ageMs = ElapsedMilliseconds(frame.ReceivedTick, renderStartTick);
+				if (ageMs > SoftwareMaxLiveFrameAgeMilliseconds)
+				{
+					Interlocked.Increment(ref _renderDroppedFrames);
+					long staleDropped = Interlocked.Increment(ref _staleSoftwareFramesDropped);
+					LogStaleSoftwareFrameDropThrottled(ageMs, staleDropped);
+					QueueDiagnosticsUpdate();
+					return;
+				}
+			}
+
 			PresentFrameToActiveRenderer(frame);
 			long renderDoneTick = Stopwatch.GetTimestamp();
 			long renderedFrames = Interlocked.Increment(ref _renderedFrames);
@@ -3289,6 +3310,20 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 			$"decoderQueue={ActiveQueuedInputPackets} packets/{(double)ActiveQueuedInputBytes / 1024.0:N1}KB.");
 	}
 #endif
+
+	private void LogStaleSoftwareFrameDropThrottled(long ageMs, long staleDropped)
+	{
+		long tickCount = Environment.TickCount64;
+		long previous = Interlocked.Read(ref _lastStaleSoftwareFrameDropLogTick);
+		if (tickCount - previous < 1000)
+		{
+			return;
+		}
+		Interlocked.Exchange(ref _lastStaleSoftwareFrameDropLogTick, tickCount);
+		AppLog.Write(
+			$"Dropped stale FFmpeg frame: age={ageMs}ms, staleDropped={staleDropped:N0}, " +
+			$"decoderQueue={ActiveQueuedInputPackets} packets/{(double)ActiveQueuedInputBytes / 1024.0:N1}KB.");
+	}
 
 	private static string FormatLatencyWindow(LatencyWindowSnapshot snapshot)
 	{

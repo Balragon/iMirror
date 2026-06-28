@@ -8,7 +8,14 @@ For detailed release notes, see [GitHub Releases](https://github.com/Balragon/iM
 
 ## [Unreleased] (main branch)
 
-_No changes yet._
+### Changed
+
+- Document the release latency posture as a two-tier gate: GPU/high-resolution D3D remains `p95 < 150ms`; intentional FFmpeg software fallback uses a compatibility tier of `p95 < 250ms`.
+- Reduce FFmpeg software-decoder frame-thread depth for small phone-sized fallback streams to lower steady-state presentation latency while keeping 1080p fallback parallelism.
+
+### Fixed
+
+- Drop stale FFmpeg software-decoded frames older than 240ms instead of presenting them and contaminating latency windows after startup/reconnect or transient stalls.
 
 ---
 
