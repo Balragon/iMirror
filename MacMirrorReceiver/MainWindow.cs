@@ -560,7 +560,10 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 
 			if (result.Status == FirewallRuleInstallStatus.Success)
 			{
-				SetStatus("Windows Firewall now allows iMirror. Reconnect mirroring if audio does not start.");
+				ClearAudioFirewallWarning(
+					"Windows Firewall allow rule completed; clearing audio firewall warning.",
+					"waiting for audio after firewall allow");
+				SetStatus("Windows Firewall now allows iMirror. Reconnect only if audio does not resume.");
 				await Task.Delay(500);
 				await RecheckReadinessAsync();
 				return;
@@ -1119,25 +1122,30 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 		}), DispatcherPriority.Background);
 	}
 
-	private void ClearAudioFirewallWarning()
+	private void ClearAudioFirewallWarning(string logMessage = "AirPlay audio RTP reached the decoder; clearing firewall warning.", string? replacementAudioStatus = null)
 	{
-		bool wasActive = false;
+		bool changed = false;
 		lock (_audioGate)
 		{
 			CancelAudioRtpWatchdogLocked();
 			if (_audioFirewallWarningActive)
 			{
 				_audioFirewallWarningActive = false;
-				wasActive = true;
+				changed = true;
+			}
+			if (replacementAudioStatus != null && _audioStatus == AudioFirewallWarningMessage)
+			{
+				_audioStatus = replacementAudioStatus;
+				changed = true;
 			}
 		}
 
-		if (!wasActive)
+		if (!changed)
 		{
 			return;
 		}
 
-		AppLog.Write("AirPlay audio RTP reached the decoder; clearing firewall warning.");
+		AppLog.Write(logMessage);
 		base.Dispatcher.BeginInvoke(new Action(delegate
 		{
 			UpdateReceiverChrome();
