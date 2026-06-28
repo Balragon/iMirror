@@ -56,6 +56,10 @@ windows rather than a decoder process stall:
   - 10m: `worstP95=108ms`, `worstMax=209ms`, breach windows `0`.
   - 30m: `worstP95=157ms`, `worstMax=224ms`, breach windows `0`,
     `severeMax=pass`, `contiguousEvidence=True`.
+- Fresh Mac FFmpeg validation after the 240ms cutoff passed the 30m fallback
+  tier on 2026-06-28: `worstP95=229ms`, `worstMax=241ms`, breach windows `0`,
+  `severeMax=pass`, `contiguousEvidence=True`. The earlier 10.2s startup
+  max spike did not reproduce.
 
 ## Validation Required Before Closing #32
 
@@ -67,7 +71,7 @@ $env:IMIRROR_FORCE_SOFTWARE_VIDEO = "1"
 
 Then capture real-device FFmpeg fallback evidence:
 
-1. Mac sender, at least 30 minutes.
+1. Mac sender, at least 30 minutes. Done on 2026-06-28 for PR #39.
 2. iPhone sender, at least 30 minutes. Done on 2026-06-28 for PR #39.
 3. At least three connect/disconnect/reconnect cycles in the same process if the
    run is being used to close the reconnect/stale-frame portion of #32.

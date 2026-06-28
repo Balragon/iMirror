@@ -20,6 +20,7 @@ For detailed release notes, see [GitHub Releases](https://github.com/Balragon/iM
 ### Validation
 
 - iPhone FFmpeg fallback fresh validation passed on PR #39 with the 240ms stale-frame cutoff: 10m `worstP95=108ms`/`worstMax=209ms`; 30m `worstP95=157ms`/`worstMax=224ms`; both with zero breach windows and `severeMax=pass`.
+- Mac FFmpeg fallback fresh 30m validation passed on PR #39: `worstP95=229ms`, `worstMax=241ms`, zero breach windows, `severeMax=pass`, and no recurrence of the earlier 10.2s startup max spike.
 
 ---
 
