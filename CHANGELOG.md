@@ -114,7 +114,7 @@ _No changes yet._
 
 ---
 
-## [0.3.0] — 2024-06-26
+## [0.3.0] - 2026-06-26
 
 ### Added
 
@@ -137,10 +137,19 @@ _No changes yet._
 ### Notes
 
 - v0.3 is the last version targeting `net8.0-windows`. v0.5.0 migrated iMirror to `net10.0-windows` before .NET 8 EOL (2026-11-10). See [Issue #17](https://github.com/Balragon/iMirror/issues/17).
+- 0.3.0 was not published as a standalone GitHub release; these changes shipped as part of the [v0.4.0](https://github.com/Balragon/iMirror/releases/tag/v0.4.0) installer release.
 
 ---
 
-## [0.2.1] — 2024-03-15
+## [0.2.2] – [0.2.6] - 2026-06-24 to 2026-06-25
+
+### Changed
+
+- Incremental packaging and fix iterations on the 0.2.x preview line, tagged for distribution but not individually documented here. See the per-tag [GitHub Releases](https://github.com/Balragon/iMirror/releases) for details.
+
+---
+
+## [0.2.1] - 2026-06-24
 
 ### Fixed
 
@@ -153,7 +162,7 @@ _No changes yet._
 
 ---
 
-## [0.2.0] — 2024-02-01
+## [0.2.0] - 2026-06-24
 
 ### Added
 
@@ -171,7 +180,7 @@ _No changes yet._
 
 ---
 
-## [0.1.0] — 2023-12-10
+## [0.1.0] - 2026-06-16
 
 ### Added
 
@@ -205,7 +214,7 @@ See [`docs/specs/v05-plus-roadmap.md`](docs/specs/v05-plus-roadmap.md):
 ## How to Report Issues
 
 - **Bug reports:** use [GitHub Issues](https://github.com/Balragon/iMirror/issues). Include Windows version, GPU, device info, and reproduction steps.
-- **Security:** see [SECURITY.md](SECURITY.md) (when available) or contact maintainers privately.
+- **Security:** see [SECURITY.md](SECURITY.md) for the private vulnerability reporting process.
 
 ---
 
