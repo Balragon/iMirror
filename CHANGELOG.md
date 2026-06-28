@@ -8,7 +8,11 @@ For detailed release notes, see [GitHub Releases](https://github.com/Balragon/iM
 
 ## [Unreleased] (main branch)
 
-Features planned for v0.6 and beyond. See [`docs/specs/v05-plus-roadmap.md`](docs/specs/v05-plus-roadmap.md).
+No unreleased changes yet.
+
+---
+
+## [0.7.0] - 2026-06-28
 
 ### Security
 
@@ -172,11 +176,11 @@ See [`docs/specs/v05-plus-roadmap.md`](docs/specs/v05-plus-roadmap.md):
 - **Validation:** CI restore/build/test + real-hardware GPU Gate B.
 - **Deadline:** completed before 2026-11-10 (net8.0 EOL).
 
-### v0.7 — SharpDX → Vortice.Windows (GPU Modernization)
+### v0.7 - Vortice.Windows GPU Modernization (completed in 0.7.0)
 
-- Swap deprecated SharpDX for actively-maintained Vortice.Windows (1:1 API for D3D11/DXGI/D3D9).
-- Separate from v0.5 to isolate GPU-regression risk from runtime upgrade.
-- Requires v0.5 soak-validated baseline.
+- Replaced deprecated SharpDX with actively-maintained Vortice.Windows for D3D11/DXGI/D3D9.
+- Vortice.Windows is now the default and only high-resolution D3D GPU binding; FFmpeg remains the software fallback path.
+- Completed after Gate B A/B validation against the v0.5 soak-validated SharpDX baseline.
 
 ### Later (Deferred)
 
