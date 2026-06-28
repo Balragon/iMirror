@@ -62,7 +62,7 @@ internal static class Program
 			out bool isMultithreadProtected);
 		using (decoder)
 		{
-			Console.WriteLine("gpuBinding=" + D3DGpuBindingSelector.CurrentName);
+			Console.WriteLine("gpuBinding=Vortice");
 			Console.WriteLine("d3d11MultithreadProtected=" + isMultithreadProtected);
 			decoder.StatusChanged += message => Console.WriteLine("status: " + message);
 			decoder.FrameDecoded += frame =>
@@ -149,20 +149,11 @@ internal static class Program
 		out Action<IHighResolutionD3DFrame> presentFrame,
 		out bool isMultithreadProtected)
 	{
-		if (D3DGpuBindingSelector.Current == D3DGpuBinding.Vortice)
-		{
-			var presenter = new VorticeD3D11VideoProcessorD3DImagePresenter(windowHandle);
-			decoder = new VorticeMediaFoundationD3D11Decoder(geometry.Width, geometry.Height, geometry.Fps, presenter.Device);
-			presentFrame = presenter.PresentFrame;
-			isMultithreadProtected = presenter.IsMultithreadProtected;
-			return presenter;
-		}
-
-		var sharpDxPresenter = new D3D11VideoProcessorD3DImagePresenter(windowHandle);
-		decoder = new MediaFoundationD3D11Decoder(geometry.Width, geometry.Height, geometry.Fps, sharpDxPresenter.Device);
-		presentFrame = sharpDxPresenter.PresentFrame;
-		isMultithreadProtected = sharpDxPresenter.IsMultithreadProtected;
-		return sharpDxPresenter;
+		var presenter = new VorticeD3D11VideoProcessorD3DImagePresenter(windowHandle);
+		decoder = new VorticeMediaFoundationD3D11Decoder(geometry.Width, geometry.Height, geometry.Fps, presenter.Device);
+		presentFrame = presenter.PresentFrame;
+		isMultithreadProtected = presenter.IsMultithreadProtected;
+		return presenter;
 	}
 
 	private static void WaitForReplayToSettle(

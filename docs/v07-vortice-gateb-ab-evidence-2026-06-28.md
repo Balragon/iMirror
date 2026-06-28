@@ -10,11 +10,11 @@ Local evidence root: `C:\Users\User\Documents\Codex\2026-06-27\ha\outputs\v07-vo
 
 ## Verdict
 
-Vortice is not a clean default-flip PASS yet.
+Vortice Gate B A/B is a default-flip PASS.
 
-The Vortice GPU path passed the measured Mac/iPhone latency, reconnect, GPU probe, and software fallback checks collected in this run. However, the monitor power-cycle/front-buffer exercise exposed a product-level audio recovery caveat: after the monitor was powered off/on, video and incoming audio RTP continued, but audible output was lost until the AirPlay session was reconnected. Reconnect restored audio without restarting the app.
+The Vortice GPU path passed the measured Mac/iPhone latency, reconnect, GPU probe, and software fallback checks collected in this run. A follow-up same-session Mac A/B removed the last latency caveat: SharpDX 30m and Vortice 30m both passed on the same sender, resolution, and content.
 
-Keep `IMIRROR_GPU_BINDING=vortice` behind the feature flag and hold the default flip until the monitor power-cycle audio behavior is classified against the SharpDX baseline or fixed. Tracked as GitHub issue #35.
+The monitor power-cycle/front-buffer exercise exposed a product-level audio recovery caveat: after the monitor was powered off/on while audio was routed through display audio, video and incoming audio RTP continued, but audible output was lost until the AirPlay session was reconnected. The same behavior was then reproduced on the SharpDX baseline, so it is binding-independent and tracked separately as GitHub issue #35. It is not a Vortice default-flip blocker.
 
 ## Build and Unit Evidence
 
@@ -32,6 +32,24 @@ Baseline reused from `docs\b3-hardening-evidence-2026-06-27.md` and raw B3 logs.
 | iPhone GPU 10m | SharpDX | `iphone-gpu-10m-20260627-200509.log` | PASS: `worstP95=70ms`, `worstMax=96ms`, `contiguousEvidence=True` |
 
 Both baseline logs include `gpuBinding=SharpDX`.
+
+## Mac Same-Session A/B Follow-Up
+
+Evidence:
+
+- `mac-sameday-sharpdx-30m-20260628.log`
+- `mac-sameday-sharpdx-30m-latency-report-20260628.log`
+- `mac-sameday-vortice-30m-20260628.log`
+- `mac-sameday-vortice-30m-latency-report-20260628.log`
+
+Result: PASS for Vortice parity on the Mac sender.
+
+| Binding | Stream | Evidence duration | Worst p95 | Worst max | Result |
+| --- | --- | --- | --- | --- | --- |
+| SharpDX | `2560x1440 @ 30` | `00:30:00` | `38ms` | `70ms` | PASS |
+| Vortice | `2560x1440 @ 30` | `00:30:50` | `63ms` | `68ms` | PASS |
+
+Both runs passed duration, p95, severeMax, corruption, crash, video/audio liveness, keyframe starvation, contiguous evidence, and high-resolution D3D checks. Process counters were comparable at the end of each run: SharpDX handles `1050`, working set `514.0MB`, private memory `420.5MB`; Vortice handles `1055`, working set `513.6MB`, private memory `423.4MB`.
 
 ## Vortice GPU Probes
 
@@ -123,8 +141,9 @@ Evidence:
 - `front-buffer-vortice-markers-20260628.log`
 - `audio-muted-after-monitor-power-20260628.log`
 - `audio-recovery-after-reconnect-20260628.log`
+- `sharpdx-monitor-cycle-audio-stuck-confirmed-20260628.log`
 
-Result: HOLD.
+Result: binding-independent product issue, decoupled from the Vortice default flip.
 
 During the monitor power-cycle check, explicit `D3DImage front buffer became unavailable` / `D3DImage front buffer restored` markers were not observed. Video continued producing health and latency lines, but the user reported audible output was gone after the monitor was turned off/on.
 
@@ -140,7 +159,7 @@ After AirPlay disconnect/reconnect, audio recovered without restarting iMirror:
 - `dropped` / `syncDropped` stayed near `1-2`.
 - The user confirmed audio was audible again after reconnect.
 
-This appears to be an audio endpoint/reinitialization issue triggered by monitor power state or output routing, not a Vortice GPU decode/render failure. It still blocks a clean default-flip verdict until compared against SharpDX or fixed.
+The same monitor power-cycle behavior was reproduced on the SharpDX baseline: audio frames stopped advancing while `dropped` / `syncDropped` climbed, incoming audio RTP continued, and AirPlay reconnect restored audio without restarting the app. This is an audio endpoint/reinitialization issue triggered by monitor power state or output routing, not a Vortice GPU decode/render failure.
 
 ## Software Fallback
 
@@ -177,9 +196,24 @@ Result: PASS for functional fallback unaffected by the Vortice flag.
 ## Decision
 
 - Vortice GPU path: measured PASS on Mac and iPhone.
+- Mac same-session A/B: PASS; Vortice remained inside the 150ms gate and comparable to SharpDX.
 - Vortice probes: PASS.
 - Vortice reconnect: PASS on Mac and iPhone.
 - Software fallback under the Vortice flag: functional PASS.
-- Front-buffer / monitor power-cycle: not a clean PASS because audio output did not recover until reconnect.
+- Front-buffer / monitor power-cycle: reproduced on SharpDX and Vortice, tracked separately as binding-independent #35.
 
-Action: hold the default flip, keep the Vortice feature flag, and track the monitor power-cycle audio recovery behavior. The next check should either prove the same behavior exists on SharpDX baseline or fix endpoint-change/WASAPI reinitialization before removing SharpDX.
+Action: proceed with the default-flip cleanup. Remove SharpDX package references, remove the `IMIRROR_GPU_BINDING` selector wiring, and make Vortice the only high-resolution D3D binding. Keep #35 as an independent WASAPI/display-audio endpoint recovery bug.
+
+## Default-Flip Cleanup Verification
+
+Branch: `codex/v07-vortice-default-flip-cleanup`
+
+- `dotnet build iMirror.sln -c Release`: PASS, 0 warnings / 0 errors.
+- `dotnet test MacMirrorReceiver.Tests\MacMirrorReceiver.Tests.csproj -c Release --no-build`: PASS, 58 passed.
+- Publish with local .NET 10 SDK: PASS, package `artifacts\v07-vortice-default-flip-cleanup\package\iMirror-v0.7-default-flip-win-x64`.
+- Package check: no `SharpDX*` DLLs; Vortice DLLs present.
+- Startup smoke: published `iMirror.exe` constructed and was stopped cleanly.
+- Cleanup probes:
+  - `probe-d3d-shared-handle-default-vortice-cleanup-20260628.log`: PASS, `gpuBinding=Vortice`.
+  - `probe-d3d-video-processor-default-vortice-cleanup-20260628.log`: PASS, `gpuBinding=Vortice`.
+  - `probe-highres-replay-default-vortice-cleanup-20260628.log`: PASS, 120 decoded / 120 presented.

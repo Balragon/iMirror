@@ -66,7 +66,7 @@ public sealed class VideoEngineGateTests
 	[Fact]
 	public void IsCompatibleNv12OutputSize_AcceptsExactPortraitSize()
 	{
-		bool result = MediaFoundationD3D11Decoder.IsCompatibleNv12OutputSize(
+		bool result = VorticeMediaFoundationD3D11Decoder.IsCompatibleNv12OutputSize(
 			expectedWidth: 666,
 			expectedHeight: 1440,
 			actualWidth: 666,
@@ -78,7 +78,7 @@ public sealed class VideoEngineGateTests
 	[Fact]
 	public void IsCompatibleNv12OutputSize_AcceptsMacroblockPaddedPortraitWidth()
 	{
-		bool result = MediaFoundationD3D11Decoder.IsCompatibleNv12OutputSize(
+		bool result = VorticeMediaFoundationD3D11Decoder.IsCompatibleNv12OutputSize(
 			expectedWidth: 666,
 			expectedHeight: 1440,
 			actualWidth: 672,
@@ -90,7 +90,7 @@ public sealed class VideoEngineGateTests
 	[Fact]
 	public void IsCompatibleNv12OutputSize_RejectsUnexpectedGeometry()
 	{
-		bool result = MediaFoundationD3D11Decoder.IsCompatibleNv12OutputSize(
+		bool result = VorticeMediaFoundationD3D11Decoder.IsCompatibleNv12OutputSize(
 			expectedWidth: 666,
 			expectedHeight: 1440,
 			actualWidth: 704,

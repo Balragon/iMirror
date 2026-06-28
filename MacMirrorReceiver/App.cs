@@ -1,9 +1,6 @@
 using System;
 using System.CodeDom.Compiler;
 using System.Diagnostics;
-using System.IO;
-using System.Reflection;
-using System.Runtime.Loader;
 using System.Threading;
 using System.Windows;
 using System.Windows.Interop;
@@ -24,7 +21,6 @@ public class App : Application
 	private App(Mutex? applicationMutex)
 	{
 		_applicationMutex = applicationMutex;
-		InstallSharpDxAssemblyResolver();
 		AppLog.Write("App constructed.");
 		Resources.MergedDictionaries.Add(new Wpf.Ui.Markup.ThemesDictionary
 		{
@@ -36,29 +32,6 @@ public class App : Application
 		{
 			AppLog.Write("Unhandled domain exception: " + args.ExceptionObject);
 		};
-	}
-
-	private static void InstallSharpDxAssemblyResolver()
-	{
-#if HIGH_RESOLUTION_D3D
-		AssemblyLoadContext.Default.Resolving += delegate(AssemblyLoadContext context, AssemblyName assemblyName)
-		{
-			if (assemblyName.Name?.StartsWith("SharpDX", StringComparison.OrdinalIgnoreCase) != true)
-			{
-				return null;
-			}
-
-			string assemblyPath = Path.Combine(AppContext.BaseDirectory, assemblyName.Name + ".dll");
-			if (!File.Exists(assemblyPath))
-			{
-				AppLog.Write("SharpDX assembly resolve failed; file not found: " + assemblyPath);
-				return null;
-			}
-
-			AppLog.Write("SharpDX assembly resolve loading: " + assemblyPath);
-			return context.LoadFromAssemblyPath(assemblyPath);
-		};
-#endif
 	}
 
 	protected override void OnStartup(StartupEventArgs e)
