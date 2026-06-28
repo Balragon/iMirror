@@ -98,4 +98,26 @@ public sealed class VideoEngineGateTests
 
 		Assert.False(result);
 	}
+
+	[Fact]
+	public void ResolveDecoderThreadCount_UsesTwoThreads_ForSmallPhoneFallback()
+	{
+		int result = FfmpegDecoder.ResolveDecoderThreadCount(
+			outputWidth: 500,
+			outputHeight: 1080,
+			targetOutputFps: 60);
+
+		Assert.Equal(2, result);
+	}
+
+	[Fact]
+	public void ResolveDecoderThreadCount_UsesFourThreads_For1080pFallback()
+	{
+		int result = FfmpegDecoder.ResolveDecoderThreadCount(
+			outputWidth: 1920,
+			outputHeight: 1080,
+			targetOutputFps: 60);
+
+		Assert.Equal(4, result);
+	}
 }
