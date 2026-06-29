@@ -12,6 +12,24 @@ No changes yet.
 
 ---
 
+## [0.7.3] - 2026-06-29
+
+### Fixed
+
+- Correct the Vortice D3D11 video processor color range by explicitly treating NV12 input as BT.709 full range and RGB output as full range, reducing the over-bright whites/highlights seen on the GPU path.
+
+### Changed
+
+- Add `IMIRROR_D3D_COLOR_SPACE` as a runtime diagnostic override for the Vortice GPU color conversion path (`default`, `bt709-full`, or `bt709-studio`).
+
+### Validation
+
+- Local `dotnet build .\iMirror.sln -c Release --no-restore` passed with zero warnings and zero errors.
+- Local `dotnet test .\MacMirrorReceiver.Tests\MacMirrorReceiver.Tests.csproj -c Release --no-restore` passed: 63 tests.
+- Real-device Mac sender visual validation passed on the Vortice GPU path; runtime logs confirmed `gpuBinding=Vortice`, `ffmpegPipeline=0`, and `D3D11 video processor color space: mode=bt709-full`.
+
+---
+
 ## [0.7.2] - 2026-06-29
 
 ### Added
