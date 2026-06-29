@@ -244,6 +244,8 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 
 	private volatile bool _audioFirewallWarningActive;
 
+	private volatile bool _audioFirewallAllowRuleKnown;
+
 	// Set when the GPU engine faults at runtime (device-lost/TDR); the session then stays on the
 	// software decoder until the next connection. Reset in ResetStreamStateForNewConnection.
 	private bool _gpuPathDisabledThisSession;
@@ -560,6 +562,7 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 
 			if (result.Status == FirewallRuleInstallStatus.Success)
 			{
+				_audioFirewallAllowRuleKnown = true;
 				ClearAudioFirewallWarning(
 					"Windows Firewall allow rule completed; clearing audio firewall warning.",
 					"waiting for audio after firewall allow");
@@ -1092,6 +1095,11 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 			return;
 		}
 
+		if (await ShouldSuppressAudioFirewallWarningAsync(generation, frameBaseline, token))
+		{
+			return;
+		}
+
 		bool shouldNotify = false;
 		lock (_audioGate)
 		{
@@ -1120,6 +1128,35 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 			SetStatus(AudioFirewallWarningMessage);
 			UpdateDiagnostics();
 		}), DispatcherPriority.Background);
+	}
+
+	private async Task<bool> ShouldSuppressAudioFirewallWarningAsync(int generation, long frameBaseline, CancellationToken token)
+	{
+		if (!_audioFirewallAllowRuleKnown)
+		{
+			bool hasAllowRule = await WindowsFirewallRuleInstaller.HasAllowRuleForCurrentExecutableAsync(token);
+			if (hasAllowRule)
+			{
+				_audioFirewallAllowRuleKnown = true;
+			}
+		}
+
+		if (!_audioFirewallAllowRuleKnown)
+		{
+			return false;
+		}
+
+		if (token.IsCancellationRequested ||
+			!IsCurrentGeneration(generation, Volatile.Read(ref _connectionGeneration)) ||
+			Interlocked.Read(ref _audioFramesReceived) > frameBaseline)
+		{
+			return true;
+		}
+
+		AppLog.Write(
+			$"AirPlay audio RTP did not arrive within {AudioRtpStartupTimeout.TotalSeconds:N0}s after SETUP, " +
+			"but an enabled inbound Windows Firewall allow rule already exists for iMirror; suppressing the firewall warning.");
+		return true;
 	}
 
 	private void ClearAudioFirewallWarning(string logMessage = "AirPlay audio RTP reached the decoder; clearing firewall warning.", string? replacementAudioStatus = null)
