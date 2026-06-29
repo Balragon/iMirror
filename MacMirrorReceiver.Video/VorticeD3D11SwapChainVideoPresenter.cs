@@ -242,6 +242,7 @@ public sealed class VorticeD3D11SwapChainVideoPresenter : HwndHost, IHighResolut
 		_videoDevice.CreateVideoProcessorEnumerator(ref content, out _enumerator);
 		ValidateFormatSupport(_enumerator);
 		_videoDevice.CreateVideoProcessor(_enumerator, 0, out _processor);
+		D3D11VideoProcessorColorSpace.Apply(_videoContext, _processor, StatusChanged);
 	}
 
 	private static void ValidateFormatSupport(D3D11.ID3D11VideoProcessorEnumerator enumerator)

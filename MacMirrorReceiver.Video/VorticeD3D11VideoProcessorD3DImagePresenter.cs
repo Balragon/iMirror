@@ -253,6 +253,7 @@ public sealed class VorticeD3D11VideoProcessorD3DImagePresenter : IDisposable
 		_videoDevice.CreateVideoProcessorEnumerator(ref content, out _enumerator);
 		ValidateFormatSupport(_enumerator);
 		_videoDevice.CreateVideoProcessor(_enumerator, 0, out _processor);
+		D3D11VideoProcessorColorSpace.Apply(_videoContext, _processor, StatusChanged);
 
 		_outputTexture = _d3d11Device.CreateTexture2D(new D3D11.Texture2DDescription
 		{
