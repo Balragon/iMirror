@@ -16,6 +16,7 @@ using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Interop;
+using System.Windows.Shell;
 using System.Windows.Threading;
 using MacMirrorReceiver.Audio;
 using MacMirrorReceiver.Models;
@@ -36,6 +37,36 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 		Native4K = 2,
 		Quality = 3
 	}
+
+	private const int GwlStyle = -16;
+
+	private const int GwlExtendedStyle = -20;
+
+	private const long WindowStyleCaption = 0x00C00000L;
+
+	private const long WindowStyleThickFrame = 0x00040000L;
+
+	private const long WindowStyleSystemMenu = 0x00080000L;
+
+	private const long WindowStyleMinimizeBox = 0x00020000L;
+
+	private const long WindowStyleMaximizeBox = 0x00010000L;
+
+	private const uint SetWindowPosNoMove = 0x0002;
+
+	private const uint SetWindowPosNoSize = 0x0001;
+
+	private const uint SetWindowPosNoZOrder = 0x0004;
+
+	private const uint SetWindowPosNoActivate = 0x0010;
+
+	private const uint SetWindowPosFrameChanged = 0x0020;
+
+	private const uint SetWindowPosShowWindow = 0x0040;
+
+	private static readonly IntPtr HwndTopmost = new IntPtr(-1);
+
+	private static readonly IntPtr HwndNotTopmost = new IntPtr(-2);
 
 	private const int RealtimeMaxRenderWidth = 3840;
 
@@ -283,7 +314,25 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 
 	private WindowStyle _previousWindowStyle;
 
+	private ResizeMode _previousResizeMode;
+
 	private WindowState _previousWindowState;
+
+	private bool _previousTopmost;
+
+	private bool _previousExtendsContentIntoTitleBar;
+
+	private WindowChrome? _previousWindowChrome;
+
+	private Rect _previousWindowBounds;
+
+	private Stretch _previousVideoStretch = Stretch.Uniform;
+
+	private nint _previousNativeWindowStyle;
+
+	private nint _previousNativeExtendedWindowStyle;
+
+	private bool _previousNativeWindowStyleCaptured;
 
 	public MainWindow()
 	{
@@ -511,7 +560,10 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 
 			if (result.Status == FirewallRuleInstallStatus.Success)
 			{
-				SetStatus("Windows Firewall now allows iMirror. Reconnect mirroring if audio does not start.");
+				ClearAudioFirewallWarning(
+					"Windows Firewall allow rule completed; clearing audio firewall warning.",
+					"waiting for audio after firewall allow");
+				SetStatus("Windows Firewall now allows iMirror. Reconnect only if audio does not resume.");
 				await Task.Delay(500);
 				await RecheckReadinessAsync();
 				return;
@@ -1070,25 +1122,30 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 		}), DispatcherPriority.Background);
 	}
 
-	private void ClearAudioFirewallWarning()
+	private void ClearAudioFirewallWarning(string logMessage = "AirPlay audio RTP reached the decoder; clearing firewall warning.", string? replacementAudioStatus = null)
 	{
-		bool wasActive = false;
+		bool changed = false;
 		lock (_audioGate)
 		{
 			CancelAudioRtpWatchdogLocked();
 			if (_audioFirewallWarningActive)
 			{
 				_audioFirewallWarningActive = false;
-				wasActive = true;
+				changed = true;
+			}
+			if (replacementAudioStatus != null && _audioStatus == AudioFirewallWarningMessage)
+			{
+				_audioStatus = replacementAudioStatus;
+				changed = true;
 			}
 		}
 
-		if (!wasActive)
+		if (!changed)
 		{
 			return;
 		}
 
-		AppLog.Write("AirPlay audio RTP reached the decoder; clearing firewall warning.");
+		AppLog.Write(logMessage);
 		base.Dispatcher.BeginInvoke(new Action(delegate
 		{
 			UpdateReceiverChrome();
@@ -1696,6 +1753,13 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 		{
 			e.Handled = true;
 			ToggleFullscreen();
+			return;
+		}
+
+		if (e.Key == Key.F11)
+		{
+			e.Handled = true;
+			ToggleFullscreen();
 		}
 	}
 
@@ -1724,21 +1788,21 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 		if (!_isFullscreen)
 		{
 			_previousWindowStyle = base.WindowStyle;
+			_previousResizeMode = base.ResizeMode;
 			_previousWindowState = base.WindowState;
-			base.WindowStyle = WindowStyle.None;
-			base.WindowState = WindowState.Maximized;
+			_previousTopmost = base.Topmost;
+			_previousExtendsContentIntoTitleBar = ExtendsContentIntoTitleBar;
+			_previousWindowChrome = WindowChrome.GetWindowChrome(this);
 			_isFullscreen = true;
-			MainTitleBar.Visibility = Visibility.Collapsed;
+			EnterFullscreenChrome();
 			FullscreenButton.Content = "Windowed";
 			CompactFullscreenButton.Content = "W";
 			CompactFullscreenButton.ToolTip = "Exit fullscreen";
 		}
 		else
 		{
-			base.WindowStyle = _previousWindowStyle;
-			base.WindowState = _previousWindowState;
 			_isFullscreen = false;
-			MainTitleBar.Visibility = Visibility.Visible;
+			ExitFullscreenChrome();
 			FullscreenButton.Content = "Fullscreen";
 			CompactFullscreenButton.Content = "F";
 			CompactFullscreenButton.ToolTip = "Fullscreen";
@@ -1748,6 +1812,186 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 			RestartDecoderIfRenderWidthChanged("display mode changed");
 		}), DispatcherPriority.Background);
 	}
+
+	private void EnterFullscreenChrome()
+	{
+		IntPtr hwnd = new WindowInteropHelper(this).EnsureHandle();
+		CaptureNativeWindowStyles(hwnd);
+		_previousWindowBounds = new Rect(Left, Top, Width, Height);
+		_previousVideoStretch = VideoImage.Stretch;
+
+		MainTitleBar.Visibility = Visibility.Collapsed;
+		ExtendsContentIntoTitleBar = false;
+		base.WindowState = WindowState.Normal;
+		base.WindowStyle = WindowStyle.None;
+		base.ResizeMode = ResizeMode.NoResize;
+		VideoImage.Stretch = Stretch.UniformToFill;
+		WindowChrome.SetWindowChrome(this, new WindowChrome
+		{
+			CaptionHeight = 0,
+			ResizeBorderThickness = new Thickness(0),
+			GlassFrameThickness = new Thickness(0),
+			CornerRadius = new CornerRadius(0),
+			UseAeroCaptionButtons = false
+		});
+		base.Topmost = true;
+		ApplyFullscreenNativeFrame(hwnd);
+		MoveWindowToCurrentMonitor(hwnd);
+		UpdateHighResolutionD3DPresenterLayout();
+		ScheduleFullscreenChromeEnforcement(hwnd);
+	}
+
+	private void ExitFullscreenChrome()
+	{
+		IntPtr hwnd = new WindowInteropHelper(this).EnsureHandle();
+		base.WindowState = WindowState.Normal;
+		base.Topmost = _previousTopmost;
+		VideoImage.Stretch = _previousVideoStretch;
+		ExtendsContentIntoTitleBar = _previousExtendsContentIntoTitleBar;
+		WindowChrome.SetWindowChrome(this, _previousWindowChrome);
+		base.WindowStyle = _previousWindowStyle;
+		base.ResizeMode = _previousResizeMode;
+		RestoreNativeWindowStyles(hwnd);
+		if (_previousWindowState == WindowState.Normal && _previousWindowBounds.Width > 0.0 && _previousWindowBounds.Height > 0.0)
+		{
+			Left = _previousWindowBounds.Left;
+			Top = _previousWindowBounds.Top;
+			Width = _previousWindowBounds.Width;
+			Height = _previousWindowBounds.Height;
+		}
+		base.WindowState = _previousWindowState;
+		MainTitleBar.Visibility = Visibility.Visible;
+		if (!_previousTopmost)
+		{
+			_ = SetWindowPos(
+				hwnd,
+				HwndNotTopmost,
+				0,
+				0,
+				0,
+				0,
+				SetWindowPosNoMove | SetWindowPosNoSize | SetWindowPosNoActivate | SetWindowPosFrameChanged);
+		}
+		UpdateHighResolutionD3DPresenterLayout();
+	}
+
+	private void ScheduleFullscreenChromeEnforcement(IntPtr hwnd)
+	{
+		base.Dispatcher.BeginInvoke(new Action(delegate
+		{
+			if (!_isFullscreen)
+			{
+				return;
+			}
+
+			MainTitleBar.Visibility = Visibility.Collapsed;
+			ExtendsContentIntoTitleBar = false;
+			base.WindowState = WindowState.Normal;
+			base.WindowStyle = WindowStyle.None;
+			base.ResizeMode = ResizeMode.NoResize;
+			VideoImage.Stretch = Stretch.UniformToFill;
+			ApplyFullscreenNativeFrame(hwnd);
+			MoveWindowToCurrentMonitor(hwnd);
+			UpdateHighResolutionD3DPresenterLayout();
+		}), DispatcherPriority.ApplicationIdle);
+	}
+
+	private void CaptureNativeWindowStyles(IntPtr hwnd)
+	{
+		_previousNativeWindowStyle = GetWindowLongPtr(hwnd, GwlStyle);
+		_previousNativeExtendedWindowStyle = GetWindowLongPtr(hwnd, GwlExtendedStyle);
+		_previousNativeWindowStyleCaptured = true;
+	}
+
+	private void ApplyFullscreenNativeFrame(IntPtr hwnd)
+	{
+		nint style = GetWindowLongPtr(hwnd, GwlStyle);
+		style = new IntPtr(style.ToInt64() & ~(
+			WindowStyleCaption |
+			WindowStyleThickFrame |
+			WindowStyleSystemMenu |
+			WindowStyleMinimizeBox |
+			WindowStyleMaximizeBox));
+		_ = SetWindowLongPtr(hwnd, GwlStyle, style);
+		_ = SetWindowPos(
+			hwnd,
+			HwndTopmost,
+			0,
+			0,
+			0,
+			0,
+			SetWindowPosNoMove | SetWindowPosNoSize | SetWindowPosNoActivate | SetWindowPosFrameChanged);
+	}
+
+	private void RestoreNativeWindowStyles(IntPtr hwnd)
+	{
+		if (!_previousNativeWindowStyleCaptured)
+		{
+			return;
+		}
+
+		_ = SetWindowLongPtr(hwnd, GwlStyle, _previousNativeWindowStyle);
+		_ = SetWindowLongPtr(hwnd, GwlExtendedStyle, _previousNativeExtendedWindowStyle);
+		_ = SetWindowPos(
+			hwnd,
+			IntPtr.Zero,
+			0,
+			0,
+			0,
+			0,
+			SetWindowPosNoMove | SetWindowPosNoSize | SetWindowPosNoZOrder | SetWindowPosNoActivate | SetWindowPosFrameChanged);
+		_previousNativeWindowStyleCaptured = false;
+	}
+
+	private static void MoveWindowToCurrentMonitor(IntPtr hwnd)
+	{
+		Forms.Screen screen = Forms.Screen.FromHandle(hwnd);
+		System.Drawing.Rectangle bounds = screen.Bounds;
+		_ = SetWindowPos(
+			hwnd,
+			HwndTopmost,
+			bounds.Left,
+			bounds.Top,
+			bounds.Width,
+			bounds.Height,
+			SetWindowPosNoActivate | SetWindowPosFrameChanged | SetWindowPosShowWindow);
+	}
+
+	private static nint GetWindowLongPtr(IntPtr hwnd, int index)
+	{
+		return IntPtr.Size == 8
+			? GetWindowLongPtr64(hwnd, index)
+			: new IntPtr(GetWindowLong32(hwnd, index));
+	}
+
+	private static nint SetWindowLongPtr(IntPtr hwnd, int index, nint value)
+	{
+		return IntPtr.Size == 8
+			? SetWindowLongPtr64(hwnd, index, value)
+			: new IntPtr(SetWindowLong32(hwnd, index, value.ToInt32()));
+	}
+
+	[DllImport("user32.dll", EntryPoint = "GetWindowLongPtr", SetLastError = true)]
+	private static extern nint GetWindowLongPtr64(IntPtr hwnd, int index);
+
+	[DllImport("user32.dll", EntryPoint = "GetWindowLong", SetLastError = true)]
+	private static extern int GetWindowLong32(IntPtr hwnd, int index);
+
+	[DllImport("user32.dll", EntryPoint = "SetWindowLongPtr", SetLastError = true)]
+	private static extern nint SetWindowLongPtr64(IntPtr hwnd, int index, nint value);
+
+	[DllImport("user32.dll", EntryPoint = "SetWindowLong", SetLastError = true)]
+	private static extern int SetWindowLong32(IntPtr hwnd, int index, int value);
+
+	[DllImport("user32.dll", SetLastError = true)]
+	private static extern bool SetWindowPos(
+		IntPtr hwnd,
+		IntPtr hwndInsertAfter,
+		int x,
+		int y,
+		int width,
+		int height,
+		uint flags);
 
 	private void RenderModeComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
 	{
@@ -2384,18 +2628,26 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 		double topInsetDip = ResolveHighResolutionD3DTopInsetDip(stageHeightDip);
 		double availableHeightDip = Math.Max(1.0, stageHeightDip - topInsetDip);
 		double availableHeightPixels = availableHeightDip * dpiScaleY;
-		double scale = Math.Min(stageWidthPixels / config.Width, availableHeightPixels / config.Height);
+		bool fillStage = _isFullscreen;
+		double scale = fillStage
+			? Math.Max(stageWidthPixels / config.Width, availableHeightPixels / config.Height)
+			: Math.Min(stageWidthPixels / config.Width, availableHeightPixels / config.Height);
 		double fitWidthPixels = Math.Max(1.0, Math.Round(config.Width * scale));
 		double fitHeightPixels = Math.Max(1.0, Math.Round(config.Height * scale));
-		double fitWidthDip = Math.Min(stageWidthDip, fitWidthPixels / dpiScaleX);
-		double fitHeightDip = Math.Min(availableHeightDip, fitHeightPixels / dpiScaleY);
+		double fitWidthDip = fitWidthPixels / dpiScaleX;
+		double fitHeightDip = fitHeightPixels / dpiScaleY;
+		if (!fillStage)
+		{
+			fitWidthDip = Math.Min(stageWidthDip, fitWidthDip);
+			fitHeightDip = Math.Min(availableHeightDip, fitHeightDip);
+		}
 
 		FrameworkElement presenterView = presenter.View;
 		presenterView.Width = fitWidthDip;
 		presenterView.Height = fitHeightDip;
-		presenterView.Margin = new Thickness(0.0, topInsetDip, 0.0, 0.0);
+		presenterView.Margin = fillStage ? new Thickness(0.0) : new Thickness(0.0, topInsetDip, 0.0, 0.0);
 		presenterView.HorizontalAlignment = HorizontalAlignment.Center;
-		presenterView.VerticalAlignment = topInsetDip > 0.0 ? VerticalAlignment.Top : VerticalAlignment.Center;
+		presenterView.VerticalAlignment = !fillStage && topInsetDip > 0.0 ? VerticalAlignment.Top : VerticalAlignment.Center;
 	}
 
 	private double ResolveHighResolutionD3DTopInsetDip(double stageHeightDip)
@@ -2770,8 +3022,13 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 		FrameworkElement? d3dPresenterView = d3dPresenter?.View;
 		if (d3dPresenterView != null && d3dPresenterView.ActualWidth > 0.0 && d3dPresenterView.ActualHeight > 0.0)
 		{
-			double d3dLeft = Math.Max(0.0, (VideoStage.ActualWidth - d3dPresenterView.ActualWidth) / 2.0);
-			double d3dTop = Math.Max(0.0, (VideoStage.ActualHeight - d3dPresenterView.ActualHeight) / 2.0);
+			double d3dLeft = (VideoStage.ActualWidth - d3dPresenterView.ActualWidth) / 2.0;
+			double d3dTop = (VideoStage.ActualHeight - d3dPresenterView.ActualHeight) / 2.0;
+			if (!_isFullscreen)
+			{
+				d3dLeft = Math.Max(0.0, d3dLeft);
+				d3dTop = Math.Max(0.0, d3dTop);
+			}
 			return new Rect(d3dLeft, d3dTop, d3dPresenterView.ActualWidth, d3dPresenterView.ActualHeight);
 		}
 #endif
@@ -2789,7 +3046,15 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 		double height;
 		double left;
 		double top;
-		if (hostAspect > sourceAspect)
+		if (_isFullscreen)
+		{
+			double scale = Math.Max(hostWidth / config.Width, hostHeight / config.Height);
+			width = config.Width * scale;
+			height = config.Height * scale;
+			left = (hostWidth - width) / 2.0;
+			top = (hostHeight - height) / 2.0;
+		}
+		else if (hostAspect > sourceAspect)
 		{
 			height = hostHeight;
 			width = height * sourceAspect;

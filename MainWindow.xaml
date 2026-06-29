@@ -16,6 +16,7 @@
         Closing="Window_Closing"
         SizeChanged="Window_SizeChanged"
         KeyDown="Window_KeyDown"
+        PreviewKeyDown="Window_KeyDown"
         UseLayoutRounding="True"
         SnapsToDevicePixels="True"
         ExtendsContentIntoTitleBar="True"
@@ -58,7 +59,9 @@
               Background="Transparent">
             <Grid x:Name="VideoStage"
                   Background="Transparent"
-                  MouseLeftButtonDown="VideoStage_MouseLeftButtonDown">
+                  ClipToBounds="True"
+                  MouseLeftButtonDown="VideoStage_MouseLeftButtonDown"
+                  PreviewMouseLeftButtonDown="VideoStage_MouseLeftButtonDown">
             <Image x:Name="VideoImage"
                    Stretch="Uniform"
                    RenderOptions.BitmapScalingMode="HighQuality" />
