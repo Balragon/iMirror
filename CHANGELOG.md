@@ -12,6 +12,20 @@ No changes yet.
 
 ---
 
+## [0.7.4] - 2026-06-29
+
+### Fixed
+
+- Suppress the delayed audio Windows Firewall warning when iMirror already has an enabled inbound allow rule for the current executable, so the app does not keep prompting after the user has allowed audio.
+
+### Validation
+
+- Local `dotnet build .\iMirror.sln -c Release --no-restore -p:OutDir=artifacts\verify\out\` passed with zero warnings and zero errors.
+- Local `dotnet test .\MacMirrorReceiver.Tests\MacMirrorReceiver.Tests.csproj -c Release --no-restore -p:OutDir=artifacts\verify\testout\` passed: 65 tests.
+- GitHub CI passed on PR #45.
+
+---
+
 ## [0.7.3] - 2026-06-29
 
 ### Fixed
