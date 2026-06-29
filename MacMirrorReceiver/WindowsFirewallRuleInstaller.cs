@@ -24,6 +24,7 @@ internal static class WindowsFirewallRuleInstaller
 {
 	private const int UserCancelledElevationError = 1223;
 	private static readonly TimeSpan InstallTimeout = TimeSpan.FromMinutes(5);
+	private static readonly TimeSpan CheckTimeout = TimeSpan.FromSeconds(10);
 
 	public static async Task<FirewallRuleInstallResult> AllowCurrentExecutableAsync(
 		CancellationToken cancellationToken = default)
@@ -37,6 +38,18 @@ internal static class WindowsFirewallRuleInstaller
 		}
 
 		return await AllowExecutableAsync(processPath, cancellationToken);
+	}
+
+	public static async Task<bool> HasAllowRuleForCurrentExecutableAsync(
+		CancellationToken cancellationToken = default)
+	{
+		string? processPath = Environment.ProcessPath;
+		if (string.IsNullOrWhiteSpace(processPath))
+		{
+			return false;
+		}
+
+		return await HasAllowRuleForExecutableAsync(processPath, cancellationToken);
 	}
 
 	internal static async Task<FirewallRuleInstallResult> AllowExecutableAsync(
@@ -173,6 +186,99 @@ if ($matchingRules.Count -gt 0) {
 """;
 	}
 
+	internal static async Task<bool> HasAllowRuleForExecutableAsync(
+		string executablePath,
+		CancellationToken cancellationToken = default)
+	{
+		string fullPath;
+		try
+		{
+			fullPath = Path.GetFullPath(executablePath);
+		}
+		catch
+		{
+			return false;
+		}
+
+		string scriptPath;
+		try
+		{
+			scriptPath = Path.Combine(Path.GetTempPath(), $"iMirror-firewall-check-{Guid.NewGuid():N}.ps1");
+			File.WriteAllText(scriptPath, BuildFirewallRuleCheckScript(fullPath), new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+		}
+		catch
+		{
+			return false;
+		}
+
+		try
+		{
+			using Process? process = Process.Start(new ProcessStartInfo
+			{
+				FileName = "powershell.exe",
+				Arguments = "-NoProfile -ExecutionPolicy Bypass -File " + QuoteCommandLineArgument(scriptPath),
+				UseShellExecute = false,
+				CreateNoWindow = true,
+				WindowStyle = ProcessWindowStyle.Hidden
+			});
+
+			if (process == null)
+			{
+				return false;
+			}
+
+			Task waitTask = process.WaitForExitAsync(cancellationToken);
+			Task timeoutTask = Task.Delay(CheckTimeout, cancellationToken);
+			Task completed = await Task.WhenAny(waitTask, timeoutTask);
+			if (completed == timeoutTask)
+			{
+				TryKillProcess(process);
+				return false;
+			}
+
+			await waitTask;
+			return process.ExitCode == 0;
+		}
+		catch
+		{
+			return false;
+		}
+		finally
+		{
+			TryDeleteFile(scriptPath);
+		}
+	}
+
+	internal static string BuildFirewallRuleCheckScript(string executablePath)
+	{
+		string program = QuotePowerShellSingleQuotedString(Path.GetFullPath(executablePath));
+
+		return $$"""
+$ErrorActionPreference = 'Stop'
+$displayName = 'iMirror AirPlay Receiver'
+$program = {{program}}
+$hasMatchingAllowRule = $false
+
+foreach ($rule in Get-NetFirewallRule -DisplayName $displayName -ErrorAction SilentlyContinue) {
+    if ($rule.Direction -ne 'Inbound' -or $rule.Action -ne 'Allow' -or $rule.Enabled -ne 'True') {
+        continue
+    }
+
+    $appFilter = Get-NetFirewallApplicationFilter -AssociatedNetFirewallRule $rule -ErrorAction SilentlyContinue
+    if ($appFilter -and [System.String]::Equals($appFilter.Program, $program, [System.StringComparison]::OrdinalIgnoreCase)) {
+        $hasMatchingAllowRule = $true
+        break
+    }
+}
+
+if ($hasMatchingAllowRule) {
+    exit 0
+}
+
+exit 1
+""";
+	}
+
 	private static string QuotePowerShellSingleQuotedString(string value)
 	{
 		return "'" + value.Replace("'", "''", StringComparison.Ordinal) + "'";
@@ -188,6 +294,17 @@ if ($matchingRules.Count -gt 0) {
 		try
 		{
 			File.Delete(path);
+		}
+		catch
+		{
+		}
+	}
+
+	private static void TryKillProcess(Process process)
+	{
+		try
+		{
+			process.Kill(entireProcessTree: true);
 		}
 		catch
 		{
