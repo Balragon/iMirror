@@ -1,3 +1,5 @@
+using System;
+using System.IO;
 using MacMirrorReceiver;
 using MacMirrorReceiver.Protocol;
 using MacMirrorReceiver.Video;
@@ -119,5 +121,30 @@ public sealed class VideoEngineGateTests
 			targetOutputFps: 60);
 
 		Assert.Equal(4, result);
+	}
+
+	[Fact]
+	public void FindFfmpegInAncestorTools_FindsRepoToolFromRidBuildOutput()
+	{
+		string root = Path.Combine(Path.GetTempPath(), "imirror-ffmpeg-test-" + Guid.NewGuid().ToString("N"));
+		try
+		{
+			string startDirectory = Path.Combine(root, "bin", "x64", "Release", "net10.0-windows", "win-x64");
+			string ffmpegPath = Path.Combine(root, "tools", "ffmpeg", "bin", "ffmpeg.exe");
+			Directory.CreateDirectory(startDirectory);
+			Directory.CreateDirectory(Path.GetDirectoryName(ffmpegPath)!);
+			File.WriteAllBytes(ffmpegPath, Array.Empty<byte>());
+
+			string? result = FfmpegDecoder.FindFfmpegInAncestorTools(startDirectory);
+
+			Assert.Equal(ffmpegPath, result);
+		}
+		finally
+		{
+			if (Directory.Exists(root))
+			{
+				Directory.Delete(root, recursive: true);
+			}
+		}
 	}
 }

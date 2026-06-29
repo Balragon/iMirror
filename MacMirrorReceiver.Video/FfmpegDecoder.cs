@@ -859,10 +859,11 @@ public sealed class FfmpegDecoder : IDisposable
 		{
 			return text;
 		}
-		string path2 = Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "tools", "ffmpeg", "bin", "ffmpeg.exe");
-		if (File.Exists(path2))
+		string? localToolsFfmpeg = FindFfmpegInAncestorTools(AppContext.BaseDirectory) ??
+			FindFfmpegInAncestorTools(Environment.CurrentDirectory);
+		if (localToolsFfmpeg != null)
 		{
-			return Path.GetFullPath(path2);
+			return localToolsFfmpeg;
 		}
 		string[] array = (Environment.GetEnvironmentVariable("PATH") ?? "").Split(Path.PathSeparator);
 		foreach (string text2 in array)
@@ -891,6 +892,21 @@ public sealed class FfmpegDecoder : IDisposable
 		catch
 		{
 		}
+		return null;
+	}
+
+	internal static string? FindFfmpegInAncestorTools(string startDirectory)
+	{
+		var directory = new DirectoryInfo(startDirectory);
+		for (int depth = 0; directory != null && depth < 8; depth++, directory = directory.Parent)
+		{
+			string candidate = Path.Combine(directory.FullName, "tools", "ffmpeg", "bin", "ffmpeg.exe");
+			if (File.Exists(candidate))
+			{
+				return candidate;
+			}
+		}
+
 		return null;
 	}
 
