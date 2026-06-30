@@ -1,6 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <AssemblyName>iMirror</AssemblyName>
+    <ApplicationIcon>Assets\iMirror.ico</ApplicationIcon>
     <OutputType>WinExe</OutputType>
     <UseWPF>True</UseWPF>
     <UseWindowsForms>True</UseWindowsForms>
@@ -52,6 +53,8 @@
     <Compile Remove="MacMirrorReceiver.Tests\**\*.cs" />
   </ItemGroup>
   <ItemGroup>
+    <None Remove="Assets\iMirror.ico" />
+    <Resource Include="Assets\iMirror.ico" />
     <Content Include="THIRD_PARTY_NOTICES.txt" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="ThirdParty\playfair\LICENSE.md" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="ThirdParty\playfair\hand_garble.c" CopyToOutputDirectory="PreserveNewest" />

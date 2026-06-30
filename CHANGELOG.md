@@ -8,7 +8,14 @@ For detailed release notes, see [GitHub Releases](https://github.com/Balragon/iM
 
 ## [Unreleased] (main branch)
 
-No changes yet.
+### Added
+
+- Add iMirror app icon assets and wire them into the Windows executable, WPF window, and installer.
+
+### Validation
+
+- Local `dotnet build .\iMirror.sln -c Release` passed with zero warnings and zero errors.
+- Local `dotnet test .\MacMirrorReceiver.Tests\MacMirrorReceiver.Tests.csproj -c Release` passed: 65 tests.
 
 ---
 
