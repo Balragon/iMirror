@@ -26,6 +26,7 @@ ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 OutputDir={#MyOutputDir}
 OutputBaseFilename=iMirror-{#MyAppVersion}-setup
+SetupIconFile=..\Assets\iMirror.ico
 Compression=lzma2
 SolidCompression=yes
 UninstallDisplayIcon={app}\iMirror.exe
