@@ -8,7 +8,9 @@ For detailed release notes, see [GitHub Releases](https://github.com/Balragon/iM
 
 ## [Unreleased] (main branch)
 
-No changes yet.
+### Fixed
+
+- Close iMirror automatically after launching the silent update installer, allowing setup to replace files and restart the app without asking the user to close it first.
 
 ---
 

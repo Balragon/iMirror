@@ -2211,7 +2211,10 @@ public partial class MainWindow : FluentWindow, ISettingsHost
 			UpdateNoticeTextBlock.Text = "Starting update installer...";
 			SetStatus("Starting update installer...");
 			UpdateLauncher.Launch(setupPath);
-			SetStatus("Update installer started. iMirror will close when setup is ready.");
+			UpdateNoticeTextBlock.Text = "Installing update. iMirror will close and restart automatically...";
+			SetStatus("Update installer started. Closing iMirror so setup can finish and restart it.");
+			AppLog.Write("Update installer started; shutting down iMirror for update handoff.");
+			await ShutdownApplicationAsync();
 			return true;
 		}
 		catch (Exception ex)
