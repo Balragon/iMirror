@@ -6,7 +6,14 @@ namespace MacMirrorReceiver;
 
 internal static class UpdateLauncher
 {
+	internal const string InstallerArguments = "/SILENT /SUPPRESSMSGBOXES /CLOSEAPPLICATIONS /RESTARTAPPLICATIONS /IMIRROR_LAUNCH=1";
+
 	public static void Launch(string setupPath)
+	{
+		Process.Start(CreateStartInfo(setupPath));
+	}
+
+	internal static ProcessStartInfo CreateStartInfo(string setupPath)
 	{
 		if (string.IsNullOrWhiteSpace(setupPath) || !File.Exists(setupPath))
 		{
@@ -14,12 +21,12 @@ internal static class UpdateLauncher
 		}
 
 		string? workingDirectory = Path.GetDirectoryName(setupPath);
-		Process.Start(new ProcessStartInfo
+		return new ProcessStartInfo
 		{
 			FileName = setupPath,
-			Arguments = "/SILENT /CLOSEAPPLICATIONS /RESTARTAPPLICATIONS /IMIRROR_LAUNCH=1",
+			Arguments = InstallerArguments,
 			WorkingDirectory = string.IsNullOrWhiteSpace(workingDirectory) ? AppContext.BaseDirectory : workingDirectory,
 			UseShellExecute = true
-		});
+		};
 	}
 }
