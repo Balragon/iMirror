@@ -8,6 +8,12 @@ For detailed release notes, see [GitHub Releases](https://github.com/Balragon/iM
 
 ## [Unreleased] (main branch)
 
+No changes yet.
+
+---
+
+## [0.7.5] - 2026-07-01
+
 ### Added
 
 - Add iMirror app icon assets and wire them into the Windows executable, WPF window, and installer.
