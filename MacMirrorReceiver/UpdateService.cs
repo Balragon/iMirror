@@ -166,6 +166,53 @@ internal sealed class UpdateService
 		}
 	}
 
+	// Downloaded installers are one-shot artifacts: after a successful update the new
+	// version is already running, and after a failed one the next attempt re-downloads.
+	// Nothing deleted them, so %LOCALAPPDATA%\iMirror\Updates grew by one setup.exe per
+	// update forever. Best-effort cleanup at startup; a file still locked by a running
+	// installer (fresh post-update relaunch) is skipped and removed on the next start.
+	public void TryCleanUpDownloadedInstallers()
+	{
+		try
+		{
+			if (!Directory.Exists(_downloadDirectory))
+			{
+				return;
+			}
+
+			int deleted = 0;
+			foreach (string path in Directory.EnumerateFiles(_downloadDirectory))
+			{
+				string fileName = Path.GetFileName(path);
+				bool isDownloadArtifact = fileName.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)
+					|| fileName.EndsWith(".download", StringComparison.OrdinalIgnoreCase);
+				if (!isDownloadArtifact)
+				{
+					continue;
+				}
+
+				try
+				{
+					File.Delete(path);
+					deleted++;
+				}
+				catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+				{
+					AppLog.Write($"Skipped in-use downloaded installer during cleanup: {fileName} ({ex.Message})");
+				}
+			}
+
+			if (deleted > 0)
+			{
+				AppLog.Write($"Cleaned up {deleted} downloaded update installer file(s).");
+			}
+		}
+		catch (Exception ex)
+		{
+			AppLog.Write("Update downloads cleanup failed: " + ex.Message);
+		}
+	}
+
 	internal static bool IsVersionNewer(string latestVersion, string currentVersion)
 	{
 		return SemanticVersion.TryParse(latestVersion, out SemanticVersion latest)
