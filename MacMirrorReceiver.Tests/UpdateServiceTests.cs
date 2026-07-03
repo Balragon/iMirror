@@ -186,6 +186,55 @@ public sealed class UpdateServiceTests
 		Assert.Equal(hash, UpdateService.TryParseSha256Sums("SHA256(iMirror-0.4.0-setup.exe)= " + hash, "iMirror-0.4.0-setup.exe"));
 	}
 
+	[Fact]
+	public void TryCleanUpDownloadedInstallers_RemovesInstallerAndPartialFilesOnly()
+	{
+		string directory = CreateTempDirectory();
+		string oldSetup = Path.Combine(directory, "iMirror-0.3.0-setup.exe");
+		string partial = Path.Combine(directory, "iMirror-0.4.0-setup.exe.download");
+		string unrelated = Path.Combine(directory, "notes.txt");
+		File.WriteAllText(oldSetup, "old installer");
+		File.WriteAllText(partial, "partial download");
+		File.WriteAllText(unrelated, "keep me");
+		var service = new UpdateService(new HttpClient(new StubHttpMessageHandler(_ => TextResponse(""))), "0.4.0", directory);
+
+		service.TryCleanUpDownloadedInstallers();
+
+		Assert.False(File.Exists(oldSetup));
+		Assert.False(File.Exists(partial));
+		Assert.True(File.Exists(unrelated));
+	}
+
+	[Fact]
+	public void TryCleanUpDownloadedInstallers_SkipsLockedFilesWithoutThrowing()
+	{
+		string directory = CreateTempDirectory();
+		string lockedSetup = Path.Combine(directory, "iMirror-0.4.0-setup.exe");
+		string deletableSetup = Path.Combine(directory, "iMirror-0.3.0-setup.exe");
+		File.WriteAllText(lockedSetup, "running installer");
+		File.WriteAllText(deletableSetup, "old installer");
+		var service = new UpdateService(new HttpClient(new StubHttpMessageHandler(_ => TextResponse(""))), "0.4.0", directory);
+
+		using (new FileStream(lockedSetup, FileMode.Open, FileAccess.Read, FileShare.None))
+		{
+			service.TryCleanUpDownloadedInstallers();
+
+			Assert.True(File.Exists(lockedSetup), "a locked (in-use) installer must be skipped, not deleted");
+		}
+		Assert.False(File.Exists(deletableSetup));
+	}
+
+	[Fact]
+	public void TryCleanUpDownloadedInstallers_DoesNothing_WhenDirectoryIsMissing()
+	{
+		string directory = Path.Combine(Path.GetTempPath(), "iMirror-tests", Guid.NewGuid().ToString("N"));
+		var service = new UpdateService(new HttpClient(new StubHttpMessageHandler(_ => TextResponse(""))), "0.4.0", directory);
+
+		service.TryCleanUpDownloadedInstallers();
+
+		Assert.False(Directory.Exists(directory));
+	}
+
 	private static UpdateInfo SetupUpdate(long setupAssetSize, string? sha256SumsAssetUrl)
 	{
 		return new UpdateInfo(

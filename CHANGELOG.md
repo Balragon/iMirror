@@ -15,6 +15,8 @@ For detailed release notes, see [GitHub Releases](https://github.com/Balragon/iM
 ### Fixed
 
 - Close iMirror automatically after launching the silent update installer, allowing setup to replace files and restart the app without asking the user to close it first.
+- Clean up leftover downloaded update installers (`setup.exe` / partial `.download` files) from `%LOCALAPPDATA%\iMirror\Updates` at startup instead of letting them accumulate one per update.
+- Cancel an in-flight update check or installer download when iMirror starts shutting down, instead of letting it race process teardown; a canceled install no longer flashes the retry UI on the closing window.
 
 ---
 

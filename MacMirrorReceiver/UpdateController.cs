@@ -53,9 +53,15 @@ internal sealed class UpdateController
 
 	private readonly Action<string> _dismissNotice;
 
-	private readonly Func<Task> _startupDelayAsync;
+	private readonly Func<CancellationToken, Task> _startupDelayAsync;
 
 	private readonly Func<DateTimeOffset> _now;
+
+	private readonly Action _cleanUpDownloads;
+
+	// Canceled when the application starts shutting down so an in-flight update check or
+	// installer download stops promptly instead of racing process teardown.
+	private readonly CancellationTokenSource _shutdownCts = new CancellationTokenSource();
 
 	private UpdateInfo? _pendingUpdate;
 
@@ -76,8 +82,9 @@ internal sealed class UpdateController
 			ReceiverSettings.ShouldShowAutomaticUpdateNotice,
 			ReceiverSettings.MarkUpdateNoticeShown,
 			ReceiverSettings.DismissUpdateNotice,
-			() => Task.Delay(StartupUpdateCheckDelay),
-			() => DateTimeOffset.Now)
+			cancellationToken => Task.Delay(StartupUpdateCheckDelay, cancellationToken),
+			() => DateTimeOffset.Now,
+			updateService.TryCleanUpDownloadedInstallers)
 	{
 	}
 
@@ -91,8 +98,9 @@ internal sealed class UpdateController
 		Func<UpdateInfo, DateTimeOffset, bool> shouldShowAutomaticNotice,
 		Action<string, DateTimeOffset> markNoticeShown,
 		Action<string> dismissNotice,
-		Func<Task> startupDelayAsync,
-		Func<DateTimeOffset> now)
+		Func<CancellationToken, Task> startupDelayAsync,
+		Func<DateTimeOffset> now,
+		Action cleanUpDownloads)
 	{
 		_checkForUpdateAsync = checkForUpdateAsync ?? throw new ArgumentNullException(nameof(checkForUpdateAsync));
 		_downloadSetupAsync = downloadSetupAsync ?? throw new ArgumentNullException(nameof(downloadSetupAsync));
@@ -105,9 +113,20 @@ internal sealed class UpdateController
 		_dismissNotice = dismissNotice ?? throw new ArgumentNullException(nameof(dismissNotice));
 		_startupDelayAsync = startupDelayAsync ?? throw new ArgumentNullException(nameof(startupDelayAsync));
 		_now = now ?? throw new ArgumentNullException(nameof(now));
+		_cleanUpDownloads = cleanUpDownloads ?? throw new ArgumentNullException(nameof(cleanUpDownloads));
 	}
 
 	public UpdateInfo? PendingUpdate => _pendingUpdate;
+
+	/// <summary>
+	/// Cancels in-flight update work (startup delay, check, download). Called when the
+	/// application begins shutting down. Canceling after the installer has launched is
+	/// harmless: nothing update-related is in flight by then.
+	/// </summary>
+	public void CancelPendingOperations()
+	{
+		_shutdownCts.Cancel();
+	}
 
 	public async Task CheckForUpdatesOnStartupAsync()
 	{
@@ -119,11 +138,15 @@ internal sealed class UpdateController
 		_startupUpdateCheckStarted = true;
 		try
 		{
-			await _startupDelayAsync();
+			await _startupDelayAsync(_shutdownCts.Token);
 			if (_isShutdownStarted())
 			{
 				return;
 			}
+
+			// Off the UI thread: purges leftover setup.exe/.download files from previous
+			// updates before this session potentially downloads a new one.
+			await Task.Run(_cleanUpDownloads);
 
 			UpdateCheckResult result = await CheckForUpdatesAsync(manual: false);
 			UpdateInfo? update = result.Update;
@@ -141,6 +164,10 @@ internal sealed class UpdateController
 			_markNoticeShown(update.LatestVersion, now);
 			ShowUpdateNotice(update);
 		}
+		catch (OperationCanceledException) when (_shutdownCts.IsCancellationRequested)
+		{
+			AppLog.Write("Startup update check canceled by application shutdown.");
+		}
 		catch (Exception ex)
 		{
 			AppLog.Write("Startup update check failed: " + ex.Message);
@@ -149,7 +176,7 @@ internal sealed class UpdateController
 
 	public async Task<UpdateCheckResult> CheckForUpdatesAsync(bool manual)
 	{
-		UpdateInfo? update = await _checkForUpdateAsync(CancellationToken.None);
+		UpdateInfo? update = await _checkForUpdateAsync(_shutdownCts.Token);
 		if (update == null)
 		{
 			return new UpdateCheckResult(
@@ -180,7 +207,7 @@ internal sealed class UpdateController
 			_view.ShowDownloadStarted(updateInfo);
 			_view.SetStatus($"Downloading iMirror {updateInfo.LatestVersion} update...");
 
-			string setupPath = await _downloadSetupAsync(updateInfo, progress, CancellationToken.None);
+			string setupPath = await _downloadSetupAsync(updateInfo, progress, _shutdownCts.Token);
 			_view.ShowInstallerStarting();
 			_view.SetStatus("Starting update installer...");
 			_launchInstaller(setupPath);
@@ -189,6 +216,12 @@ internal sealed class UpdateController
 			AppLog.Write("Update installer started; shutting down iMirror for update handoff.");
 			await _shutdownApplicationAsync();
 			return true;
+		}
+		catch (OperationCanceledException) when (_shutdownCts.IsCancellationRequested)
+		{
+			// Shutdown is already in progress; skip the retry UI on the closing window.
+			AppLog.Write("Update install canceled by application shutdown.");
+			return false;
 		}
 		catch (Exception ex)
 		{

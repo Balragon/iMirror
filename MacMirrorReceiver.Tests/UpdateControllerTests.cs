@@ -83,19 +83,23 @@ public sealed class UpdateControllerTests
 
 		public DateTimeOffset Now { get; set; } = new DateTimeOffset(2026, 7, 3, 12, 0, 0, TimeSpan.Zero);
 
+		public int CleanUpCalls { get; private set; }
+
 		public UpdateController CreateController()
 		{
 			return new UpdateController(
-				_ =>
+				token =>
 				{
 					CheckCalls++;
+					token.ThrowIfCancellationRequested();
 					return CheckException != null
 						? Task.FromException<UpdateInfo?>(CheckException)
 						: Task.FromResult(CheckResult);
 				},
-				(_, _, _) =>
+				(_, _, token) =>
 				{
 					DownloadCalls++;
+					token.ThrowIfCancellationRequested();
 					return DownloadException != null
 						? Task.FromException<string>(DownloadException)
 						: Task.FromResult(DownloadedSetupPath);
@@ -118,8 +122,13 @@ public sealed class UpdateControllerTests
 				(_, _) => ShouldShowAutomaticNotice,
 				(version, at) => NoticesMarkedShown.Add((version, at)),
 				version => DismissedVersions.Add(version),
-				() => Task.CompletedTask,
-				() => Now);
+				token =>
+				{
+					token.ThrowIfCancellationRequested();
+					return Task.CompletedTask;
+				},
+				() => Now,
+				() => CleanUpCalls++);
 		}
 	}
 
@@ -353,5 +362,60 @@ public sealed class UpdateControllerTests
 
 		Assert.Empty(harness.DismissedVersions);
 		Assert.Equal(new[] { "HideNotice" }, harness.View.Calls);
+	}
+
+	[Fact]
+	public async Task StartupCheck_CleansUpDownloadedInstallers()
+	{
+		var harness = new Harness { CheckResult = CreateUpdate(isNewer: false) };
+		UpdateController controller = harness.CreateController();
+
+		await controller.CheckForUpdatesOnStartupAsync();
+
+		Assert.Equal(1, harness.CleanUpCalls);
+	}
+
+	[Fact]
+	public async Task StartupCheck_StopsQuietly_WhenCanceledByShutdown()
+	{
+		var harness = new Harness { CheckResult = CreateUpdate() };
+		UpdateController controller = harness.CreateController();
+
+		controller.CancelPendingOperations();
+		await controller.CheckForUpdatesOnStartupAsync();
+
+		Assert.Equal(0, harness.CheckCalls);
+		Assert.Equal(0, harness.CleanUpCalls);
+		Assert.Empty(harness.View.Calls);
+	}
+
+	[Fact]
+	public async Task Install_ReturnsFalseWithoutRetryUi_WhenCanceledByShutdown()
+	{
+		var harness = new Harness();
+		UpdateController controller = harness.CreateController();
+
+		controller.CancelPendingOperations();
+		bool started = await controller.InstallUpdateAsync(CreateUpdate(), progress: null);
+
+		Assert.False(started);
+		Assert.Empty(harness.LaunchedSetupPaths);
+		Assert.Equal(0, harness.ShutdownCalls);
+		Assert.DoesNotContain("ShowInstallFailed", harness.View.Calls);
+		Assert.DoesNotContain(
+			harness.View.StatusMessages,
+			message => message.StartsWith("Update could not be installed", StringComparison.Ordinal));
+	}
+
+	[Fact]
+	public async Task ManualCheck_PropagatesCancellation_WhenCanceledByShutdown()
+	{
+		var harness = new Harness { CheckResult = CreateUpdate() };
+		UpdateController controller = harness.CreateController();
+
+		controller.CancelPendingOperations();
+
+		await Assert.ThrowsAsync<OperationCanceledException>(
+			() => controller.CheckForUpdatesAsync(manual: true));
 	}
 }

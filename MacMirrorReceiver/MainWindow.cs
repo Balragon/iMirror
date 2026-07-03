@@ -737,6 +737,7 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 
 		_shutdownStarted = true;
 		_lifecycle.MarkExplicitExit();
+		_updateController.CancelPendingOperations();
 		try
 		{
 			_settingsWindow?.Close();
