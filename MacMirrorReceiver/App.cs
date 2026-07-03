@@ -64,6 +64,11 @@ public class App : Application
 		AppLog.Write("Dispatcher exception: " + e.Exception);
 	}
 
+	// Long enough to cover a restart handoff (settings "Save & Restart" spawns the new
+	// process before the old one finishes disconnecting and shutting down), short enough
+	// that a genuine duplicate launch still exits promptly.
+	private static readonly TimeSpan PreviousInstanceExitTimeout = TimeSpan.FromSeconds(5);
+
 	[STAThread]
 	[DebuggerNonUserCode]
 	[GeneratedCode("PresentationBuildTasks", "8.0.27.0")]
@@ -72,8 +77,16 @@ public class App : Application
 		using Mutex applicationMutex = new Mutex(initiallyOwned: true, AppUpdateConstants.ApplicationMutexName, out bool createdNew);
 		if (!createdNew)
 		{
-			AppLog.Write("Another iMirror instance is already running; exiting duplicate instance.");
-			return;
+			AppLog.Write(
+				$"Another iMirror instance holds the single-instance mutex; waiting up to {PreviousInstanceExitTimeout.TotalSeconds:N0}s " +
+				"for it to exit (restart handoff).");
+			if (!SingleInstanceGate.TryAcquireExistingMutex(applicationMutex, PreviousInstanceExitTimeout))
+			{
+				AppLog.Write("Another iMirror instance is already running; exiting duplicate instance.");
+				return;
+			}
+
+			AppLog.Write("Previous iMirror instance released the single-instance mutex; continuing startup.");
 		}
 
 		new App(applicationMutex).Run();
