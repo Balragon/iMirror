@@ -8,6 +8,10 @@ For detailed release notes, see [GitHub Releases](https://github.com/Balragon/iM
 
 ## [Unreleased] (main branch)
 
+### Changed
+
+- Refactor the update workflow (startup/manual checks, notice policy, download, installer handoff) out of `MainWindow` into a new `UpdateController` with injected UI/shutdown seams. No behavior change; the silent-update handoff and SHA-256 fail-closed verification are unchanged.
+
 ### Fixed
 
 - Close iMirror automatically after launching the silent update installer, allowing setup to replace files and restart the app without asking the user to close it first.
