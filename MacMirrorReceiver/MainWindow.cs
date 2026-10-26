@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
@@ -297,6 +297,8 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 
 	private DrawingIcon? _trayIconImage;
 
+	private bool? _appliedLightThemeIcon;
+
 	private bool _shutdownStarted;
 
 	private WindowStyle _previousWindowStyle;
@@ -357,6 +359,10 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 		_airPlayProbe.AudioFrameReceived += (frame, rtpTimestamp, sequence) =>
 			HandleAirPlayAudioFrame(frame, rtpTimestamp, sequence, Volatile.Read(ref _airPlaySessionGeneration));
 		InitializeTrayIcon();
+		ApplyThemedAppIcon();
+		// Fires on the UI thread when the user changes the Windows theme (Settings >
+		// Personalization > Colors), so the window and tray icons follow it live.
+		Microsoft.Win32.SystemEvents.UserPreferenceChanged += SystemEvents_UserPreferenceChanged;
 		UpdateRenderScalingMode();
 		UpdateDiagnostics();
 		UpdateReceiverChrome();
@@ -693,6 +699,76 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 		}
 	}
 
+	private void SystemEvents_UserPreferenceChanged(object sender, Microsoft.Win32.UserPreferenceChangedEventArgs e)
+	{
+		if (e.Category is Microsoft.Win32.UserPreferenceCategory.General
+			or Microsoft.Win32.UserPreferenceCategory.VisualStyle
+			or Microsoft.Win32.UserPreferenceCategory.Color)
+		{
+			ApplyThemedAppIcon();
+		}
+	}
+
+	/// <summary>
+	/// Sets the window and tray icons to the variant matching the Windows system theme.
+	/// The executable and installer icons stay dark; only these two runtime surfaces switch.
+	/// </summary>
+	private void ApplyThemedAppIcon()
+	{
+		if (_shutdownStarted)
+		{
+			return;
+		}
+
+		bool light = AppIconTheme.IsSystemLightTheme();
+		if (_appliedLightThemeIcon == light)
+		{
+			return;
+		}
+
+		Uri iconUri = AppIconTheme.IconUriFor(light);
+		try
+		{
+			base.Icon = BitmapFrame.Create(iconUri, BitmapCreateOptions.None, BitmapCacheOption.OnLoad);
+		}
+		catch (Exception ex)
+		{
+			AppLog.Write($"Window icon update failed ({iconUri}): {ex.Message}");
+		}
+
+		if (_trayIcon != null)
+		{
+			DrawingIcon? previous = _trayIconImage;
+			try
+			{
+				DrawingIcon trayImage = LoadTrayIconImage(iconUri);
+				_trayIconImage = trayImage;
+				_trayIcon.Icon = trayImage;
+				previous?.Dispose();
+			}
+			catch (Exception ex)
+			{
+				AppLog.Write($"Tray icon update failed ({iconUri}): {ex.Message}");
+			}
+		}
+
+		_appliedLightThemeIcon = light;
+		AppLog.Write("App icon set for " + (light ? "light" : "dark") + " Windows theme.");
+	}
+
+	private static DrawingIcon LoadTrayIconImage(Uri resourceUri)
+	{
+		System.Windows.Resources.StreamResourceInfo? resource = Application.GetResourceStream(resourceUri);
+		if (resource == null)
+		{
+			throw new InvalidOperationException("Icon resource not found: " + resourceUri);
+		}
+		using System.IO.Stream stream = resource.Stream;
+		// The tray wants a small frame; System.Drawing picks the best match for 32x32 from the
+		// multi-size .ico and scales to the shell's current icon size.
+		return new DrawingIcon(stream, 32, 32);
+	}
+
 	private static DrawingIcon CreateTrayIconImage()
 	{
 		try
@@ -760,6 +836,7 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 		{
 			CleanupGuards.RunStep("AirPlay probe dispose", () => _airPlayProbe.Dispose());
 			CleanupGuards.RunStep("mDNS browser dispose", () => _browser.Dispose());
+			CleanupGuards.RunStep("theme watcher unsubscribe", () => Microsoft.Win32.SystemEvents.UserPreferenceChanged -= SystemEvents_UserPreferenceChanged);
 			CleanupGuards.RunStep("tray icon dispose", DisposeTrayIcon);
 			Application.Current.Shutdown();
 		}

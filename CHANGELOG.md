@@ -11,6 +11,7 @@ For detailed release notes, see [GitHub Releases](https://github.com/Balragon/iM
 ### Changed
 
 - New app icon: two overlapping rounded screen panels (blue and translucent silver) on a dark background, used for the executable, window title, tray and installer. A light-background variant (`Assets/iMirror-light.ico`) and the editable SVG sources (`Assets/icon-source/`) are included.
+- The window title and tray icons follow the Windows system theme (`SystemUsesLightTheme`): light variant on a light theme, dark otherwise, updated live when the theme changes. The executable and installer icons stay dark.
 - Refactor the update workflow (startup/manual checks, notice policy, download, installer handoff) out of `MainWindow` into a new `UpdateController` with injected UI/shutdown seams. No behavior change; the silent-update handoff and SHA-256 fail-closed verification are unchanged.
 
 ### Fixed
