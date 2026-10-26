@@ -75,6 +75,8 @@ public sealed class UpdateControllerTests
 
 		public List<string> LaunchedSetupPaths { get; } = new List<string>();
 
+		public List<string> HandoffSequence { get; } = new List<string>();
+
 		public int ShutdownCalls { get; private set; }
 
 		public List<(string Version, DateTimeOffset At)> NoticesMarkedShown { get; } = new List<(string, DateTimeOffset)>();
@@ -106,12 +108,14 @@ public sealed class UpdateControllerTests
 				},
 				setupPath =>
 				{
+					HandoffSequence.Add("launch");
 					if (LaunchException != null)
 					{
 						throw LaunchException;
 					}
 					LaunchedSetupPaths.Add(setupPath);
 				},
+				() => HandoffSequence.Add("release-mutex"),
 				View,
 				() =>
 				{
@@ -303,6 +307,9 @@ public sealed class UpdateControllerTests
 		Assert.Equal(1, harness.DownloadCalls);
 		Assert.Equal(new[] { harness.DownloadedSetupPath }, harness.LaunchedSetupPaths);
 		Assert.Equal(1, harness.ShutdownCalls);
+		// The installer's AppMutex check runs as soon as it starts, so the single-instance
+		// mutex must be released before the installer process is launched.
+		Assert.Equal(new[] { "release-mutex", "launch" }, harness.HandoffSequence);
 		Assert.Equal(
 			new[] { "ShowDownloadStarted:9.9.9", "ShowInstallerStarting", "ShowInstallerHandoff" },
 			harness.View.Calls);
