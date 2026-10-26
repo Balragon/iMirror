@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using System.Threading;
 using MacMirrorReceiver.Video;
 using NAudio.CoreAudioApi;
@@ -40,6 +41,10 @@ public sealed class WasapiAudioOutput : IDisposable
 	private int _syncTargetLatencyMilliseconds = 180;
 	private int _latestEstimatedLatencyMilliseconds;
 	private string _restartReason = "audio endpoint changed";
+	private string? _restartTargetEndpointId;
+	private int _restartUnconditional;
+	private long _restartRequestedTimestamp;
+	private string _lastStartTimings = "";
 	private bool _lowBufferActive;
 	private bool _restartRequested;
 	private bool _restartInProgress;
@@ -120,6 +125,7 @@ public sealed class WasapiAudioOutput : IDisposable
 
 		IWasapiOutputDevice? retiredOutput;
 		string restartReason;
+		bool skippedRestart = false;
 		lock (_gate)
 		{
 			if (_disposed)
@@ -156,12 +162,34 @@ public sealed class WasapiAudioOutput : IDisposable
 			Interlocked.Exchange(ref _lastRestartAttemptTick, now);
 			restartReason = Volatile.Read(ref _restartReason);
 			Volatile.Write(ref _restartRequested, false);
-			_restartInProgress = true;
-			retiredOutput = _output;
-			_output = null;
-			_buffer.ClearBuffer();
-			_lowBufferActive = false;
-			Interlocked.Increment(ref _bufferClears);
+			string? targetEndpointId = Interlocked.Exchange(ref _restartTargetEndpointId, null);
+			bool unconditional = Interlocked.Exchange(ref _restartUnconditional, 0) != 0;
+			// Unplugging the default endpoint raises "Unplugged" and then "default changed"; the first
+			// restart usually already opened the new default, and each Init costs 2-3s while Windows settles.
+			if (!unconditional &&
+				targetEndpointId != null &&
+				_output != null &&
+				string.Equals(_output.EndpointId, targetEndpointId, StringComparison.OrdinalIgnoreCase))
+			{
+				SubmitLocked(frame);
+				skippedRestart = true;
+				retiredOutput = null;
+			}
+			else
+			{
+				_restartInProgress = true;
+				retiredOutput = _output;
+				_output = null;
+				_buffer.ClearBuffer();
+				_lowBufferActive = false;
+				Interlocked.Increment(ref _bufferClears);
+			}
+		}
+
+		if (skippedRestart)
+		{
+			this.StatusChanged?.Invoke("WASAPI audio output restart skipped after " + restartReason + ": already on that endpoint.");
+			return;
 		}
 
 		if (!TryRestartOutput(retiredOutput, restartReason))
@@ -231,13 +259,21 @@ public sealed class WasapiAudioOutput : IDisposable
 
 	private IWasapiOutputDevice CreateAndStartOutput()
 	{
+		long started = Stopwatch.GetTimestamp();
 		IWasapiOutputDevice output = _outputFactory.Create();
+		long created = Stopwatch.GetTimestamp();
 		Volatile.Write(ref _startingOutput, output);
 		try
 		{
 			output.PlaybackStopped += HandlePlaybackStopped;
 			output.Init(_buffer);
+			long initialized = Stopwatch.GetTimestamp();
 			output.Play();
+			long played = Stopwatch.GetTimestamp();
+			_lastStartTimings =
+				$"create={Stopwatch.GetElapsedTime(started, created).TotalMilliseconds:F0}ms, " +
+				$"init={Stopwatch.GetElapsedTime(created, initialized).TotalMilliseconds:F0}ms, " +
+				$"play={Stopwatch.GetElapsedTime(initialized, played).TotalMilliseconds:F0}ms";
 			return output;
 		}
 		catch
@@ -251,6 +287,8 @@ public sealed class WasapiAudioOutput : IDisposable
 
 	private bool TryRestartOutput(IWasapiOutputDevice? retiredOutput, string reason)
 	{
+		long requested = Interlocked.Read(ref _restartRequestedTimestamp);
+		double waitedMs = requested > 0 ? Stopwatch.GetElapsedTime(requested).TotalMilliseconds : 0;
 		StopAndDisposeOutput(retiredOutput);
 		IWasapiOutputDevice output;
 		try
@@ -265,6 +303,7 @@ public sealed class WasapiAudioOutput : IDisposable
 				if (!_disposed)
 				{
 					Volatile.Write(ref _restartReason, reason);
+					Volatile.Write(ref _restartUnconditional, 1);
 					Volatile.Write(ref _restartRequested, true);
 				}
 			}
@@ -291,12 +330,15 @@ public sealed class WasapiAudioOutput : IDisposable
 		}
 
 		Interlocked.Increment(ref _outputRestarts);
-		this.StatusChanged?.Invoke("WASAPI audio output restarted after " + reason + ".");
+		this.StatusChanged?.Invoke(
+			"WASAPI audio output restarted after " + reason +
+			" (requestToStart=" + waitedMs.ToString("F0") + "ms, " + _lastStartTimings + ").");
 		return true;
 	}
 
 	// Lock-free: NAudio raises this from the playback thread, which WasapiOut.Stop() joins.
-	private void RequestOutputRestart(string reason)
+	// targetEndpointId is the new default for a default-device change; null means restart regardless.
+	private void RequestOutputRestart(string reason, string? targetEndpointId)
 	{
 		if (Volatile.Read(ref _disposed))
 		{
@@ -305,6 +347,15 @@ public sealed class WasapiAudioOutput : IDisposable
 
 		string resolvedReason = string.IsNullOrWhiteSpace(reason) ? "audio endpoint changed" : reason;
 		Volatile.Write(ref _restartReason, resolvedReason);
+		if (targetEndpointId == null)
+		{
+			Volatile.Write(ref _restartUnconditional, 1);
+		}
+		else
+		{
+			Volatile.Write(ref _restartTargetEndpointId, targetEndpointId);
+		}
+		Interlocked.Exchange(ref _restartRequestedTimestamp, Stopwatch.GetTimestamp());
 		Volatile.Write(ref _restartRequested, true);
 		this.StatusChanged?.Invoke("WASAPI audio output restart requested: " + resolvedReason + ".");
 	}
@@ -322,7 +373,7 @@ public sealed class WasapiAudioOutput : IDisposable
 			return;
 		}
 
-		RequestOutputRestart("playback stopped: " + e.Exception.Message);
+		RequestOutputRestart("playback stopped: " + e.Exception.Message, targetEndpointId: null);
 	}
 
 	private void LogStatusThrottled(int beforeMilliseconds)
@@ -425,6 +476,8 @@ internal interface IWasapiOutputDevice : IDisposable
 {
 	event EventHandler<StoppedEventArgs>? PlaybackStopped;
 
+	string? EndpointId { get; }
+
 	void Init(IWaveProvider waveProvider);
 
 	void Play();
@@ -439,29 +492,63 @@ internal interface IWasapiOutputDeviceFactory
 
 internal interface IAudioEndpointRestartNotifier : IDisposable
 {
-	event Action<string>? RestartRequested;
+	// reason, plus the new default endpoint id for a default-device change (null otherwise).
+	event Action<string, string?>? RestartRequested;
 }
 
 internal sealed class NAudioWasapiOutputDeviceFactory : IWasapiOutputDeviceFactory
 {
 	public IWasapiOutputDevice Create()
 	{
-		return new NAudioWasapiOutputDevice(new WasapiOut(AudioClientShareMode.Shared, WasapiAudioOutput.WasapiLatencyMilliseconds));
+		// Same endpoint WasapiOut(shareMode, latency) picks, resolved here so its id is known.
+		MMDevice device;
+		using (var enumerator = new MMDeviceEnumerator())
+		{
+			device = enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Console);
+		}
+
+		try
+		{
+			var output = new WasapiOut(device, AudioClientShareMode.Shared, true, WasapiAudioOutput.WasapiLatencyMilliseconds);
+			return new NAudioWasapiOutputDevice(output, device);
+		}
+		catch
+		{
+			device.Dispose();
+			throw;
+		}
 	}
 }
 
 internal sealed class NAudioWasapiOutputDevice : IWasapiOutputDevice
 {
 	private readonly WasapiOut _output;
+	private readonly MMDevice _device;
 
-	public NAudioWasapiOutputDevice(WasapiOut output)
+	public NAudioWasapiOutputDevice(WasapiOut output, MMDevice device)
 	{
 		_output = output;
+		_device = device;
+		EndpointId = TryGetId(device);
 		_output.PlaybackStopped += (_, e) => PlaybackStopped?.Invoke(this, e);
 	}
 
 	// Re-raised with this wrapper as sender so WasapiAudioOutput can tell a stale device from the current one.
 	public event EventHandler<StoppedEventArgs>? PlaybackStopped;
+
+	public string? EndpointId { get; }
+
+	private static string? TryGetId(MMDevice device)
+	{
+		try
+		{
+			return device.ID;
+		}
+		catch
+		{
+			return null;
+		}
+	}
 
 	public void Init(IWaveProvider waveProvider)
 	{
@@ -481,6 +568,7 @@ internal sealed class NAudioWasapiOutputDevice : IWasapiOutputDevice
 	public void Dispose()
 	{
 		_output.Dispose();
+		_device.Dispose();
 	}
 }
 
@@ -500,7 +588,7 @@ internal sealed class DefaultAudioEndpointRestartNotifier : IAudioEndpointRestar
 		_enumerator.RegisterEndpointNotificationCallback(_client);
 	}
 
-	public event Action<string>? RestartRequested;
+	public event Action<string, string?>? RestartRequested;
 
 	public static IAudioEndpointRestartNotifier? TryCreate()
 	{
@@ -557,7 +645,7 @@ internal sealed class DefaultAudioEndpointRestartNotifier : IAudioEndpointRestar
 
 		if (!string.Equals(previous, defaultDeviceId, StringComparison.OrdinalIgnoreCase))
 		{
-			RaiseRestartRequested($"default render endpoint changed ({role})");
+			RaiseRestartRequested($"default render endpoint changed ({role})", string.IsNullOrWhiteSpace(defaultDeviceId) ? null : defaultDeviceId);
 		}
 	}
 
@@ -568,14 +656,14 @@ internal sealed class DefaultAudioEndpointRestartNotifier : IAudioEndpointRestar
 			return;
 		}
 
-		RaiseRestartRequested("render endpoint state changed to " + newState);
+		RaiseRestartRequested("render endpoint state changed to " + newState, null);
 	}
 
 	private void HandleDeviceRemoved(string deviceId)
 	{
 		if (IsCurrentRenderEndpoint(deviceId))
 		{
-			RaiseRestartRequested("render endpoint removed");
+			RaiseRestartRequested("render endpoint removed", null);
 		}
 	}
 
@@ -583,7 +671,7 @@ internal sealed class DefaultAudioEndpointRestartNotifier : IAudioEndpointRestar
 	{
 		if (IsCurrentRenderEndpoint(deviceId))
 		{
-			RaiseRestartRequested("render endpoint added");
+			RaiseRestartRequested("render endpoint added", null);
 		}
 	}
 
@@ -598,9 +686,9 @@ internal sealed class DefaultAudioEndpointRestartNotifier : IAudioEndpointRestar
 		}
 	}
 
-	private void RaiseRestartRequested(string reason)
+	private void RaiseRestartRequested(string reason, string? targetEndpointId)
 	{
-		RestartRequested?.Invoke(reason);
+		RestartRequested?.Invoke(reason, targetEndpointId);
 	}
 
 	private static string? TryGetDefaultRenderEndpointId(MMDeviceEnumerator enumerator)
