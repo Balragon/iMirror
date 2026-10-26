@@ -5,7 +5,7 @@ namespace MacMirrorReceiver.Networking;
 /// <see cref="Ephemeral"/> lets tests bind whatever is free instead of competing with a
 /// running iMirror or Bonjour on the developer machine.
 /// </summary>
-internal sealed record AirPlayListenerPorts(int AirPlay, int Raop, int Data, int Event, int Timing)
+public sealed record AirPlayListenerPorts(int AirPlay, int Raop, int Data, int Event, int Timing)
 {
 	public static AirPlayListenerPorts Default { get; } = new AirPlayListenerPorts(7000, 5000, 7100, 7101, 7102);
 
