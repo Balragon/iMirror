@@ -16,8 +16,17 @@ internal static class AppIconTheme
 	// chrome, which iMirror keeps dark.
 	internal const string SystemUsesLightThemeValueName = "SystemUsesLightTheme";
 
-	public static readonly Uri DarkIconUri = new Uri("pack://application:,,,/Assets/iMirror.ico", UriKind.Absolute);
-	public static readonly Uri LightIconUri = new Uri("pack://application:,,,/Assets/iMirror-light.ico", UriKind.Absolute);
+	public static Uri DarkIconUri { get; } = CreatePackUri("/Assets/iMirror.ico");
+	public static Uri LightIconUri { get; } = CreatePackUri("/Assets/iMirror-light.ico");
+
+	private static Uri CreatePackUri(string resourcePath)
+	{
+		// The pack:// scheme is registered by PackUriHelper's static initializer, which WPF
+		// runs when an Application is created. Outside that (unit tests), constructing the
+		// Uri first throws UriFormatException, so touch the helper to force registration.
+		_ = System.IO.Packaging.PackUriHelper.UriSchemePack;
+		return new Uri("pack://application:,,," + resourcePath, UriKind.Absolute);
+	}
 
 	/// <summary>True when Windows is set to a light system theme; false (dark) when unset or unreadable.</summary>
 	public static bool IsSystemLightTheme()
