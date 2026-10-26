@@ -865,8 +865,10 @@ public sealed class FfmpegDecoder : IDisposable
 		{
 			return text;
 		}
-		string? localToolsFfmpeg = FindFfmpegInAncestorTools(AppContext.BaseDirectory) ??
-			FindFfmpegInAncestorTools(Environment.CurrentDirectory);
+		// Only the install/build tree is probed. The working directory is whatever the launcher
+		// set (a shortcut's "Start in", a network share), so an ffmpeg.exe planted under its
+		// ancestors would otherwise be executed with the receiver's privileges.
+		string? localToolsFfmpeg = FindFfmpegInAncestorTools(AppContext.BaseDirectory);
 		if (localToolsFfmpeg != null)
 		{
 			return localToolsFfmpeg;

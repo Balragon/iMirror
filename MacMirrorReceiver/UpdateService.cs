@@ -342,10 +342,17 @@ internal sealed class UpdateService
 		{
 			return null;
 		}
+		if (!Uri.TryCreate(updateInfo.Sha256SumsAssetUrl, UriKind.Absolute, out Uri? sumsUri) || sumsUri.Scheme != Uri.UriSchemeHttps)
+		{
+			// The checksum is the only integrity gate for the unsigned installer; it must come
+			// over TLS like the installer itself. Treat anything else as "no checksum" (fail closed).
+			AppLog.Write("SHA256SUMS URL is not HTTPS; refusing to use it: " + updateInfo.Sha256SumsAssetUrl);
+			return null;
+		}
 
 		try
 		{
-			using HttpResponseMessage response = await SendAsync(updateInfo.Sha256SumsAssetUrl, HttpCompletionOption.ResponseContentRead, cancellationToken)
+			using HttpResponseMessage response = await SendAsync(sumsUri.ToString(), HttpCompletionOption.ResponseContentRead, cancellationToken)
 				.ConfigureAwait(false);
 			response.EnsureSuccessStatusCode();
 			string text = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);

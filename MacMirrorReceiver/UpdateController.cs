@@ -69,6 +69,8 @@ internal sealed class UpdateController
 
 	private bool _startupUpdateCheckStarted;
 
+	private bool _installInProgress;
+
 	public UpdateController(
 		UpdateService updateService,
 		IUpdateNoticeView view,
@@ -206,6 +208,16 @@ internal sealed class UpdateController
 
 	public async Task<bool> InstallUpdateAsync(UpdateInfo updateInfo, IProgress<double>? progress)
 	{
+		if (_installInProgress)
+		{
+			// The main window and the settings window both offer Update; a second click while
+			// the first download runs used to hit the exclusive .download file, throw, and flip
+			// the notice to "Retry" while the first download went on to launch the installer.
+			AppLog.Write("Update install already in progress; ignoring a second request.");
+			return false;
+		}
+
+		_installInProgress = true;
 		try
 		{
 			_pendingUpdate = updateInfo;
@@ -237,6 +249,10 @@ internal sealed class UpdateController
 			_view.SetStatus("Update could not be installed: " + ex.Message);
 			_view.ShowInstallFailed();
 			return false;
+		}
+		finally
+		{
+			_installInProgress = false;
 		}
 	}
 

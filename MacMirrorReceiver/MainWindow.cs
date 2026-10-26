@@ -1345,7 +1345,7 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 	{
 		try
 		{
-			IPEndPoint endpoint = ResolveEndpoint();
+			IPEndPoint endpoint = await ResolveEndpointAsync();
 			string pin = PinTextBox.Text.Trim();
 			if (pin.Length != 6 || !pin.All(char.IsDigit))
 			{
@@ -2095,7 +2095,7 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 		UpdateDiagnostics();
 	}
 
-	private IPEndPoint ResolveEndpoint()
+	private async Task<IPEndPoint> ResolveEndpointAsync()
 	{
 		UpdateEndpointFieldsFromSelectedDevice();
 		string text = HostTextBox.Text.Trim();
@@ -2107,7 +2107,9 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 		{
 			throw new InvalidOperationException("Port must be a number.");
 		}
-		IPAddress[] array = (from address in Dns.GetHostAddresses(text)
+		// Async DNS: the synchronous lookup froze the window for the resolver timeout when a
+		// typed host name did not resolve.
+		IPAddress[] array = (from address in await Dns.GetHostAddressesAsync(text)
 			where address.AddressFamily == AddressFamily.InterNetwork
 			select address).ToArray();
 		if (array.Length == 0)
