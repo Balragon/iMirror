@@ -41,27 +41,27 @@ Additional tests, edge-case coverage, or real-device validation reports are alwa
 ### Prerequisites
 
 - **Windows 10+** (x64).
-- **Visual Studio 2022** or **dotnet 8.0 SDK** CLI.
+- **Visual Studio 2022** or the **.NET 10 SDK** CLI.
 - **FFmpeg:** [Gyan essentials build](https://github.com/GyanD/codexffmpeg/releases) or `winget install Gyan.FFmpeg.Essentials`.
 - For GPU testing: NVIDIA, Intel, or AMD GPU with hardware video decode support.
 
 ### Build
 
 ```powershell
-dotnet build .\MacMirrorReceiver.csproj -c Release
+dotnet build iMirror.sln -c Release
 ```
 
 ### Run
 
 ```powershell
-.\bin\Release\net8.0-windows\iMirror.exe
+.\bin\Release\net10.0-windows\iMirror.exe
 ```
 
 ### Test
 
-Unit tests:
+Unit tests (the same command CI runs):
 ```powershell
-dotnet test .\MacMirrorReceiver.Tests.csproj -c Release
+dotnet test iMirror.sln -c Release
 ```
 
 Real-device testing (v0.3+):
@@ -174,7 +174,7 @@ See [`docs/specs/v04-product-surface-roadmap.md`](docs/specs/v04-product-surface
 ## Questions?
 
 - Open a [GitHub Discussion](https://github.com/Balragon/iMirror) (if enabled) or a [GitHub Issue](https://github.com/Balragon/iMirror/issues) to ask.
-- For private inquiries, email maintainers (contact info in README).
+- For security issues, follow [SECURITY.md](SECURITY.md).
 
 ---
 
