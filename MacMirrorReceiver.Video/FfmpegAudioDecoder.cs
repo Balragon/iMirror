@@ -405,7 +405,7 @@ public sealed class FfmpegAudioDecoder : IDisposable
 		}
 	}
 
-	private static byte[] BuildInitSegment(int sampleRate, int channels, int samplesPerFrame)
+	internal static byte[] BuildInitSegment(int sampleRate, int channels, int samplesPerFrame)
 	{
 		byte[] asc = BuildEldAudioSpecificConfig(sampleRate, channels, samplesPerFrame);
 		byte[] stsd = FullBox("stsd", 0, 0, UInt32(1), Mp4a(asc, sampleRate, channels));
@@ -460,7 +460,7 @@ public sealed class FfmpegAudioDecoder : IDisposable
 		return Concat(ftyp, moov);
 	}
 
-	private static byte[] BuildMediaSegment(byte[] frame, uint sequenceNumber, ulong decodeTime, int samplesPerFrame)
+	internal static byte[] BuildMediaSegment(byte[] frame, uint sequenceNumber, ulong decodeTime, int samplesPerFrame)
 	{
 		byte[] mfhd = FullBox("mfhd", 0, 0, UInt32(sequenceNumber));
 		byte[] tfhd = FullBox("tfhd", 0, 0x020008, UInt32(1), UInt32((uint)samplesPerFrame));
@@ -514,7 +514,7 @@ public sealed class FfmpegAudioDecoder : IDisposable
 		return Concat(new[] { (byte)tag, (byte)0x80, (byte)0x80, (byte)0x80, (byte)payload.Length }, payload);
 	}
 
-	private static byte[] BuildEldAudioSpecificConfig(int sampleRate, int channels, int samplesPerFrame)
+	internal static byte[] BuildEldAudioSpecificConfig(int sampleRate, int channels, int samplesPerFrame)
 	{
 		var writer = new BitWriter();
 		writer.Write(31, 5);
