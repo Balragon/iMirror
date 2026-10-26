@@ -56,8 +56,9 @@ public sealed class FfmpegAudioFragmentTests
 		int trun = IndexOf(segment, "trun");
 		Assert.True(trun > 0);
 		// trun: size(4) type(4) version/flags(4) sample_count(4) data_offset(4) sample_size(4)
-		int dataOffset = BinaryPrimitives.ReadInt32BigEndian(segment.AsSpan(trun + 12, 4));
-		int sampleSize = (int)BinaryPrimitives.ReadUInt32BigEndian(segment.AsSpan(trun + 16, 4));
+		Assert.Equal(1u, BinaryPrimitives.ReadUInt32BigEndian(segment.AsSpan(trun + 12, 4)));
+		int dataOffset = BinaryPrimitives.ReadInt32BigEndian(segment.AsSpan(trun + 16, 4));
+		int sampleSize = (int)BinaryPrimitives.ReadUInt32BigEndian(segment.AsSpan(trun + 20, 4));
 		Assert.Equal(moofSize + 8, dataOffset); // first byte of the mdat payload, relative to moof
 		Assert.Equal(frame.Length, sampleSize);
 		Assert.Equal(mdatOffset + 8, moofOffset + dataOffset);
