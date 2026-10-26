@@ -34,6 +34,10 @@ internal sealed class AirPlayAudioReceiver : IDisposable
 
 	private byte[]? _aesKey;
 	private byte[]? _eiv;
+	// The sender named by SETUP. The UDP sockets are bound to IPAddress.Any, so without this
+	// check any LAN host could inject packets into the decrypt/decode path.
+	private IPAddress? _remoteAddress;
+	private long _rejectedPacketCount;
 	private AirPlayAudioDecryptor? _decryptor;
 	private AirPlayAudioStreamInfo _info = AirPlayAudioStreamInfo.Empty;
 	private long _decryptedFrameCount;
@@ -85,6 +89,8 @@ internal sealed class AirPlayAudioReceiver : IDisposable
 				DataPort = ((IPEndPoint)_dataClient.Client.LocalEndPoint!).Port;
 				ControlPort = ((IPEndPoint)_controlClient.Client.LocalEndPoint!).Port;
 				_info = info;
+				_remoteAddress = remoteAddress;
+				_rejectedPacketCount = 0;
 				_aesKey = aesKey == null ? null : CopyOf(aesKey);
 				_eiv = eiv == null ? null : CopyOf(eiv);
 				_decryptor = AirPlayAudioDecryptor.TryCreate(crypto?.AesKey, crypto?.SharedSecret, crypto?.Eiv);
@@ -171,6 +177,10 @@ internal sealed class AirPlayAudioReceiver : IDisposable
 			try
 			{
 				UdpReceiveResult result = await client.ReceiveAsync(token);
+				if (!IsExpectedSender(result.RemoteEndPoint, "data"))
+				{
+					continue;
+				}
 				HandleDataPacket(result.Buffer);
 			}
 			catch (OperationCanceledException)
@@ -199,6 +209,10 @@ internal sealed class AirPlayAudioReceiver : IDisposable
 			try
 			{
 				UdpReceiveResult result = await client.ReceiveAsync(token);
+				if (!IsExpectedSender(result.RemoteEndPoint, "control"))
+				{
+					continue;
+				}
 				HandleControlPacket(result.Buffer);
 			}
 			catch (OperationCanceledException)
@@ -216,6 +230,29 @@ internal sealed class AirPlayAudioReceiver : IDisposable
 		}
 	}
 
+	private bool IsExpectedSender(IPEndPoint remote, string socketLabel)
+	{
+		IPAddress? expected;
+		lock (_gate)
+		{
+			expected = _remoteAddress;
+		}
+
+		// SETUP always arrives over TCP with a known peer, so expected is only null when the
+		// receiver was started without one; in that case there is nothing to filter against.
+		if (expected == null || PeerAddress.Matches(expected, remote.Address))
+		{
+			return true;
+		}
+
+		long rejected = Interlocked.Increment(ref _rejectedPacketCount);
+		if (rejected <= 3 || rejected % 1000 == 0)
+		{
+			AppLog.Write($"AirPlay audio {socketLabel} packet from {remote} rejected: sender is {expected} (rejected={rejected}).");
+		}
+		return false;
+	}
+
 	private void HandleDataPacket(byte[] packet)
 	{
 		if (packet.Length < RtpHeaderLength)
@@ -224,6 +261,10 @@ internal sealed class AirPlayAudioReceiver : IDisposable
 		}
 
 		int version = (packet[0] >> 6) & 0x03;
+		if (version != 2)
+		{
+			return;
+		}
 		bool marker = (packet[1] & 0x80) != 0;
 		int payloadType = packet[1] & 0x7F;
 		int sequence = BinaryPrimitives.ReadUInt16BigEndian(packet.AsSpan(2, 2));
