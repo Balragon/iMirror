@@ -31,6 +31,17 @@ public sealed class AirPlayProbeService : IDisposable
 	private const int TimingPort = 7102;
 	private const int MaxH264PrefixProbeBytes = 64;
 	private const int MaxH264NalUnitLength = 8 * 1024 * 1024;
+	// Largest mirror packet payload the framer accepts (a 4K IDR at a high bitrate is a few MiB).
+	private const int MirrorPacketHeaderBytes = 128;
+	private const int MaxMirrorPayloadBytes = 8 * 1024 * 1024;
+	// The reassembly buffer must be able to hold one full header + payload, otherwise a packet
+	// larger than the buffer could never be reassembled and the framer would resync into garbage.
+	private const int MaxPendingDataBytes = MirrorPacketHeaderBytes + MaxMirrorPayloadBytes;
+	private const int PendingDataTailBytes = 128 * 1024;
+	// Bound on the exhaustive key/IV/offset candidate sweep (~4,000 AES-CTR passes over the
+	// packet per attempt). It exists to recover from an unknown key derivation once per
+	// session, not to run on every packet that fails H.264 normalization.
+	private const int MaxDecryptorSweepAttemptsPerSession = 4;
 	private const int StableDisplayWidth = 1920;
 	private const int StableDisplayHeight = 1080;
 	// GPU (MediaFoundation/D3D11) path advertised geometry. Set to the Mac's native 2560x1440 so the
@@ -131,6 +142,7 @@ public sealed class AirPlayProbeService : IDisposable
 	private TcpClient? _activeDataClient;
 	private bool _announcedIdentitylessMirrorSession;
 	private AirPlayMirrorDecryptor? _mirrorDecryptor;
+	private int _decryptorSweepAttempts;
 	private List<AirPlayMirrorDecryptor>? _mirrorDecryptorProbePool;
 	private bool _loggedWaitingForMirrorDecryptor;
 	private readonly HashSet<int> _loggedDecryptPayloadFailureTypes = new HashSet<int>();
@@ -497,9 +509,10 @@ public sealed class AirPlayProbeService : IDisposable
 				SetStatus("AirPlay data arrived, but payload is not clear H.264 yet.");
 			}
 
-			if (pending.Count > 1024 * 1024)
+			if (pending.Count > MaxPendingDataBytes)
 			{
-				pending.RemoveRange(0, pending.Count - 128 * 1024);
+				AppLog.Write($"AirPlay data buffer exceeded {MaxPendingDataBytes:N0} bytes without a complete packet; discarding all but the last {PendingDataTailBytes:N0} bytes.");
+				pending.RemoveRange(0, pending.Count - PendingDataTailBytes);
 			}
 		}
 
@@ -521,7 +534,7 @@ public sealed class AirPlayProbeService : IDisposable
 			int payloadSize = BinaryPrimitives.ReadInt32LittleEndian(header.AsSpan(0, 4));
 			int payloadType = BinaryPrimitives.ReadUInt16LittleEndian(header.AsSpan(4, 2)) & 0xFF;
 			int payloadOption = BinaryPrimitives.ReadUInt16LittleEndian(header.AsSpan(6, 2));
-			if (payloadSize < 0 || payloadSize > 8 * 1024 * 1024)
+			if (payloadSize < 0 || payloadSize > MaxMirrorPayloadBytes)
 			{
 				AppLog.Write($"AirPlay mirror packet header invalid: size={payloadSize}, type={payloadType}, option={payloadOption}.");
 				pending.RemoveAt(0);
@@ -793,6 +806,19 @@ public sealed class AirPlayProbeService : IDisposable
 		ulong? rtspTargetSessionId;
 		lock (_mirrorKeyGate)
 		{
+			if (_mirrorDecryptor != null)
+			{
+				// A decryptor is already selected for this session. A packet that still fails
+				// H.264 normalization (e.g. a NAL type outside the plausibility whitelist) is a
+				// dropped packet, not evidence that the key derivation changed; re-running the
+				// full sweep here cost ~4,000 AES passes per packet and stalled the data loop.
+				return false;
+			}
+			if (_decryptorSweepAttempts >= MaxDecryptorSweepAttemptsPerSession)
+			{
+				return false;
+			}
+			_decryptorSweepAttempts++;
 			rtspTargetSessionId = _rtspTargetSessionId;
 		}
 
@@ -1542,6 +1568,7 @@ public sealed class AirPlayProbeService : IDisposable
 				_loggedWaitingForMirrorDecryptor = false;
 				_loggedDecryptPayloadFailureTypes.Clear();
 				_loggedDecryptCandidateReportTypes.Clear();
+				_decryptorSweepAttempts = 0;
 				_loggedSkippedPacketTypes.Clear();
 				_loggedDecryptorInUse = false;
 				_mirrorDiagnosticWritten = false;
@@ -1575,6 +1602,7 @@ public sealed class AirPlayProbeService : IDisposable
 					_loggedWaitingForMirrorDecryptor = false;
 					_loggedDecryptPayloadFailureTypes.Clear();
 					_loggedDecryptCandidateReportTypes.Clear();
+					_decryptorSweepAttempts = 0;
 					_loggedSkippedPacketTypes.Clear();
 					_loggedDecryptorInUse = false;
 					_mirrorDiagnosticWritten = false;
@@ -1755,6 +1783,7 @@ public sealed class AirPlayProbeService : IDisposable
 			_loggedWaitingForMirrorDecryptor = false;
 			_loggedDecryptPayloadFailureTypes.Clear();
 			_loggedDecryptCandidateReportTypes.Clear();
+			_decryptorSweepAttempts = 0;
 			_loggedSkippedPacketTypes.Clear();
 			_loggedDecryptorInUse = false;
 			_mirrorDiagnosticWritten = false;
