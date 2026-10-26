@@ -11,9 +11,9 @@ namespace MacMirrorReceiver.Video;
 
 public sealed class FfmpegDecoder : IDisposable
 {
-	private const int MaxQueuedInputPackets = 1024;
+	internal const int MaxQueuedInputPackets = 1024;
 
-	private const long MaxQueuedInputBytes = 64L * 1024L * 1024L;
+	internal const long MaxQueuedInputBytes = 64L * 1024L * 1024L;
 
 	private const long WriteStallThresholdMs = 35;
 
@@ -46,6 +46,10 @@ public sealed class FfmpegDecoder : IDisposable
 	private readonly Queue<H264InputPacket> _inputQueue = new Queue<H264InputPacket>();
 
 	private long _queuedInputBytes;
+
+	private long _overflowDropsSinceStatus;
+
+	private long _lastOverflowStatusTick;
 
 	private long _latestInputReceivedTick;
 
@@ -191,11 +195,6 @@ public sealed class FfmpegDecoder : IDisposable
 	// fallback d3d11va -> dxva2 -> software). The new process has no H.264 extradata, so
 	// the upstream Annex B gate must re-establish SPS/PPS and wait for the next keyframe.
 	public event Action? DecoderRestarted;
-
-	// Raised when the input queue overflowed and was flushed without an IDR to resume from.
-	// The upstream gate should call H264AnnexBStreamGate.RequireKeyframe() so feeding resumes
-	// cleanly at the next keyframe instead of with mid-GOP P-frames.
-	public event Action? InputQueueOverflowed;
 
 	public bool DumpH264Enabled { get; set; }
 
@@ -478,27 +477,41 @@ public sealed class FfmpegDecoder : IDisposable
 		{
 			this.StatusChanged?.Invoke($"H264 submitted dump reached {MaxDumpBytes / (1024 * 1024)}MB cap; further packets are not captured.");
 		}
+		EnqueueInput(payload, sourceTimestampNanos, receivedTick);
+		// A backpressure drop is counted in DroppedInputPackets, not reported as unavailable input:
+		// false makes MainWindow log "input unavailable" once per dropped packet.
+		return true;
+	}
+
+	// The overflow policy, split from QueueH264 so tests can drive it without an FFmpeg process.
+	internal void EnqueueInput(byte[] payload, ulong sourceTimestampNanos, long receivedTick)
+	{
 		bool shouldSignal = false;
 		int flushed = 0;
 		bool droppedIncoming = false;
+		long overflowDropsToReport = 0;
+		int queuedAfter;
 		lock (_inputGate)
 		{
 			if (_inputQueue.Count >= MaxQueuedInputPackets || _queuedInputBytes + payload.Length > MaxQueuedInputBytes)
 			{
-				// Dropping individual H.264 packets corrupts the GOP until the next IDR (every
-				// later P-frame references the dropped one), which shows up as decoder
-				// "Invalid data" bursts. Recover in GOP units instead: flush the whole queue,
-				// then either resume from the incoming payload if it is itself an IDR sync
-				// point, or drop it too and let the upstream gate hold input until the next
-				// keyframe (InputQueueOverflowed -> H264AnnexBStreamGate.RequireKeyframe).
-				flushed = _inputQueue.Count;
-				_inputQueue.Clear();
-				_queuedInputBytes = 0L;
-				DroppedInputPackets += flushed;
-				if (!ContainsIdrNal(payload))
+				// Keep the queued GOP and drop only the incoming non-IDR packet. FFmpeg conceals the
+				// missing frame by repeating the previous reference, so the damage stays in the screen
+				// regions that frame changed and heals as they change again. Flushing the queue and
+				// waiting for the next keyframe instead loses video until reconnect: Mac senders send
+				// one IDR per connection and none on demand.
+				if (ContainsIdrNal(payload))
+				{
+					flushed = _inputQueue.Count;
+					_inputQueue.Clear();
+					_queuedInputBytes = 0L;
+					DroppedInputPackets += flushed;
+				}
+				else
 				{
 					droppedIncoming = true;
 					DroppedInputPackets++;
+					_overflowDropsSinceStatus++;
 				}
 			}
 
@@ -509,22 +522,32 @@ public sealed class FfmpegDecoder : IDisposable
 				_queuedInputBytes += payload.Length;
 				Interlocked.Increment(ref _acceptedInputPackets);
 			}
+
+			// One status line per second at most; the first drop of an overflow reports immediately.
+			if (_overflowDropsSinceStatus > 0)
+			{
+				long now = Environment.TickCount64;
+				if (now - _lastOverflowStatusTick >= 1000)
+				{
+					overflowDropsToReport = _overflowDropsSinceStatus;
+					_overflowDropsSinceStatus = 0;
+					_lastOverflowStatusTick = now;
+				}
+			}
+			queuedAfter = _inputQueue.Count;
 		}
 		if (flushed > 0)
 		{
-			this.StatusChanged?.Invoke(droppedIncoming
-				? $"Decoder input overflow: flushed {flushed} queued packet(s); waiting for next keyframe."
-				: $"Decoder input overflow: flushed {flushed} queued packet(s); resuming from incoming keyframe.");
-			if (droppedIncoming)
-			{
-				this.InputQueueOverflowed?.Invoke();
-			}
+			this.StatusChanged?.Invoke($"Decoder input overflow: flushed {flushed} queued packet(s); resuming from incoming keyframe.");
+		}
+		if (overflowDropsToReport > 0)
+		{
+			this.StatusChanged?.Invoke($"Decoder input overflow: dropped {overflowDropsToReport:N0} incoming non-keyframe(s) since last report and preserved queued GOP (queued={queuedAfter}).");
 		}
 		if (shouldSignal)
 		{
 			_inputSignal.Release();
 		}
-		return true;
 	}
 
 	private static bool ContainsIdrNal(byte[] payload)
