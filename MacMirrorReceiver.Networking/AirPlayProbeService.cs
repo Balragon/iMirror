@@ -1434,92 +1434,9 @@ public sealed class AirPlayProbeService : IDisposable
 		return -1;
 	}
 
-	private int EmitAnnexBPayloads(List<byte> pending)
-	{
-		int emitted = 0;
-		while (true)
-		{
-			int first = FindStartCode(pending, 0);
-			if (first < 0)
-			{
-				if (pending.Count > 4)
-				{
-					pending.RemoveRange(0, pending.Count - 4);
-				}
-				return emitted;
-			}
-			if (first > 0)
-			{
-				pending.RemoveRange(0, first);
-			}
 
-			int next = FindStartCode(pending, 4);
-			if (next < 0)
-			{
-				return emitted;
-			}
 
-			byte[] payload = pending.Take(next).ToArray();
-			pending.RemoveRange(0, next);
-			VideoPayloadReceived?.Invoke(payload, 0, Stopwatch.GetTimestamp());
-			emitted++;
-		}
-	}
 
-	private int EmitAvccPayloads(List<byte> pending)
-	{
-		int emitted = 0;
-		while (pending.Count >= 5)
-		{
-			int length = BinaryPrimitives.ReadInt32BigEndian(CollectionsMarshalAsSpan(pending).Slice(0, 4));
-			if (length <= 0 || length > 1024 * 1024)
-			{
-				return emitted;
-			}
-			if (pending.Count < 4 + length)
-			{
-				return emitted;
-			}
-
-			byte nalHeader = pending[4];
-			if ((nalHeader & 0x1F) == 0 || (nalHeader & 0x1F) > 23)
-			{
-				return emitted;
-			}
-
-			byte[] payload = new byte[4 + length];
-			payload[0] = 0;
-			payload[1] = 0;
-			payload[2] = 0;
-			payload[3] = 1;
-			pending.CopyTo(4, payload, 4, length);
-			pending.RemoveRange(0, 4 + length);
-			VideoPayloadReceived?.Invoke(payload, 0, Stopwatch.GetTimestamp());
-			emitted++;
-		}
-		return emitted;
-	}
-
-	private static ReadOnlySpan<byte> CollectionsMarshalAsSpan(List<byte> values)
-	{
-		return values.ToArray();
-	}
-
-	private static int FindStartCode(List<byte> bytes, int start)
-	{
-		for (int i = start; i + 3 < bytes.Count; i++)
-		{
-			if (bytes[i] == 0 && bytes[i + 1] == 0 && bytes[i + 2] == 1)
-			{
-				return i;
-			}
-			if (i + 4 < bytes.Count && bytes[i] == 0 && bytes[i + 1] == 0 && bytes[i + 2] == 0 && bytes[i + 3] == 1)
-			{
-				return i;
-			}
-		}
-		return -1;
-	}
 
 	/// <summary>
 	/// Reads one RTSP/HTTP request. Waiting for the first byte of a request is unbounded (the
@@ -2171,31 +2088,6 @@ public sealed class AirPlayProbeService : IDisposable
 		return response;
 	}
 
-	private string BuildInfoPlist()
-	{
-		return "<?xml version=\"1.0\" encoding=\"UTF-8\"?>" +
-			"<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">" +
-			"<plist version=\"1.0\"><dict>" +
-			PlistString("deviceid", _deviceId) +
-			PlistString("features", "0x5A7FFFF7,0x1E") +
-			PlistInteger("flags", 68) +
-				PlistString("model", "AppleTV3,2") +
-				PlistString("name", _displayName) +
-				PlistString("pi", _pairingId) +
-				PlistString("pk", _pairing.PublicKeyHex) +
-				PlistString("protovers", "1.1") +
-			PlistString("srcvers", "220.68") +
-			PlistInteger("statusFlags", 4) +
-			PlistInteger("vv", 2) +
-			"<key>displays</key><array><dict>" +
-			PlistInteger("width", 1920) +
-			PlistInteger("height", 1080) +
-			PlistInteger("widthPhysical", 1920) +
-			PlistInteger("heightPhysical", 1080) +
-			PlistInteger("refreshRate", 60) +
-			"</dict></array>" +
-				"</dict></plist>";
-	}
 
 	private byte[] BuildInfoBinaryPlist()
 	{
@@ -2294,31 +2186,7 @@ public sealed class AirPlayProbeService : IDisposable
 		return AirPlayBinaryPlist.Write(info);
 	}
 
-	private static string BuildSetupPlist()
-	{
-		return "<?xml version=\"1.0\" encoding=\"UTF-8\"?>" +
-			"<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">" +
-			"<plist version=\"1.0\"><dict>" +
-			PlistInteger("eventPort", EventPort) +
-			PlistInteger("timingPort", TimingPort) +
-			PlistInteger("dataPort", DataPort) +
-			PlistString("sessionUUID", Guid.NewGuid().ToString("D")) +
-			"</dict></plist>";
-	}
 
-	private static string PlistString(string key, string value) => "<key>" + EscapeXml(key) + "</key><string>" + EscapeXml(value) + "</string>";
-
-	private static string PlistInteger(string key, int value) => "<key>" + EscapeXml(key) + "</key><integer>" + value.ToString(System.Globalization.CultureInfo.InvariantCulture) + "</integer>";
-
-	private static string EscapeXml(string value)
-	{
-		return value
-			.Replace("&", "&amp;", StringComparison.Ordinal)
-			.Replace("<", "&lt;", StringComparison.Ordinal)
-			.Replace(">", "&gt;", StringComparison.Ordinal)
-			.Replace("\"", "&quot;", StringComparison.Ordinal)
-			.Replace("'", "&apos;", StringComparison.Ordinal);
-	}
 
 	private static void LogPairBody(string label, byte[] body)
 	{

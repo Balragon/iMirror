@@ -32,8 +32,6 @@ internal sealed class AirPlayAudioReceiver : IDisposable
 	private Task? _controlTask;
 	private AudioDumpWriter? _dump;
 
-	private byte[]? _aesKey;
-	private byte[]? _eiv;
 	// The sender named by SETUP. The UDP sockets are bound to IPAddress.Any, so without this
 	// check any LAN host could inject packets into the decrypt/decode path.
 	private IPAddress? _remoteAddress;
@@ -91,8 +89,6 @@ internal sealed class AirPlayAudioReceiver : IDisposable
 				_info = info;
 				_remoteAddress = remoteAddress;
 				_rejectedPacketCount = 0;
-				_aesKey = aesKey == null ? null : CopyOf(aesKey);
-				_eiv = eiv == null ? null : CopyOf(eiv);
 				_decryptor = AirPlayAudioDecryptor.TryCreate(crypto?.AesKey, crypto?.SharedSecret, crypto?.Eiv);
 				_packetCount = 0;
 				_decryptedFrameCount = 0;
@@ -151,8 +147,6 @@ internal sealed class AirPlayAudioReceiver : IDisposable
 			_controlClient = null;
 			_dump = null;
 			_decryptor = null;
-			_aesKey = null;
-			_eiv = null;
 		}
 
 		try
@@ -383,12 +377,6 @@ internal sealed class AirPlayAudioReceiver : IDisposable
 		StopInternal();
 	}
 
-	private static byte[] CopyOf(byte[] source)
-	{
-		byte[] copy = new byte[source.Length];
-		Buffer.BlockCopy(source, 0, copy, 0, source.Length);
-		return copy;
-	}
 
 	// Private local capture gated by Settings or IMIRROR_DUMP_AUDIO. Writes a length-framed raw RTP stream
 	// (every packet, header included) plus a sidecar meta.json that records the FairPlay-unwrapped
