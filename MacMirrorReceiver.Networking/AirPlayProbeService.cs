@@ -425,6 +425,18 @@ public sealed class AirPlayProbeService : IDisposable
 					EndMirrorSessionIfAnnounced($"{label} receiver client closed");
 				}
 			}
+			catch (Exception ex)
+			{
+				// Anything else (a parser bug, a malformed request that slipped past the plist
+				// guards, an event subscriber throwing) used to escape the fire-and-forget Task.Run
+				// in AcceptLoopAsync: the connection vanished with no log line and the mirror
+				// session state was never reset. Log it with the stack and tear down explicitly.
+				AppLog.Write($"{label} receiver client failed with an unexpected error: {ex}");
+				if (IsMirrorControlLabel(label))
+				{
+					EndMirrorSessionIfAnnounced($"{label} receiver client failed: {ex.GetType().Name}");
+				}
+			}
 		}
 	}
 
@@ -455,6 +467,24 @@ public sealed class AirPlayProbeService : IDisposable
 			try { superseded.Close(); } catch { }
 		}
 
+		try
+		{
+			await ReadDataStreamAsync(client, remote, myDataGeneration);
+		}
+		finally
+		{
+			lock (_mirrorKeyGate)
+			{
+				if (ReferenceEquals(_activeDataClient, client))
+				{
+					_activeDataClient = null;
+				}
+			}
+		}
+	}
+
+	private async Task ReadDataStreamAsync(TcpClient client, EndPoint? remote, int myDataGeneration)
+	{
 		using NetworkStream stream = client.GetStream();
 		byte[] buffer = new byte[64 * 1024];
 		List<byte> pending = new List<byte>();
@@ -500,14 +530,6 @@ public sealed class AirPlayProbeService : IDisposable
 			if (pending.Count > 1024 * 1024)
 			{
 				pending.RemoveRange(0, pending.Count - 128 * 1024);
-			}
-		}
-
-		lock (_mirrorKeyGate)
-		{
-			if (ReferenceEquals(_activeDataClient, client))
-			{
-				_activeDataClient = null;
 			}
 		}
 	}
