@@ -73,8 +73,9 @@ Out of scope:
 ## Sensitive Data
 
 iMirror's logs and diagnostic dumps may contain private screen content, audio,
-or FairPlay key material. These files are git-ignored and must never be
-committed or attached to public issues. Redact or trim them before sharing
+or FairPlay key material. They are written outside the repository by default
+and their file extensions are git-ignored, but they must never be committed
+or attached to public issues. Redact or trim them before sharing
 evidence in a private report.
 
 ## Disclosure Policy
