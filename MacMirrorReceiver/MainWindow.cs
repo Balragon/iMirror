@@ -752,6 +752,7 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 			CleanupGuards.RunStep("AirPlay probe dispose", () => _airPlayProbe.Dispose());
 			CleanupGuards.RunStep("mDNS browser dispose", () => _browser.Dispose());
 			CleanupGuards.RunStep("tray icon dispose", DisposeTrayIcon);
+			AppLog.Flush();
 			Application.Current.Shutdown();
 		}
 	}
