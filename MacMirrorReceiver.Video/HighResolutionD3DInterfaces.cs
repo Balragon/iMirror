@@ -1,4 +1,3 @@
-#if HIGH_RESOLUTION_D3D
 using System;
 using System.Windows;
 
@@ -72,4 +71,3 @@ public interface IHighResolutionD3DPresenter : IDisposable
 
 	void PresentFrame(IHighResolutionD3DFrame frame);
 }
-#endif

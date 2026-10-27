@@ -131,23 +131,14 @@ public partial class SettingsWindow : Wpf.Ui.Controls.FluentWindow
 		}
 		else if (_host.GpuQualityRequested)
 		{
-#if HIGH_RESOLUTION_D3D
 			RenderModeSettingDetailTextBlock.Text = "Native GPU mode uses Media Foundation/D3D11 decode and present.";
 			RenderModeNoteTextBlock.Text = "Falls back to the software decoder if GPU startup fails.";
-#else
-			RenderModeSettingDetailTextBlock.Text = "Native GPU mode requires a HIGH_RESOLUTION_D3D build.";
-			RenderModeNoteTextBlock.Text = "This build will use the 1080p compatibility path.";
-#endif
 			RenderModeNoteTextBlock.Visibility = Visibility.Visible;
 		}
 		else
 		{
 			RenderModeSettingDetailTextBlock.Text = "GPU native mode is unavailable; iMirror will advertise 1080p.";
-#if HIGH_RESOLUTION_D3D
 			RenderModeNoteTextBlock.Text = "Set IMIRROR_EXPERIMENTAL_QUALITY=1 to force the GPU path for local validation.";
-#else
-			RenderModeNoteTextBlock.Text = "Build with HIGH_RESOLUTION_D3D to enable the GPU path.";
-#endif
 			RenderModeNoteTextBlock.Visibility = Visibility.Visible;
 		}
 		UpdateSettingsDirtyState();

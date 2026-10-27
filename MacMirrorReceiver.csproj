@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <AssemblyName>iMirror</AssemblyName>
     <ApplicationIcon>Assets\iMirror.ico</ApplicationIcon>
@@ -17,9 +17,9 @@
        The remaining identity attributes stay hand-authored in Properties/AssemblyInfo.cs,
        so their SDK generators are disabled to avoid duplicate-attribute (CS0579) errors. -->
   <PropertyGroup>
-    <Version>0.2.0</Version>
-    <FileVersion>0.2.0.0</FileVersion>
-    <AssemblyVersion>0.2.0.0</AssemblyVersion>
+    <Version>0.7.5</Version>
+    <FileVersion>0.7.5.0</FileVersion>
+    <AssemblyVersion>0.7.5.0</AssemblyVersion>
     <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
     <GenerateAssemblyCompanyAttribute>false</GenerateAssemblyCompanyAttribute>
     <GenerateAssemblyConfigurationAttribute>false</GenerateAssemblyConfigurationAttribute>
@@ -37,11 +37,6 @@
   </PropertyGroup>
   <PropertyGroup>
     <RootNamespace>MacMirrorReceiver</RootNamespace>
-  </PropertyGroup>
-  <!-- GPU (MediaFoundation/D3D11) decode+present is the default engine; always compiled. The
-       software FFmpeg path remains as the runtime fallback when hardware decode is unavailable. -->
-  <PropertyGroup>
-    <DefineConstants>$(DefineConstants);HIGH_RESOLUTION_D3D</DefineConstants>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="BouncyCastle.Cryptography" Version="2.5.1" />
