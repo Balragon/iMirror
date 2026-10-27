@@ -29,6 +29,8 @@ public sealed class FfmpegAudioDecoder : IDisposable
 	private readonly SemaphoreSlim _inputSignal = new SemaphoreSlim(0);
 	private readonly Queue<AacAudioInputFrame> _inputQueue = new Queue<AacAudioInputFrame>();
 	private readonly Queue<AudioFrameTiming> _writtenTiming = new Queue<AudioFrameTiming>();
+	// Far above ffmpeg's real in-flight depth (a few frames); only guards against unbounded growth.
+	private const int MaxWrittenTimingEntries = 256;
 	private readonly HashSet<ushort> _seenSequences = new HashSet<ushort>();
 	private readonly Queue<ushort> _seenSequenceOrder = new Queue<ushort>();
 	private long _queuedInputBytes;
@@ -141,13 +143,13 @@ public sealed class FfmpegAudioDecoder : IDisposable
 
 			if (_inputQueue.Count >= MaxQueuedInputFrames || _queuedInputBytes + frame.Length > MaxQueuedInputBytes)
 			{
+				// Only the not-yet-written frames are dropped. _writtenTiming describes frames
+				// already inside ffmpeg whose PCM is still to come, so it must stay intact or
+				// every later PCM frame would be paired with a newer packet's timing and the
+				// latency estimate would under-report for the rest of the session.
 				DroppedInputFrames += _inputQueue.Count;
 				_inputQueue.Clear();
 				_queuedInputBytes = 0L;
-				lock (_timingGate)
-				{
-					_writtenTiming.Clear();
-				}
 				this.StatusChanged?.Invoke("Audio decoder input overflow: flushed queued AAC frames to recover low latency.");
 			}
 
@@ -275,6 +277,12 @@ public sealed class FfmpegAudioDecoder : IDisposable
 						lock (_timingGate)
 						{
 							_writtenTiming.Enqueue(new AudioFrameTiming(packet.RtpTimestamp, packet.Sequence, packet.ReceivedTick, sourceTimestampNanos));
+							// ffmpeg emits one PCM frame per written AAC frame; a frame it swallowed
+							// (decode error) would otherwise leave a permanently stale entry at the head.
+							while (_writtenTiming.Count > MaxWrittenTimingEntries)
+							{
+								_writtenTiming.Dequeue();
+							}
 						}
 						RecordWriteMetrics(ElapsedMilliseconds(startTick, endTick));
 					}
