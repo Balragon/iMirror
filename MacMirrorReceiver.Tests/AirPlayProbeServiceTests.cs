@@ -538,7 +538,7 @@ public sealed class AirPlayProbeServiceTests
 		byte[] raw = Encoding.ASCII.GetBytes("SETUP rtsp://x/1 RTSP/1.0\r\nCSeq: 3\r\nContent-Length: 5\r\n\r\nhello");
 		using var stream = new MemoryStream(raw);
 
-		var request = await AirPlayProbeService.ReadRequestAsync(stream, CancellationToken.None);
+		var request = await AirPlayRtspCodec.ReadRequestAsync(stream, CancellationToken.None);
 
 		Assert.NotNull(request);
 		Assert.Equal("SETUP", request!.Method);
@@ -555,7 +555,7 @@ public sealed class AirPlayProbeServiceTests
 		byte[] raw = Encoding.ASCII.GetBytes($"POST /feedback RTSP/1.0\r\nContent-Length: {contentLength}\r\n\r\n");
 		using var stream = new MemoryStream(raw);
 
-		var request = await AirPlayProbeService.ReadRequestAsync(stream, CancellationToken.None);
+		var request = await AirPlayRtspCodec.ReadRequestAsync(stream, CancellationToken.None);
 
 		Assert.Null(request);
 	}
@@ -569,7 +569,7 @@ public sealed class AirPlayProbeServiceTests
 		byte[] raw = Encoding.ASCII.GetBytes($"GET /info RTSP/1.0\r\nContent-Length: {contentLength}\r\n\r\n");
 		using var stream = new MemoryStream(raw);
 
-		var request = await AirPlayProbeService.ReadRequestAsync(stream, CancellationToken.None);
+		var request = await AirPlayRtspCodec.ReadRequestAsync(stream, CancellationToken.None);
 
 		Assert.NotNull(request);
 		Assert.Empty(request!.Body);
@@ -578,10 +578,10 @@ public sealed class AirPlayProbeServiceTests
 	[Fact]
 	public async Task ReadRequestAsync_RejectsHeaderBlockLargerThanCap()
 	{
-		byte[] raw = Encoding.ASCII.GetBytes("GET /info RTSP/1.0\r\nX: " + new string('a', AirPlayProbeService.MaxRequestHeaderBytes) + "\r\n\r\n");
+		byte[] raw = Encoding.ASCII.GetBytes("GET /info RTSP/1.0\r\nX: " + new string('a', AirPlayRtspCodec.MaxRequestHeaderBytes) + "\r\n\r\n");
 		using var stream = new MemoryStream(raw);
 
-		var request = await AirPlayProbeService.ReadRequestAsync(stream, CancellationToken.None);
+		var request = await AirPlayRtspCodec.ReadRequestAsync(stream, CancellationToken.None);
 
 		Assert.Null(request);
 	}
@@ -592,7 +592,7 @@ public sealed class AirPlayProbeServiceTests
 		byte[] raw = Encoding.ASCII.GetBytes("POST /feedback RTSP/1.0\r\nContent-Length: 10\r\n\r\n");
 		using var stream = new StallingStream(raw);
 
-		var request = await AirPlayProbeService.ReadRequestAsync(stream, CancellationToken.None, TimeSpan.FromMilliseconds(200));
+		var request = await AirPlayRtspCodec.ReadRequestAsync(stream, CancellationToken.None, TimeSpan.FromMilliseconds(200));
 
 		Assert.Null(request);
 	}
@@ -606,7 +606,7 @@ public sealed class AirPlayProbeServiceTests
 		using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(500));
 
 		await Assert.ThrowsAnyAsync<OperationCanceledException>(
-			() => AirPlayProbeService.ReadRequestAsync(stream, cts.Token, TimeSpan.FromMilliseconds(50)));
+			() => AirPlayRtspCodec.ReadRequestAsync(stream, cts.Token, TimeSpan.FromMilliseconds(50)));
 	}
 
 	/// <summary>Serves a fixed prefix and then blocks every further read until cancelled.</summary>

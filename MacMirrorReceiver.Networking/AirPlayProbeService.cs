@@ -48,7 +48,7 @@ public sealed class AirPlayProbeService : IDisposable
 	private const int GpuDisplayHeight = 1440;
 	private const int StableDisplayFps = 60;
 	private const int GpuDisplayFps = 30;
-	private const string LegacyAirTunesVersion = "220.68";
+	private const string LegacyAirTunesVersion = AirPlayRtspCodec.AirTunesVersion;
 	private const string LegacyAirPlayModel = "AppleTV2,1";
 	private const string LegacyAirPlayFeatures = "0x5A7FFEE6";
 	private const string LegacyRaopPublicKey = "b07727d6f6cd6e08b58ede525ec3cdeaa252ad9f683feb212ef8a205246554e7";
@@ -79,10 +79,7 @@ public sealed class AirPlayProbeService : IDisposable
 	// Limits for the RTSP/HTTP control connections. Every LAN host can open these ports, so a
 	// request must not be able to pin an unbounded buffer or a thread for an unbounded time.
 	// Real AirPlay bodies (SETUP plists, pair-* blobs, feedback) are well under 64 KiB.
-	internal const int MaxRequestHeaderBytes = 64 * 1024;
-	internal const int MaxRequestBodyBytes = 1024 * 1024;
 	internal const int MaxControlConnections = 32;
-	internal static readonly TimeSpan DefaultRequestReadTimeout = TimeSpan.FromSeconds(15);
 	private int _activeControlConnections;
 	private readonly string _displayName;
 	private readonly string _hostName;
@@ -402,7 +399,7 @@ public sealed class AirPlayProbeService : IDisposable
 				int servedRequests = 0;
 				while (!_cts.IsCancellationRequested)
 				{
-					AirPlayRequest? request = await ReadRequestAsync(stream, _cts.Token);
+					AirPlayRequest? request = await AirPlayRtspCodec.ReadRequestAsync(stream, _cts.Token);
 					if (request == null)
 					{
 						AppLog.Write($"{label} control connection closed by peer ({client.Client.RemoteEndPoint}) after {servedRequests} request(s).");
@@ -1288,113 +1285,6 @@ public sealed class AirPlayProbeService : IDisposable
 
 
 
-	/// <summary>
-	/// Reads one RTSP/HTTP request. Waiting for the first byte of a request is unbounded (the
-	/// control connection idles between the sender's periodic feedback posts), but once a request
-	/// has started the rest of it must arrive within <paramref name="requestTimeout"/>, the header
-	/// block is capped at <see cref="MaxRequestHeaderBytes"/>, and a declared body larger than
-	/// <see cref="MaxRequestBodyBytes"/> is rejected before anything is allocated for it.
-	/// Returns null when the connection should be closed.
-	/// </summary>
-	internal static async Task<AirPlayRequest?> ReadRequestAsync(Stream stream, CancellationToken token, TimeSpan? requestTimeout = null)
-	{
-		TimeSpan timeout = requestTimeout ?? DefaultRequestReadTimeout;
-		using CancellationTokenSource requestCts = CancellationTokenSource.CreateLinkedTokenSource(token);
-		try
-		{
-			return await ReadRequestCoreAsync(stream, requestCts, timeout);
-		}
-		catch (OperationCanceledException) when (!token.IsCancellationRequested)
-		{
-			AppLog.Write($"AirPlay request did not complete within {timeout.TotalSeconds:N0}s; closing connection.");
-			return null;
-		}
-	}
-
-	private static async Task<AirPlayRequest?> ReadRequestCoreAsync(Stream stream, CancellationTokenSource requestCts, TimeSpan timeout)
-	{
-		List<byte> headerBytes = new List<byte>();
-		byte[] single = new byte[1];
-		CancellationToken requestToken = requestCts.Token;
-		bool headerComplete = false;
-		while (headerBytes.Count < MaxRequestHeaderBytes)
-		{
-			int count = await stream.ReadAsync(single, requestToken);
-			if (count == 0)
-			{
-				return null;
-			}
-			if (headerBytes.Count == 0)
-			{
-				// First byte of a request: from here on the sender must finish it promptly.
-				requestCts.CancelAfter(timeout);
-			}
-			headerBytes.Add(single[0]);
-			int n = headerBytes.Count;
-			if (n >= 4 &&
-				headerBytes[n - 4] == '\r' &&
-				headerBytes[n - 3] == '\n' &&
-				headerBytes[n - 2] == '\r' &&
-				headerBytes[n - 1] == '\n')
-			{
-				headerComplete = true;
-				break;
-			}
-		}
-
-		if (!headerComplete)
-		{
-			AppLog.Write($"AirPlay request header exceeded {MaxRequestHeaderBytes:N0} bytes; closing connection.");
-			return null;
-		}
-
-		string headerText = Encoding.ASCII.GetString(headerBytes.ToArray());
-		string[] lines = headerText.Split(new[] { "\r\n" }, StringSplitOptions.None);
-		string firstLine = lines.FirstOrDefault(line => !string.IsNullOrWhiteSpace(line)) ?? string.Empty;
-		string[] parts = firstLine.Split(' ', 3, StringSplitOptions.RemoveEmptyEntries);
-		if (parts.Length < 2)
-		{
-			return null;
-		}
-
-		Dictionary<string, string> headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-		foreach (string line in lines.Skip(1))
-		{
-			int colon = line.IndexOf(':');
-			if (colon <= 0)
-			{
-				continue;
-			}
-			headers[line.Substring(0, colon).Trim()] = line.Substring(colon + 1).Trim();
-		}
-
-		long contentLength = 0;
-		if (headers.TryGetValue("Content-Length", out string? contentLengthValue) &&
-			!long.TryParse(contentLengthValue, NumberStyles.None, CultureInfo.InvariantCulture, out contentLength))
-		{
-			contentLength = 0;
-		}
-		if (contentLength > MaxRequestBodyBytes)
-		{
-			AppLog.Write($"AirPlay request declared Content-Length {contentLength:N0} exceeds {MaxRequestBodyBytes:N0} bytes; closing connection.");
-			return null;
-		}
-
-		byte[] body = new byte[(int)Math.Max(0, contentLength)];
-		int offset = 0;
-		while (offset < body.Length)
-		{
-			int count = await stream.ReadAsync(body.AsMemory(offset, body.Length - offset), requestToken);
-			if (count == 0)
-			{
-				break;
-			}
-			offset += count;
-		}
-
-		return new AirPlayRequest(parts[0], parts[1], parts.Length > 2 ? parts[2] : "RTSP/1.0", firstLine, headers, body);
-	}
-
 	private void ObserveSetupRequest(byte[] requestBody, string target, long connectionId)
 	{
 		Dictionary<string, object?>? request = AirPlayBinaryPlist.Read(requestBody) as Dictionary<string, object?>;
@@ -1713,7 +1603,7 @@ public sealed class AirPlayProbeService : IDisposable
 		string target = request.Target.ToLowerInvariant();
 		if (method == "OPTIONS")
 		{
-			return BuildRtspResponse(request, 200, "OK", Array.Empty<byte>(), "text/plain", new Dictionary<string, string>
+			return AirPlayRtspCodec.BuildRtspResponse(request, 200, "OK", Array.Empty<byte>(), "text/plain", new Dictionary<string, string>
 			{
 				["Public"] = "ANNOUNCE, SETUP, RECORD, PAUSE, FLUSH, TEARDOWN, OPTIONS, GET_PARAMETER, SET_PARAMETER"
 			});
@@ -1721,26 +1611,26 @@ public sealed class AirPlayProbeService : IDisposable
 			if (method == "GET" && (target == "/info" || target == "/server-info"))
 			{
 				byte[] body = BuildInfoBinaryPlist();
-				return BuildRtspResponse(request, 200, "OK", body, "application/x-apple-binary-plist");
+				return AirPlayRtspCodec.BuildRtspResponse(request, 200, "OK", body, "application/x-apple-binary-plist");
 			}
 			if (method == "POST" && target.Contains("pair-setup", StringComparison.OrdinalIgnoreCase))
 			{
-				LogPairBody("pair-setup", request.Body);
-				return BuildRtspResponse(request, 200, "OK", _pairing.BuildPairSetupResponse(request.Body), "application/octet-stream");
+				AirPlayRtspCodec.LogPairBody("pair-setup", request.Body);
+				return AirPlayRtspCodec.BuildRtspResponse(request, 200, "OK", _pairing.BuildPairSetupResponse(request.Body), "application/octet-stream");
 			}
 			if (method == "POST" && target.Contains("pair-verify", StringComparison.OrdinalIgnoreCase))
 			{
-				LogPairBody("pair-verify", request.Body);
-				return BuildRtspResponse(request, 200, "OK", _pairing.BuildPairVerifyResponse(request.Body), "application/octet-stream");
+				AirPlayRtspCodec.LogPairBody("pair-verify", request.Body);
+				return AirPlayRtspCodec.BuildRtspResponse(request, 200, "OK", _pairing.BuildPairVerifyResponse(request.Body), "application/octet-stream");
 			}
 			if (method == "POST" && target.Contains("fp-setup", StringComparison.OrdinalIgnoreCase))
 			{
-				LogPairBody("fp-setup", request.Body);
-				return BuildRtspResponse(request, 200, "OK", _fairPlay.BuildSetupResponse(request.Body), "application/octet-stream");
+				AirPlayRtspCodec.LogPairBody("fp-setup", request.Body);
+				return AirPlayRtspCodec.BuildRtspResponse(request, 200, "OK", _fairPlay.BuildSetupResponse(request.Body), "application/octet-stream");
 			}
 			if (method == "SETUP")
 			{
-				LogPairBody("setup", request.Body);
+				AirPlayRtspCodec.LogPairBody("setup", request.Body);
 				ObserveSetupRequest(request.Body, request.Target, connectionId);
 				IPAddress? remoteAddress = (remoteEndPoint as IPEndPoint)?.Address;
 				lock (_mirrorKeyGate)
@@ -1748,7 +1638,7 @@ public sealed class AirPlayProbeService : IDisposable
 					_mirrorSetupAddress = remoteAddress;
 				}
 				byte[] body = _setup.BuildSetupResponse(request.Body, remoteAddress);
-				return BuildRtspResponse(request, 200, "OK", body, "application/x-apple-binary-plist", new Dictionary<string, string>
+				return AirPlayRtspCodec.BuildRtspResponse(request, 200, "OK", body, "application/x-apple-binary-plist", new Dictionary<string, string>
 				{
 					["Session"] = "1"
 				});
@@ -1767,19 +1657,19 @@ public sealed class AirPlayProbeService : IDisposable
 						["Audio-Jack-Status"] = "connected; type=analog"
 					}
 					: new Dictionary<string, string>();
-				return BuildRtspResponse(request, 200, "OK", Array.Empty<byte>(), "text/plain", recordHeaders);
+				return AirPlayRtspCodec.BuildRtspResponse(request, 200, "OK", Array.Empty<byte>(), "text/plain", recordHeaders);
 			}
 			if (method == "TEARDOWN")
 			{
 				// Some senders keep posting feedback after RTSP TEARDOWN on the shared RAOP
 				// control session. Acknowledge it without tearing down the active mirror path.
-				return BuildRtspResponse(request, 200, "OK", Array.Empty<byte>(), "text/plain");
+				return AirPlayRtspCodec.BuildRtspResponse(request, 200, "OK", Array.Empty<byte>(), "text/plain");
 			}
 			if (method is "FLUSH" or "SET_PARAMETER" || target.Contains("feedback", StringComparison.OrdinalIgnoreCase))
 			{
-				return BuildRtspResponse(request, 200, "OK", Array.Empty<byte>(), "text/plain");
+				return AirPlayRtspCodec.BuildRtspResponse(request, 200, "OK", Array.Empty<byte>(), "text/plain");
 			}
-			return BuildRtspResponse(request, 501, "Not Implemented", Array.Empty<byte>(), "text/plain");
+			return AirPlayRtspCodec.BuildRtspResponse(request, 501, "Not Implemented", Array.Empty<byte>(), "text/plain");
 		}
 
 	private byte[] BuildGetParameterResponse(AirPlayRequest request)
@@ -1789,44 +1679,10 @@ public sealed class AirPlayProbeService : IDisposable
 
 		if (bodyText.Contains("volume", StringComparison.OrdinalIgnoreCase))
 		{
-			return BuildRtspResponse(request, 200, "OK", Encoding.ASCII.GetBytes("volume: 0.0\r\n"), "text/parameters");
+			return AirPlayRtspCodec.BuildRtspResponse(request, 200, "OK", Encoding.ASCII.GetBytes("volume: 0.0\r\n"), "text/parameters");
 		}
 
-		return BuildRtspResponse(request, 200, "OK", Array.Empty<byte>(), "text/parameters");
-	}
-
-	private byte[] BuildRtspResponse(
-		AirPlayRequest request,
-		int statusCode,
-		string reason,
-		byte[] body,
-		string contentType,
-		IReadOnlyDictionary<string, string>? extraHeaders = null)
-	{
-		string protocol = request.Protocol.StartsWith("HTTP", StringComparison.OrdinalIgnoreCase) ? "HTTP/1.1" : "RTSP/1.0";
-		StringBuilder builder = new StringBuilder();
-		builder.Append(protocol).Append(' ').Append(statusCode).Append(' ').Append(reason).Append("\r\n");
-		if (request.Headers.TryGetValue("CSeq", out string? cseq))
-		{
-			builder.Append("CSeq: ").Append(cseq).Append("\r\n");
-		}
-	builder.Append("Server: AirTunes/").Append(LegacyAirTunesVersion).Append("\r\n");
-		builder.Append("Date: ").Append(DateTimeOffset.UtcNow.ToString("r")).Append("\r\n");
-		if (extraHeaders != null)
-		{
-			foreach (KeyValuePair<string, string> header in extraHeaders)
-			{
-				builder.Append(header.Key).Append(": ").Append(header.Value).Append("\r\n");
-			}
-		}
-		builder.Append("Content-Type: ").Append(contentType).Append("\r\n");
-		builder.Append("Content-Length: ").Append(body.Length).Append("\r\n");
-		builder.Append("\r\n");
-		byte[] headerBytes = Encoding.ASCII.GetBytes(builder.ToString());
-		byte[] response = new byte[headerBytes.Length + body.Length];
-		Buffer.BlockCopy(headerBytes, 0, response, 0, headerBytes.Length);
-		Buffer.BlockCopy(body, 0, response, headerBytes.Length, body.Length);
-		return response;
+		return AirPlayRtspCodec.BuildRtspResponse(request, 200, "OK", Array.Empty<byte>(), "text/parameters");
 	}
 
 
@@ -1928,11 +1784,6 @@ public sealed class AirPlayProbeService : IDisposable
 	}
 
 
-
-	private static void LogPairBody(string label, byte[] body)
-	{
-		AppLog.Write($"AirPlay {label} body length={body.Length}.");
-	}
 
 	private IReadOnlyList<string> BuildAirPlayTxt()
 	{
@@ -2055,12 +1906,4 @@ public sealed class AirPlayProbeService : IDisposable
 		}
 		_cts.Dispose();
 	}
-
-	internal sealed record AirPlayRequest(
-		string Method,
-		string Target,
-		string Protocol,
-		string FirstLine,
-		Dictionary<string, string> Headers,
-		byte[] Body);
 }
