@@ -177,6 +177,9 @@ public sealed class AirPlayProbeService : IDisposable
 	// LAN host can open and drop a connection on the AirPlay port at will.
 	private long _mirrorOwnerConnectionId;
 	private long _nextControlConnectionId;
+	// Open control connections by id, so a sender whose session another sender took over can be
+	// disconnected; otherwise it keeps its control connection and still shows "mirroring".
+	private readonly System.Collections.Concurrent.ConcurrentDictionary<long, TcpClient> _controlConnections = new();
 	private List<AirPlayMirrorDecryptor>? _mirrorDecryptorProbePool;
 	private bool _loggedWaitingForMirrorDecryptor;
 	private readonly HashSet<int> _loggedDecryptPayloadFailureTypes = new HashSet<int>();
@@ -419,6 +422,7 @@ public sealed class AirPlayProbeService : IDisposable
 				}
 				countedControlConnection = true;
 				connectionId = Interlocked.Increment(ref _nextControlConnectionId);
+				_controlConnections[connectionId] = client;
 
 				client.ReceiveTimeout = 2500;
 				client.SendTimeout = 2500;
@@ -477,11 +481,69 @@ public sealed class AirPlayProbeService : IDisposable
 			}
 			finally
 			{
+				if (connectionId != 0)
+				{
+					_controlConnections.TryRemove(connectionId, out _);
+				}
 				if (countedControlConnection)
 				{
 					Interlocked.Decrement(ref _activeControlConnections);
 				}
 			}
+		}
+	}
+
+	/// <summary>
+	/// Disconnects the sender whose session <paramref name="newOwnerConnectionId"/> just took over:
+	/// its owning control connection and, when it is another host, that host's other control
+	/// connections (the Mac keeps a second idle one). The replaced sender's video connection is
+	/// already superseded by the new data stream; closing its control connection is what makes it
+	/// stop and show the session as ended. These connections are no longer the owner, so their
+	/// close does not end the new session.
+	/// </summary>
+	private void DisconnectReplacedSender(long previousOwnerConnectionId, long newOwnerConnectionId)
+	{
+		if (!_controlConnections.TryGetValue(previousOwnerConnectionId, out TcpClient? previous))
+		{
+			return;
+		}
+
+		IPAddress? previousAddress = TryGetRemoteAddress(previous);
+		IPAddress? newAddress = _controlConnections.TryGetValue(newOwnerConnectionId, out TcpClient? current)
+			? TryGetRemoteAddress(current)
+			: null;
+		bool otherHost = previousAddress != null && !PeerAddress.Matches(previousAddress, newAddress);
+
+		int closed = 0;
+		foreach (KeyValuePair<long, TcpClient> entry in _controlConnections)
+		{
+			bool replaced = entry.Key == previousOwnerConnectionId ||
+				(otherHost && entry.Key != newOwnerConnectionId && PeerAddress.Matches(previousAddress, TryGetRemoteAddress(entry.Value)));
+			if (replaced)
+			{
+				try
+				{
+					entry.Value.Close();
+					closed++;
+				}
+				catch (Exception ex) when (ex is SocketException or ObjectDisposedException)
+				{
+				}
+			}
+		}
+
+		AppLog.Write($"AirPlay mirror session taken over by another SETUP; closed {closed} control connection(s) of the previous sender ({previousAddress?.ToString() ?? "unknown"}).");
+	}
+
+	private static IPAddress? TryGetRemoteAddress(TcpClient client)
+	{
+		try
+		{
+			return (client.Client.RemoteEndPoint as IPEndPoint)?.Address;
+		}
+		catch (ObjectDisposedException)
+		{
+			return null;
 		}
 	}
 
@@ -1721,9 +1783,16 @@ public sealed class AirPlayProbeService : IDisposable
 		if (mirrorSetup)
 		{
 			// Before announcing, so the previous owner closing now cannot end the new session.
+			long previousOwnerConnectionId;
 			lock (_mirrorKeyGate)
 			{
+				previousOwnerConnectionId = _mirrorOwnerConnectionId;
 				_mirrorOwnerConnectionId = connectionId;
+			}
+
+			if (previousOwnerConnectionId != 0 && previousOwnerConnectionId != connectionId)
+			{
+				DisconnectReplacedSender(previousOwnerConnectionId, connectionId);
 			}
 		}
 
