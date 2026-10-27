@@ -32,8 +32,6 @@ internal sealed class AirPlayAudioReceiver : IDisposable
 	private Task? _controlTask;
 	private AudioDumpWriter? _dump;
 
-	private byte[]? _aesKey;
-	private byte[]? _eiv;
 	// The sender named by SETUP. The UDP sockets are bound to IPAddress.Any, so without this
 	// check any LAN host could inject packets into the decrypt/decode path.
 	private IPAddress? _remoteAddress;
@@ -91,8 +89,6 @@ internal sealed class AirPlayAudioReceiver : IDisposable
 				_info = info;
 				_remoteAddress = remoteAddress;
 				_rejectedPacketCount = 0;
-				_aesKey = aesKey == null ? null : CopyOf(aesKey);
-				_eiv = eiv == null ? null : CopyOf(eiv);
 				_decryptor = AirPlayAudioDecryptor.TryCreate(crypto?.AesKey, crypto?.SharedSecret, crypto?.Eiv);
 				_packetCount = 0;
 				_decryptedFrameCount = 0;
@@ -151,8 +147,6 @@ internal sealed class AirPlayAudioReceiver : IDisposable
 			_controlClient = null;
 			_dump = null;
 			_decryptor = null;
-			_aesKey = null;
-			_eiv = null;
 		}
 
 		try
@@ -255,21 +249,21 @@ internal sealed class AirPlayAudioReceiver : IDisposable
 
 	private void HandleDataPacket(byte[] packet)
 	{
-		if (packet.Length < RtpHeaderLength)
+		if (!RtpPacketHeader.TryParse(packet, out RtpPacketHeader rtp))
 		{
 			return;
 		}
 
-		int version = (packet[0] >> 6) & 0x03;
+		int version = rtp.Version;
 		if (version != 2)
 		{
 			return;
 		}
-		bool marker = (packet[1] & 0x80) != 0;
-		int payloadType = packet[1] & 0x7F;
-		int sequence = BinaryPrimitives.ReadUInt16BigEndian(packet.AsSpan(2, 2));
-		uint timestamp = BinaryPrimitives.ReadUInt32BigEndian(packet.AsSpan(4, 4));
-		uint ssrc = BinaryPrimitives.ReadUInt32BigEndian(packet.AsSpan(8, 4));
+		bool marker = rtp.Marker;
+		int payloadType = rtp.PayloadType;
+		int sequence = rtp.SequenceNumber;
+		uint timestamp = rtp.Timestamp;
+		uint ssrc = rtp.Ssrc;
 		int payloadLength = packet.Length - RtpHeaderLength;
 
 		long count = Interlocked.Increment(ref _packetCount);
@@ -383,12 +377,6 @@ internal sealed class AirPlayAudioReceiver : IDisposable
 		StopInternal();
 	}
 
-	private static byte[] CopyOf(byte[] source)
-	{
-		byte[] copy = new byte[source.Length];
-		Buffer.BlockCopy(source, 0, copy, 0, source.Length);
-		return copy;
-	}
 
 	// Private local capture gated by Settings or IMIRROR_DUMP_AUDIO. Writes a length-framed raw RTP stream
 	// (every packet, header included) plus a sidecar meta.json that records the FairPlay-unwrapped

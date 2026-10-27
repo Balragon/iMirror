@@ -254,6 +254,9 @@ try
 		"PresentationFramework.dll",
 		"PresentationCore.dll",
 		"WindowsBase.dll",
+		# GPLv3 section 4: the licence text and iMirror's own notice travel with the binaries.
+		"LICENSE",
+		"NOTICE",
 		"THIRD_PARTY_NOTICES.txt",
 		"ThirdParty\playfair\LICENSE.md",
 		"ThirdParty\playfair\omg_hax.h",

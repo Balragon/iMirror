@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Buffers.Binary;
 using System.Collections.Generic;
 using System.Linq;
@@ -31,7 +31,9 @@ public sealed class AirPlayProbeServiceTests
 	{
 		using UdpClient blocker = BindExclusiveUdpPort();
 		int mdnsPort = ((IPEndPoint)blocker.Client.LocalEndPoint!).Port;
-		using var service = new AirPlayProbeService("iMirror Test", mdnsPort: mdnsPort);
+		// Ephemeral TCP ports so the test never competes with a running iMirror, iTunes or
+		// Bonjour for 7000/5000/7100 on the machine running the tests.
+		using var service = new AirPlayProbeService("iMirror Test", mdnsPort: mdnsPort, listenerPorts: AirPlayListenerPorts.Ephemeral);
 
 		await service.StartAsync();
 
@@ -42,6 +44,35 @@ public sealed class AirPlayProbeServiceTests
 		await service.StartAsync();
 
 		Assert.True(service.IsMdnsBound);
+		Assert.True(service.IsAirPlayListenerBound);
+		Assert.True(service.IsRaopListenerBound);
+		Assert.NotEqual(0, service.AirPlayListenerPort);
+		Assert.NotEqual(0, service.RaopListenerPort);
+		Assert.Null(service.AirPlayListenerBindError);
+	}
+
+	[Fact]
+	public async Task StartAsync_ReportsBindErrorForTheAirPlayPortOnly()
+	{
+		using var blocker = new TcpListener(IPAddress.Any, 0);
+		blocker.Server.ExclusiveAddressUse = true;
+		blocker.Start();
+		int busyPort = ((IPEndPoint)blocker.LocalEndpoint).Port;
+		using UdpClient mdnsBlocker = BindExclusiveUdpPort();
+		int mdnsPort = ((IPEndPoint)mdnsBlocker.Client.LocalEndPoint!).Port;
+		mdnsBlocker.Dispose();
+		using var service = new AirPlayProbeService(
+			"iMirror Test",
+			mdnsPort: mdnsPort,
+			listenerPorts: AirPlayListenerPorts.Ephemeral with { AirPlay = busyPort });
+
+		await service.StartAsync();
+
+		Assert.True(service.IsMdnsBound);
+		Assert.False(service.IsAirPlayListenerBound);
+		Assert.NotNull(service.AirPlayListenerBindError);
+		Assert.True(service.IsRaopListenerBound);
+		Assert.Null(service.RaopListenerBindError);
 	}
 
 	[Theory]

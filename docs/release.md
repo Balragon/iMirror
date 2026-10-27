@@ -1,21 +1,27 @@
-# v0.2 Public Release
+# Public Release
 
-This page describes the v0.2 Windows public release process.
+This page describes the Windows public release process. The tagged build in
+`.github/workflows/release.yml` is the source of truth; the steps below are the
+manual equivalent.
 
 ## Overview
 
-The public artifact is a self-contained `win-x64` zip built from
-`MacMirrorReceiver.csproj` in `Release` mode.
+Each release ships two artifacts built from `MacMirrorReceiver.csproj` in
+`Release` mode, plus a `SHA256SUMS` file:
 
-- No .NET runtime install is required.
-- The zip is unsigned.
-- There is no installer or auto-updater.
-- Users extract the zip and run `iMirror.exe`.
+- `iMirror-<version>-setup.exe` — Inno Setup per-user installer (recommended).
+  The in-app updater downloads this asset and verifies it against `SHA256SUMS`.
+- `iMirror-<version>-win-x64.zip` — self-contained portable build; extract and
+  run `iMirror.exe`.
+
+No .NET runtime install is required. Both artifacts are unsigned, so Windows
+SmartScreen may warn on first run.
 
 ## Prerequisites
 
 - Windows x64 build machine.
-- .NET 8 SDK.
+- .NET 10 SDK.
+- Inno Setup 6 (`choco install innosetup`) for the installer.
 - FFmpeg Essentials available for packaging:
   - `tools\ffmpeg\bin\ffmpeg.exe`
   - `ffmpeg.exe` on `PATH`
@@ -96,7 +102,11 @@ missing. The package also includes the FFmpeg license file at
 Generate a SHA-256 checksum after packaging:
 
 ```powershell
-Get-FileHash .\artifacts\iMirror-v0.2.0-win-x64.zip -Algorithm SHA256
+Get-FileHash .\artifacts\iMirror-0.7.5-win-x64.zip -Algorithm SHA256
+Get-FileHash .\artifacts\iMirror-0.7.5-setup.exe -Algorithm SHA256
 ```
 
-Publish the checksum alongside the release zip.
+The release workflow writes both into `artifacts\SHA256SUMS` in the
+`<lowercase sha256>  <file name>` format the updater parses; publish that file
+with the release. The zip name has no `v` prefix (the tag `v0.7.5` becomes
+`iMirror-0.7.5-...`).

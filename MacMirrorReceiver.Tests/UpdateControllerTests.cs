@@ -63,6 +63,9 @@ public sealed class UpdateControllerTests
 
 		public Exception? DownloadException { get; set; }
 
+		/// <summary>When set, downloads wait on this instead of completing immediately.</summary>
+		public TaskCompletionSource<string>? DownloadGate { get; set; }
+
 		public Exception? LaunchException { get; set; }
 
 		public bool ShutdownStarted { get; set; }
@@ -102,6 +105,10 @@ public sealed class UpdateControllerTests
 				{
 					DownloadCalls++;
 					token.ThrowIfCancellationRequested();
+					if (DownloadGate != null)
+					{
+						return DownloadGate.Task;
+					}
 					return DownloadException != null
 						? Task.FromException<string>(DownloadException)
 						: Task.FromResult(DownloadedSetupPath);
@@ -316,6 +323,26 @@ public sealed class UpdateControllerTests
 		Assert.Equal(
 			"Update installer started. Closing iMirror so setup can finish and restart it.",
 			harness.View.StatusMessages[^1]);
+	}
+
+	[Fact]
+	public async Task Install_IgnoresASecondRequestWhileTheFirstDownloadIsRunning()
+	{
+		var harness = new Harness { DownloadGate = new TaskCompletionSource<string>() };
+		UpdateController controller = harness.CreateController();
+		UpdateInfo update = CreateUpdate();
+
+		Task<bool> first = controller.InstallUpdateAsync(update, progress: null);
+		bool second = await controller.InstallUpdateAsync(update, progress: null);
+
+		Assert.False(second);
+		Assert.Equal(1, harness.DownloadCalls);
+		Assert.False(first.IsCompleted);
+
+		harness.DownloadGate.SetResult(harness.DownloadedSetupPath);
+		Assert.True(await first);
+		Assert.Equal(new[] { harness.DownloadedSetupPath }, harness.LaunchedSetupPaths);
+		Assert.Equal(1, harness.ShutdownCalls);
 	}
 
 	[Fact]

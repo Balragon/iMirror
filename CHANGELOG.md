@@ -10,6 +10,8 @@ For detailed release notes, see [GitHub Releases](https://github.com/Balragon/iM
 
 ### Changed
 
+- New app icon: two overlapping rounded screen panels (blue and translucent silver) on a dark background, used for the executable, window title, tray and installer. A light-background variant (`Assets/iMirror-light.ico`) and the editable SVG sources (`Assets/icon-source/`) are included.
+- The window title and tray icons follow the Windows system theme (`SystemUsesLightTheme`): light variant on a light theme, dark otherwise, updated live when the theme changes. The executable and installer icons stay dark.
 - Refactor the update workflow (startup/manual checks, notice policy, download, installer handoff) out of `MainWindow` into a new `UpdateController` with injected UI/shutdown seams. No behavior change; the silent-update handoff and SHA-256 fail-closed verification are unchanged.
 
 ### Fixed
@@ -18,6 +20,7 @@ For detailed release notes, see [GitHub Releases](https://github.com/Balragon/iM
 - Clean up leftover downloaded update installers (`setup.exe` / partial `.download` files) from `%LOCALAPPDATA%\iMirror\Updates` at startup instead of letting them accumulate one per update.
 - Cancel an in-flight update check or installer download when iMirror starts shutting down, instead of letting it race process teardown; a canceled install no longer flashes the retry UI on the closing window.
 - Make the settings "Save & Restart" handoff reliable: a relaunched iMirror now waits up to 5 seconds for the exiting instance to release the single-instance mutex instead of silently quitting when the old process is still shutting down.
+- Keep video playing when the software (FFmpeg) decoder's input queue overflows: drop only the incoming non-keyframe and keep the queued frames, as the Media Foundation path does. Previously the queue was flushed to wait for a keyframe that Mac senders never send again, so video stayed frozen until reconnect while audio kept playing.
 
 ---
 

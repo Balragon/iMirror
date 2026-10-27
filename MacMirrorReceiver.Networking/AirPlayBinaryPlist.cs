@@ -292,9 +292,21 @@ internal static class AirPlayBinaryPlist
 				stream.Write(data.Value);
 				break;
 			case PlistString text:
-				byte[] bytes = Encoding.ASCII.GetBytes(text.Value);
-				WriteCountMarker(stream, 0x50, bytes.Length);
-				stream.Write(bytes);
+				if (IsAscii(text.Value))
+				{
+					byte[] bytes = Encoding.ASCII.GetBytes(text.Value);
+					WriteCountMarker(stream, 0x50, bytes.Length);
+					stream.Write(bytes);
+				}
+				else
+				{
+					// bplist ASCII strings cannot carry non-ASCII (a receiver name like "거실 TV"
+					// came out as "?? TV" in /info); use the UTF-16BE string type, whose count
+					// is in UTF-16 code units.
+					byte[] bytes = Encoding.BigEndianUnicode.GetBytes(text.Value);
+					WriteCountMarker(stream, 0x60, bytes.Length / 2);
+					stream.Write(bytes);
+				}
 				break;
 			case PlistReal number:
 			{
@@ -331,6 +343,18 @@ internal static class AirPlayBinaryPlist
 				}
 				break;
 		}
+	}
+
+	private static bool IsAscii(string value)
+	{
+		foreach (char c in value)
+		{
+			if (c > 0x7F)
+			{
+				return false;
+			}
+		}
+		return true;
 	}
 
 	private static void WriteCountMarker(Stream stream, int marker, int count)

@@ -109,6 +109,82 @@ public sealed class UpdateServiceTests
 	}
 
 	[Fact]
+	public async Task DownloadSetupAsync_FailsWhenTheDownloadStalls()
+	{
+		var update = new UpdateInfo(
+			"0.4.0",
+			IsNewer: true,
+			IsPrerelease: false,
+			"iMirror-0.4.0-setup.exe",
+			"https://example.test/iMirror-0.4.0-setup.exe",
+			1024,
+			"https://example.test/SHA256SUMS",
+			"https://github.com/Balragon/iMirror/releases/tag/v0.4.0");
+		var client = new HttpClient(new StubHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+		{
+			Content = new StreamContent(new StallingStream(Encoding.ASCII.GetBytes("partial")))
+		}));
+		string downloadDirectory = CreateTempDirectory();
+		var service = new UpdateService(client, "0.3.0", downloadDirectory) { DownloadReadTimeout = TimeSpan.FromMilliseconds(200) };
+
+		await Assert.ThrowsAsync<TimeoutException>(() => service.DownloadSetupAsync(update, progress: null, CancellationToken.None));
+
+		Assert.Empty(Directory.GetFiles(downloadDirectory));
+	}
+
+	[Fact]
+	public async Task DownloadSetupAsync_AbortsWhenTheBodyExceedsTheDeclaredSize()
+	{
+		byte[] oversized = new byte[600 * 1024];
+		var update = new UpdateInfo(
+			"0.4.0",
+			IsNewer: true,
+			IsPrerelease: false,
+			"iMirror-0.4.0-setup.exe",
+			"https://example.test/iMirror-0.4.0-setup.exe",
+			100,
+			"https://example.test/SHA256SUMS",
+			"https://github.com/Balragon/iMirror/releases/tag/v0.4.0");
+		var client = new HttpClient(new StubHttpMessageHandler(_ => BytesResponse(oversized)));
+		string downloadDirectory = CreateTempDirectory();
+		var service = new UpdateService(client, "0.3.0", downloadDirectory);
+
+		InvalidOperationException ex = await Assert.ThrowsAsync<InvalidOperationException>(
+			() => service.DownloadSetupAsync(update, progress: null, CancellationToken.None));
+
+		Assert.Contains("exceeded", ex.Message);
+		Assert.Empty(Directory.GetFiles(downloadDirectory));
+	}
+
+	[Fact]
+	public async Task DownloadSetupAsync_FailsClosed_WhenChecksumUrlIsNotHttps()
+	{
+		byte[] setupBytes = Encoding.UTF8.GetBytes("fake setup bytes");
+		string sha256Sums = Convert.ToHexString(SHA256.HashData(setupBytes)).ToLowerInvariant() + "  iMirror-0.4.0-setup.exe";
+		var update = new UpdateInfo(
+			"0.4.0",
+			IsNewer: true,
+			IsPrerelease: false,
+			"iMirror-0.4.0-setup.exe",
+			"https://example.test/iMirror-0.4.0-setup.exe",
+			setupBytes.Length,
+			"http://example.test/SHA256SUMS",
+			"https://github.com/Balragon/iMirror/releases/tag/v0.4.0");
+		var client = new HttpClient(new StubHttpMessageHandler(request =>
+			request.RequestUri?.AbsolutePath.EndsWith("SHA256SUMS", StringComparison.OrdinalIgnoreCase) == true
+				? TextResponse(sha256Sums)
+				: BytesResponse(setupBytes)));
+		string downloadDirectory = CreateTempDirectory();
+		var service = new UpdateService(client, "0.3.0", downloadDirectory);
+
+		InvalidOperationException ex = await Assert.ThrowsAsync<InvalidOperationException>(
+			() => service.DownloadSetupAsync(update, progress: null, CancellationToken.None));
+
+		Assert.Contains("Cannot verify", ex.Message);
+		Assert.Empty(Directory.GetFiles(downloadDirectory));
+	}
+
+	[Fact]
 	public async Task DownloadSetupAsync_FailsClosed_WhenNoChecksumAssetAvailable()
 	{
 		byte[] setupBytes = Encoding.UTF8.GetBytes("fake setup bytes");
@@ -286,6 +362,43 @@ public sealed class UpdateServiceTests
 		{
 			Content = new ByteArrayContent(bytes)
 		};
+	}
+
+	/// <summary>Serves a fixed prefix, then blocks every further read until cancelled.</summary>
+	private sealed class StallingStream : Stream
+	{
+		private readonly byte[] _prefix;
+		private int _position;
+
+		public StallingStream(byte[] prefix) => _prefix = prefix;
+
+		public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+		{
+			if (_position < _prefix.Length)
+			{
+				int count = Math.Min(buffer.Length, _prefix.Length - _position);
+				_prefix.AsMemory(_position, count).CopyTo(buffer);
+				_position += count;
+				return count;
+			}
+
+			await Task.Delay(Timeout.Infinite, cancellationToken);
+			return 0;
+		}
+
+		public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
+			=> ReadAsync(buffer.AsMemory(offset, count), cancellationToken).AsTask();
+
+		public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+		public override bool CanRead => true;
+		public override bool CanSeek => false;
+		public override bool CanWrite => false;
+		public override long Length => throw new NotSupportedException();
+		public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
+		public override void Flush() { }
+		public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+		public override void SetLength(long value) => throw new NotSupportedException();
+		public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
 	}
 
 	private sealed class StubHttpMessageHandler : HttpMessageHandler

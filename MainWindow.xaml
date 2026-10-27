@@ -67,28 +67,6 @@
                    Stretch="Uniform"
                    RenderOptions.BitmapScalingMode="HighQuality" />
 
-            <Canvas x:Name="RemoteCursorLayer"
-                    HorizontalAlignment="Stretch"
-                    VerticalAlignment="Stretch"
-                    ClipToBounds="True"
-                    IsHitTestVisible="False"
-                    Visibility="Collapsed">
-                <Grid x:Name="RemoteCursor"
-                      Width="22"
-                      Height="28">
-                    <Grid.RenderTransform>
-                        <ScaleTransform x:Name="RemoteCursorScale"
-                                        ScaleX="0.45"
-                                        ScaleY="0.45" />
-                    </Grid.RenderTransform>
-                    <Path Data="M 1 1 L 1 21 L 6.5 15.4 L 10.2 24.2 L 14.2 22.5 L 10.4 13.9 L 18.8 13.9 Z"
-                          Fill="#FFFFFF"
-                          Stroke="#000000"
-                          StrokeThickness="1.5"
-                          StrokeLineJoin="Round" />
-                </Grid>
-            </Canvas>
-
             <Grid x:Name="EmptyStatePanel"
                   HorizontalAlignment="Stretch"
                   VerticalAlignment="Stretch">
@@ -367,16 +345,6 @@
                          MaxLength="6"
                          PreviewTextInput="PinTextBox_PreviewTextInput"
                          KeyDown="PinTextBox_KeyDown" />
-                <StackPanel x:Name="RenderModePanel"
-                            Visibility="Collapsed">
-                    <ComboBox x:Name="RenderModeComboBox"
-                              SelectionChanged="RenderModeComboBox_SelectionChanged">
-                        <ComboBoxItem Content="Auto" />
-                        <ComboBoxItem Content="Responsive" />
-                        <ComboBoxItem Content="Native 4K" />
-                    </ComboBox>
-                    <TextBlock x:Name="RenderModeDetailTextBlock" />
-                </StackPanel>
                 <Button x:Name="ConnectButton"
                         Content="Connect Sender"
                         Click="ConnectButton_Click" />

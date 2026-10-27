@@ -27,6 +27,13 @@ internal sealed class UpdateService
 	private readonly string _currentVersion;
 	private readonly string _downloadDirectory;
 
+	/// <summary>
+	/// Longest the installer download may go without receiving any bytes. HttpClient's own
+	/// timeout only covers the response headers (ResponseHeadersRead), so without this a
+	/// network drop mid-download left the notice at "Downloading... 43%" with no way out.
+	/// </summary>
+	internal TimeSpan DownloadReadTimeout { get; set; } = TimeSpan.FromSeconds(30);
+
 	public UpdateService()
 		: this(SharedHttpClient, AppVersionInfo.InformationalVersion, AppPaths.UpdateDownloadsDirectory)
 	{
@@ -114,7 +121,7 @@ internal sealed class UpdateService
 			await using (Stream input = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false))
 			await using (FileStream output = new FileStream(partialPath, FileMode.CreateNew, FileAccess.Write, FileShare.None))
 			{
-				await CopyWithProgressAsync(input, output, updateInfo.SetupAssetSize, progress, cancellationToken).ConfigureAwait(false);
+				await CopyWithProgressAsync(input, output, updateInfo.SetupAssetSize, progress, DownloadReadTimeout, cancellationToken).ConfigureAwait(false);
 			}
 
 			long downloadedBytes = new FileInfo(partialPath).Length;
@@ -335,10 +342,17 @@ internal sealed class UpdateService
 		{
 			return null;
 		}
+		if (!Uri.TryCreate(updateInfo.Sha256SumsAssetUrl, UriKind.Absolute, out Uri? sumsUri) || sumsUri.Scheme != Uri.UriSchemeHttps)
+		{
+			// The checksum is the only integrity gate for the unsigned installer; it must come
+			// over TLS like the installer itself. Treat anything else as "no checksum" (fail closed).
+			AppLog.Write("SHA256SUMS URL is not HTTPS; refusing to use it: " + updateInfo.Sha256SumsAssetUrl);
+			return null;
+		}
 
 		try
 		{
-			using HttpResponseMessage response = await SendAsync(updateInfo.Sha256SumsAssetUrl, HttpCompletionOption.ResponseContentRead, cancellationToken)
+			using HttpResponseMessage response = await SendAsync(sumsUri.ToString(), HttpCompletionOption.ResponseContentRead, cancellationToken)
 				.ConfigureAwait(false);
 			response.EnsureSuccessStatusCode();
 			string text = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
@@ -356,20 +370,42 @@ internal sealed class UpdateService
 		Stream output,
 		long expectedBytes,
 		IProgress<double>? progress,
+		TimeSpan readTimeout,
 		CancellationToken cancellationToken)
 	{
 		byte[] buffer = new byte[128 * 1024];
 		long totalBytes = 0;
 		while (true)
 		{
-			int read = await input.ReadAsync(buffer.AsMemory(0, buffer.Length), cancellationToken).ConfigureAwait(false);
+			int read;
+			using (var readCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
+			{
+				readCts.CancelAfter(readTimeout);
+				try
+				{
+					read = await input.ReadAsync(buffer.AsMemory(0, buffer.Length), readCts.Token).ConfigureAwait(false);
+				}
+				catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+				{
+					throw new TimeoutException(
+						$"The update download stalled: no data received for {readTimeout.TotalSeconds:N0} seconds.");
+				}
+			}
 			if (read == 0)
 			{
 				break;
 			}
 
-			await output.WriteAsync(buffer.AsMemory(0, read), cancellationToken).ConfigureAwait(false);
 			totalBytes += read;
+			if (expectedBytes > 0 && totalBytes > expectedBytes)
+			{
+				// The release metadata says how large the installer is; anything beyond that is
+				// not the asset we verified against, so stop before writing it to disk.
+				throw new InvalidOperationException(
+					$"Downloaded update exceeded the expected {expectedBytes:N0} bytes.");
+			}
+
+			await output.WriteAsync(buffer.AsMemory(0, read), cancellationToken).ConfigureAwait(false);
 			if (expectedBytes > 0)
 			{
 				progress?.Report(Math.Clamp((double)totalBytes / expectedBytes, 0.0, 1.0));
