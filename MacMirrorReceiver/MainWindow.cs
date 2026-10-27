@@ -154,6 +154,7 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 	private volatile bool _videoSinkAcceptingInput;
 
 	private readonly object _audioGate = new object();
+	private readonly AudioStartBackoff _audioStartBackoff = new AudioStartBackoff();
 
 	// 3s warmup grace: BeginWarmup fires at decoder (re)start, but frames only flow after FFmpeg/MF
 	// spin-up (~0.8s) plus decryptor settling, so a shorter grace lets a startup straggler inflate
@@ -1014,6 +1015,9 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 			{
 				StopAudioPipelineLocked();
 			}
+			// A new SETUP (new session or new format) gets a fresh start attempt regardless
+			// of earlier failures in this session.
+			_audioStartBackoff.Reset();
 			StartAudioPipelineLocked("AirPlay audio stream setup");
 			if (_audioDecoder != null && _audioOutput != null)
 			{
@@ -1203,6 +1207,12 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 		{
 			return;
 		}
+		if (!_audioStartBackoff.ShouldAttempt(Environment.TickCount64))
+		{
+			// A recent start failed; HandleAirPlayAudioFrame calls here on every frame, so
+			// without this the WASAPI client and ffmpeg spawn were retried ~100 times a second.
+			return;
+		}
 
 		try
 		{
@@ -1217,14 +1227,16 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 			decoder.Start();
 
 			_audioStatus = $"started ({_audioSampleRate}Hz/{_audioChannels}ch/{_audioSamplesPerFrame}spf)";
+			_audioStartBackoff.Reset();
 			AppLog.Write("Audio pipeline started for " + reason + ".");
 			QueueDiagnosticsUpdate();
 		}
 		catch (Exception ex)
 		{
-			_audioStatus = "failed: " + ex.Message;
-			AppLog.Write("Audio pipeline failed to start: " + ex);
 			StopAudioPipelineLocked();
+			TimeSpan retryDelay = _audioStartBackoff.RecordFailure(Environment.TickCount64);
+			_audioStatus = $"failed: {ex.Message} (retry in {retryDelay.TotalSeconds:N0}s)";
+			AppLog.Write($"Audio pipeline failed to start (attempt {_audioStartBackoff.ConsecutiveFailures}, next retry in {retryDelay.TotalSeconds:N0}s): {ex}");
 			QueueDiagnosticsUpdate();
 		}
 	}
@@ -1455,6 +1467,7 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 			_audioPcmFrames = 0L;
 			_audioPcmBytes = 0L;
 			_audioStatus = "waiting for stream";
+			_audioStartBackoff.Reset();
 			StopAudioPipeline();
 			_streamConfig = null;
 			ResetRemoteCursorState();
