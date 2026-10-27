@@ -65,11 +65,6 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 
 	private static readonly TimeSpan AutoReconnectDelay = TimeSpan.FromSeconds(2.0);
 
-	private static readonly TimeSpan AudioRtpStartupTimeout = TimeSpan.FromSeconds(8.0);
-
-	private const string AudioFirewallWarningMessage =
-		"Audio is blocked by Windows Firewall. Allow iMirror for Private and Public networks.";
-
 	private static readonly ReceiverSettingsSnapshot StartupReceiverSettings = ReceiverSettings.Load();
 
 	// Audio sync offset applies live: the Settings slider writes this and the audio
@@ -108,8 +103,7 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 
 	private volatile bool _videoSinkAcceptingInput;
 
-	private readonly object _audioGate = new object();
-	private readonly AudioStartBackoff _audioStartBackoff = new AudioStartBackoff();
+	private readonly AudioSessionHost _audioSession;
 
 	// 3s warmup grace: BeginWarmup fires at decoder (re)start, but frames only flow after FFmpeg/MF
 	// spin-up (~0.8s) plus decryptor settling, so a shorter grace lets a startup straggler inflate
@@ -119,10 +113,6 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 	private MirrorClient? _client;
 
 	private FfmpegDecoder? _decoder;
-
-	private FfmpegAudioDecoder? _audioDecoder;
-
-	private WasapiAudioOutput? _audioOutput;
 
 	private WriteableBitmap? _bitmap;
 
@@ -180,20 +170,6 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 
 	private long _decoderRestarts;
 
-	private long _audioFramesReceived;
-
-	private long _audioFramesQueued;
-
-	private long _audioPcmFrames;
-
-	private long _audioPcmBytes;
-
-	private CancellationTokenSource? _audioRtpWatchdogCts;
-
-	private volatile bool _audioFirewallWarningActive;
-
-	private volatile bool _audioFirewallAllowRuleKnown;
-
 	// Set when the GPU engine faults at runtime (device-lost/TDR); the session then stays on the
 	// software decoder until the next connection. Reset in ResetStreamStateForNewConnection.
 	private bool _gpuPathDisabledThisSession;
@@ -224,14 +200,6 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 	private string? _lastPin;
 
 	private string _decoderStatus = "not started";
-
-	private string _audioStatus = "not started";
-
-	private int _audioSampleRate = 44100;
-
-	private int _audioChannels = 2;
-
-	private int _audioSamplesPerFrame = 480;
 
 	private string _statusText = "Waiting for iPhone or iPad...";
 
@@ -279,6 +247,13 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 			this,
 			ShutdownApplicationAsync,
 			() => _shutdownStarted);
+		_audioSession = new AudioSessionHost(
+			() => Volatile.Read(ref _connectionGeneration),
+			ResolveAudioSyncTargetLatencyMilliseconds);
+		_audioSession.DiagnosticsChanged += QueueDiagnosticsUpdate;
+		_audioSession.StatusReported += HandleAudioStatusReported;
+		_audioSession.FirewallWarningRaised += HandleAudioFirewallWarningRaised;
+		_audioSession.FirewallWarningCleared += HandleAudioFirewallWarningCleared;
 		VideoStage.SizeChanged += VideoStage_SizeChanged;
 		DeviceComboBox.ItemsSource = _devices;
 		DeviceComboBox.SelectionChanged += delegate
@@ -299,9 +274,9 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 		_airPlayProbe.VideoPayloadReceived += (payload, sourceTimestampNanos, receivedTick) =>
 			HandleAirPlayVideoPayload(payload, sourceTimestampNanos, receivedTick, Volatile.Read(ref _airPlaySessionGeneration));
 		_airPlayProbe.AudioStreamStarted += (sampleRate, channels, samplesPerFrame) =>
-			HandleAirPlayAudioStreamStarted(sampleRate, channels, samplesPerFrame, Volatile.Read(ref _airPlaySessionGeneration));
+			_audioSession.HandleStreamStarted(sampleRate, channels, samplesPerFrame, Volatile.Read(ref _airPlaySessionGeneration));
 		_airPlayProbe.AudioFrameReceived += (frame, rtpTimestamp, sequence) =>
-			HandleAirPlayAudioFrame(frame, rtpTimestamp, sequence, Volatile.Read(ref _airPlaySessionGeneration));
+			_audioSession.HandleFrame(frame, rtpTimestamp, sequence, Volatile.Read(ref _airPlaySessionGeneration));
 		InitializeTrayIcon();
 		ApplyThemedAppIcon();
 		// Fires on the UI thread when the user changes the Windows theme (Settings >
@@ -529,8 +504,8 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 
 			if (result.Status == FirewallRuleInstallStatus.Success)
 			{
-				_audioFirewallAllowRuleKnown = true;
-				ClearAudioFirewallWarning(
+				_audioSession.MarkFirewallAllowRuleKnown();
+				_audioSession.ClearFirewallWarning(
 					"Windows Firewall allow rule completed; clearing audio firewall warning.",
 					"waiting for audio after firewall allow");
 				SetStatus("Windows Firewall now allows iMirror. Reconnect only if audio does not resume.");
@@ -721,8 +696,7 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 	void ISettingsHost.SetLiveAudioSyncOffsetMilliseconds(int value)
 	{
 		Volatile.Write(ref _audioSyncOffsetMilliseconds, ReceiverSettings.ClampAudioOffset(value));
-		WasapiAudioOutput? output = _audioOutput;
-		output?.SetSyncTargetLatencyMilliseconds(ResolveAudioSyncTargetLatencyMilliseconds());
+		_audioSession.ApplySyncTargetLatency();
 	}
 
 	Task ISettingsHost.RestartApplicationAsync()
@@ -834,7 +808,7 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 		CleanupGuards.RunStep("D3D presenter dispose", DisposeHighResolutionD3DPresenter);
 		CleanupGuards.RunStep("pending D3D frame release", ReleasePendingD3DFrame);
 		CleanupGuards.RunStep("pending frame release", ReleasePendingFrame);
-		CleanupGuards.RunStep("audio pipeline stop", StopAudioPipeline);
+		CleanupGuards.RunStep("audio pipeline stop", _audioSession.Stop);
 		_bitmap = null;
 		VideoImage.Source = null;
 		VideoImage.Visibility = Visibility.Visible;
@@ -928,321 +902,36 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 		ProcessVideoPayload(payload, sourceTimestampNanos, receivedTick, countReceived: true, allowPreSinkBuffer: true);
 	}
 
-	private void HandleAirPlayAudioStreamStarted(int sampleRate, int channels, int samplesPerFrame, int generation)
-	{
-		if (!IsCurrentGeneration(generation, Volatile.Read(ref _connectionGeneration)))
-		{
-			return;
-		}
-
-		lock (_audioGate)
-		{
-			bool formatChanged = _audioDecoder != null
-				&& (_audioSampleRate != sampleRate || _audioChannels != channels || _audioSamplesPerFrame != samplesPerFrame);
-			_audioSampleRate = sampleRate > 0 ? sampleRate : 44100;
-			_audioChannels = channels > 0 ? channels : 2;
-			_audioSamplesPerFrame = samplesPerFrame > 0 ? samplesPerFrame : 480;
-			if (formatChanged)
-			{
-				StopAudioPipelineLocked();
-			}
-			// A new SETUP (new session or new format) gets a fresh start attempt regardless
-			// of earlier failures in this session.
-			_audioStartBackoff.Reset();
-			StartAudioPipelineLocked("AirPlay audio stream setup");
-			if (_audioDecoder != null && _audioOutput != null)
-			{
-				RestartAudioRtpWatchdogLocked(generation);
-			}
-		}
-	}
-
-	private void HandleAirPlayAudioFrame(byte[] frame, uint rtpTimestamp, ushort sequence, int generation)
-	{
-		if (!IsCurrentGeneration(generation, Volatile.Read(ref _connectionGeneration)))
-		{
-			return;
-		}
-
-		ClearAudioFirewallWarning();
-		Interlocked.Increment(ref _audioFramesReceived);
-		long receivedTick = Stopwatch.GetTimestamp();
-		FfmpegAudioDecoder? decoder;
-		lock (_audioGate)
-		{
-			if (_audioDecoder == null)
-			{
-				StartAudioPipelineLocked("first AirPlay audio frame");
-			}
-			decoder = _audioDecoder;
-		}
-
-		if (decoder == null)
-		{
-			QueueDiagnosticsUpdate();
-			return;
-		}
-
-		if (decoder.QueueFrame(frame, rtpTimestamp, sequence, receivedTick))
-		{
-			Interlocked.Increment(ref _audioFramesQueued);
-		}
-		QueueDiagnosticsUpdate();
-	}
-
-	private void RestartAudioRtpWatchdogLocked(int generation)
-	{
-		CancelAudioRtpWatchdogLocked();
-		long frameBaseline = Interlocked.Read(ref _audioFramesReceived);
-		_audioRtpWatchdogCts = new CancellationTokenSource();
-		_ = WatchAudioRtpStartupAsync(generation, frameBaseline, _audioRtpWatchdogCts.Token);
-	}
-
-	private void CancelAudioRtpWatchdogLocked()
-	{
-		CancellationTokenSource? cts = _audioRtpWatchdogCts;
-		_audioRtpWatchdogCts = null;
-		try
-		{
-			cts?.Cancel();
-		}
-		catch
-		{
-		}
-	}
-
-	private async Task WatchAudioRtpStartupAsync(int generation, long frameBaseline, CancellationToken token)
-	{
-		try
-		{
-			await Task.Delay(AudioRtpStartupTimeout, token);
-		}
-		catch (OperationCanceledException)
-		{
-			return;
-		}
-		catch (ObjectDisposedException)
-		{
-			return;
-		}
-
-		if (!IsCurrentGeneration(generation, Volatile.Read(ref _connectionGeneration)) ||
-			Interlocked.Read(ref _audioFramesReceived) > frameBaseline)
-		{
-			return;
-		}
-
-		if (await ShouldSuppressAudioFirewallWarningAsync(generation, frameBaseline, token))
-		{
-			return;
-		}
-
-		bool shouldNotify = false;
-		lock (_audioGate)
-		{
-			if (token.IsCancellationRequested ||
-				Interlocked.Read(ref _audioFramesReceived) > frameBaseline ||
-				_audioFirewallWarningActive)
-			{
-				return;
-			}
-
-			_audioFirewallWarningActive = true;
-			_audioStatus = AudioFirewallWarningMessage;
-			shouldNotify = true;
-		}
-
-		if (!shouldNotify)
-		{
-			return;
-		}
-
-		AppLog.Write(
-			$"AirPlay audio RTP did not arrive within {AudioRtpStartupTimeout.TotalSeconds:N0}s after SETUP; " +
-			"Windows Firewall may be blocking the dynamic UDP audio ports. Allow iMirror for Private and Public networks.");
-		_ = base.Dispatcher.BeginInvoke(new Action(delegate
-		{
-			SetStatus(AudioFirewallWarningMessage);
-			UpdateDiagnostics();
-		}), DispatcherPriority.Background);
-	}
-
-	private async Task<bool> ShouldSuppressAudioFirewallWarningAsync(int generation, long frameBaseline, CancellationToken token)
-	{
-		if (!_audioFirewallAllowRuleKnown)
-		{
-			bool hasAllowRule = await WindowsFirewallRuleInstaller.HasAllowRuleForCurrentExecutableAsync(token);
-			if (hasAllowRule)
-			{
-				_audioFirewallAllowRuleKnown = true;
-			}
-		}
-
-		if (!_audioFirewallAllowRuleKnown)
-		{
-			return false;
-		}
-
-		if (token.IsCancellationRequested ||
-			!IsCurrentGeneration(generation, Volatile.Read(ref _connectionGeneration)) ||
-			Interlocked.Read(ref _audioFramesReceived) > frameBaseline)
-		{
-			return true;
-		}
-
-		AppLog.Write(
-			$"AirPlay audio RTP did not arrive within {AudioRtpStartupTimeout.TotalSeconds:N0}s after SETUP, " +
-			"but an enabled inbound Windows Firewall allow rule already exists for iMirror; suppressing the firewall warning.");
-		return true;
-	}
-
-	private void ClearAudioFirewallWarning(string logMessage = "AirPlay audio RTP reached the decoder; clearing firewall warning.", string? replacementAudioStatus = null)
-	{
-		bool changed = false;
-		lock (_audioGate)
-		{
-			CancelAudioRtpWatchdogLocked();
-			if (_audioFirewallWarningActive)
-			{
-				_audioFirewallWarningActive = false;
-				changed = true;
-			}
-			if (replacementAudioStatus != null && _audioStatus == AudioFirewallWarningMessage)
-			{
-				_audioStatus = replacementAudioStatus;
-				changed = true;
-			}
-		}
-
-		if (!changed)
-		{
-			return;
-		}
-
-		AppLog.Write(logMessage);
-		base.Dispatcher.BeginInvoke(new Action(delegate
-		{
-			UpdateReceiverChrome();
-			UpdateDiagnostics();
-		}), DispatcherPriority.Background);
-	}
-
 	internal static bool IsCurrentGeneration(int payloadGeneration, int currentGeneration)
 	{
-		return payloadGeneration != 0 && payloadGeneration == currentGeneration;
+		return AudioSessionHost.IsCurrentGeneration(payloadGeneration, currentGeneration);
 	}
 
-	private void StartAudioPipelineLocked(string reason)
-	{
-		if (_audioDecoder != null)
-		{
-			return;
-		}
-		if (!_audioStartBackoff.ShouldAttempt(Environment.TickCount64))
-		{
-			// A recent start failed; HandleAirPlayAudioFrame calls here on every frame, so
-			// without this the WASAPI client and ffmpeg spawn were retried ~100 times a second.
-			return;
-		}
-
-		try
-		{
-			long startTick = Stopwatch.GetTimestamp();
-			var output = new WasapiAudioOutput(_audioSampleRate, _audioChannels);
-			output.StatusChanged += HandleAudioStatus;
-			_audioOutput = output;
-			long outputTick = Stopwatch.GetTimestamp();
-
-			var decoder = new FfmpegAudioDecoder(_audioSampleRate, _audioChannels, _audioSamplesPerFrame);
-			decoder.StatusChanged += HandleAudioStatus;
-			decoder.PcmFrameDecoded += HandleAudioPcmFrame;
-			_audioDecoder = decoder;
-			decoder.Start();
-			long decoderTick = Stopwatch.GetTimestamp();
-
-			_audioStatus = $"started ({_audioSampleRate}Hz/{_audioChannels}ch/{_audioSamplesPerFrame}spf)";
-			_audioStartBackoff.Reset();
-			AppLog.Write(
-				$"Audio pipeline started for {reason} in {Stopwatch.GetElapsedTime(startTick, decoderTick).TotalMilliseconds:N0}ms " +
-				$"(wasapi={Stopwatch.GetElapsedTime(startTick, outputTick).TotalMilliseconds:N0}ms, " +
-				$"ffmpeg={Stopwatch.GetElapsedTime(outputTick, decoderTick).TotalMilliseconds:N0}ms).");
-			QueueDiagnosticsUpdate();
-		}
-		catch (Exception ex)
-		{
-			StopAudioPipelineLocked();
-			TimeSpan retryDelay = _audioStartBackoff.RecordFailure(Environment.TickCount64);
-			_audioStatus = $"failed: {ex.Message} (retry in {retryDelay.TotalSeconds:N0}s)";
-			AppLog.Write($"Audio pipeline failed to start (attempt {_audioStartBackoff.ConsecutiveFailures}, next retry in {retryDelay.TotalSeconds:N0}s): {ex}");
-			QueueDiagnosticsUpdate();
-		}
-	}
-
-	private void HandleAudioStatus(string message)
+	private void HandleAudioStatusReported(string message)
 	{
 		base.Dispatcher.BeginInvoke(new Action(delegate
 		{
-			_audioStatus = message;
 			AppLog.Write("Audio status: " + message);
 			UpdateDiagnostics();
 		}), DispatcherPriority.Background);
 	}
 
-	private void HandleAudioPcmFrame(AudioPcmFrame frame)
+	private void HandleAudioFirewallWarningRaised()
 	{
-		try
+		_ = base.Dispatcher.BeginInvoke(new Action(delegate
 		{
-			WasapiAudioOutput? output;
-			lock (_audioGate)
-			{
-				output = _audioOutput;
-			}
-			if (output == null)
-			{
-				return;
-			}
-
-			output.SetSyncTargetLatencyMilliseconds(ResolveAudioSyncTargetLatencyMilliseconds());
-			output.Submit(frame);
-			Interlocked.Increment(ref _audioPcmFrames);
-			Interlocked.Add(ref _audioPcmBytes, frame.ByteCount);
-		}
-		finally
-		{
-			frame.Release();
-		}
+			SetStatus(AudioSessionHost.FirewallWarningMessage);
+			UpdateDiagnostics();
+		}), DispatcherPriority.Background);
 	}
 
-	private void StopAudioPipeline()
+	private void HandleAudioFirewallWarningCleared()
 	{
-		lock (_audioGate)
+		base.Dispatcher.BeginInvoke(new Action(delegate
 		{
-			StopAudioPipelineLocked();
-		}
-	}
-
-	private void StopAudioPipelineLocked()
-	{
-		FfmpegAudioDecoder? decoder = _audioDecoder;
-		WasapiAudioOutput? output = _audioOutput;
-		CancelAudioRtpWatchdogLocked();
-		_audioFirewallWarningActive = false;
-		_audioDecoder = null;
-		_audioOutput = null;
-		try
-		{
-			decoder?.Dispose();
-		}
-		catch
-		{
-		}
-		try
-		{
-			output?.Dispose();
-		}
-		catch
-		{
-		}
+			UpdateReceiverChrome();
+			UpdateDiagnostics();
+		}), DispatcherPriority.Background);
 	}
 
 	private async Task ConnectToSelectedAsync()
@@ -1385,13 +1074,7 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 			_lastPendingVideoDropLogTick = 0L;
 			_staleD3DFramesDropped = 0L;
 			_lastStaleD3DFrameDropLogTick = 0L;
-			_audioFramesReceived = 0L;
-			_audioFramesQueued = 0L;
-			_audioPcmFrames = 0L;
-			_audioPcmBytes = 0L;
-			_audioStatus = "waiting for stream";
-			_audioStartBackoff.Reset();
-			StopAudioPipeline();
+			_audioSession.ResetForNewConnection();
 			_streamConfig = null;
 			_decoderStatus = "waiting for stream config";
 			_videoSinkAcceptingInput = false;
@@ -2389,7 +2072,7 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 
 	private double ResolveHighResolutionD3DTopInsetDip(double stageHeightDip)
 	{
-		if (!_audioFirewallWarningActive || ReceiverCardBorder.Visibility != Visibility.Visible)
+		if (!_audioSession.FirewallWarningActive || ReceiverCardBorder.Visibility != Visibility.Visible)
 		{
 			return 0.0;
 		}
@@ -2781,7 +2464,7 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 			FfmpegDecoder? decoder = _decoder;
 			_decoder = null;
 			CleanupGuards.RunStep("ffmpeg decoder dispose", () => decoder?.Dispose());
-			CleanupGuards.RunStep("audio pipeline stop", StopAudioPipeline);
+			CleanupGuards.RunStep("audio pipeline stop", _audioSession.Stop);
 			IHighResolutionD3DDecoder? mediaFoundationD3DDecoder = _mediaFoundationD3DDecoder;
 			_mediaFoundationD3DDecoder = null;
 			CleanupGuards.RunStep("Media Foundation D3D decoder dispose", () => mediaFoundationD3DDecoder?.Dispose());
@@ -2881,7 +2564,7 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 	{
 		bool connected = IsMirroringActive();
 		int deviceCount = _devices.Count;
-		bool audioFirewallWarning = _audioFirewallWarningActive;
+		bool audioFirewallWarning = _audioSession.FirewallWarningActive;
 		var state = new ReceiverChromeState(connected, _isConnecting, deviceCount, audioFirewallWarning);
 
 		HeaderSubtitleTextBlock.Text = ReceiverChromeText.Subtitle(state);
@@ -3066,27 +2749,7 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 
 	internal string ResolveAudioDiagnostics()
 	{
-		// Snapshot without _audioGate: StartAudioPipelineLocked holds it while WASAPI and the FFmpeg
-		// audio process start (seconds on some PCs). UpdateDiagnostics runs on the UI thread, and the
-		// AirPlay data thread waits on the UI thread to apply the stream config before the first IDR.
-		FfmpegAudioDecoder? decoder = Volatile.Read(ref _audioDecoder);
-		WasapiAudioOutput? output = Volatile.Read(ref _audioOutput);
-		bool audioFirewallWarning = _audioFirewallWarningActive;
-
-		string firewallHint = audioFirewallWarning
-			? " (no audio RTP after SETUP; allow iMirror in Windows Firewall for Private and Public networks)"
-			: string.Empty;
-
-		if (decoder == null || output == null)
-		{
-			return $"audio: {_audioStatus}{firewallHint}, received={Interlocked.Read(ref _audioFramesReceived):N0}";
-		}
-
-		return $"audio: {_audioStatus}{firewallHint}, received/queued={Interlocked.Read(ref _audioFramesReceived):N0}/{Interlocked.Read(ref _audioFramesQueued):N0}, " +
-			$"dedup={decoder.DuplicateInputFrames:N0}, decoded={Interlocked.Read(ref _audioPcmFrames):N0} ({(double)Interlocked.Read(ref _audioPcmBytes) / 1024.0:N1} KB), " +
-			$"decoderQueue={decoder.QueuedInputFrames:N0}, audioBuffer={output.BufferedMilliseconds:N0}ms, " +
-			$"audioLatency={output.LatestEstimatedLatencyMilliseconds}/{output.SyncTargetLatencyMilliseconds}ms, " +
-			$"audioDropped={output.DroppedFrames:N0} sync={output.SyncDroppedFrames:N0}, clears={output.BufferClears:N0}, low={output.LowBufferEvents:N0}";
+		return _audioSession.ResolveDiagnostics();
 	}
 
 	private int ResolveAudioSyncTargetLatencyMilliseconds()
