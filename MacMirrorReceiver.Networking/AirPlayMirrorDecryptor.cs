@@ -42,11 +42,6 @@ internal sealed class AirPlayMirrorDecryptor : IDisposable
 
 	public string Name { get; }
 
-	public static AirPlayMirrorDecryptor Create(byte[] fairPlayAesKey, byte[] ecdhSecret, ulong streamConnectionId)
-	{
-		return Create(BuildStandardCandidate(fairPlayAesKey, ecdhSecret, streamConnectionId.ToString(CultureInfo.InvariantCulture), reverseSharedSecret: false, littleEndianCounter: false, "standard"));
-	}
-
 	public static AirPlayMirrorDecryptor Create(AirPlayMirrorDecryptorCandidate candidate)
 	{
 		return new AirPlayMirrorDecryptor(candidate.Key, candidate.Iv, candidate.LittleEndianCounter, candidate.InitialSkipBytes, candidate.PayloadOffset, candidate.Name);
