@@ -1,4 +1,4 @@
-<Project Sdk="Microsoft.NET.Sdk">
+﻿<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <AssemblyName>iMirror</AssemblyName>
     <ApplicationIcon>Assets\iMirror.ico</ApplicationIcon>
@@ -57,6 +57,8 @@
     <Resource Include="Assets\iMirror.ico" />
     <None Remove="Assets\iMirror-light.ico" />
     <Resource Include="Assets\iMirror-light.ico" />
+    <Content Include="LICENSE" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="NOTICE" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="THIRD_PARTY_NOTICES.txt" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="ThirdParty\playfair\LICENSE.md" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="ThirdParty\playfair\hand_garble.c" CopyToOutputDirectory="PreserveNewest" />

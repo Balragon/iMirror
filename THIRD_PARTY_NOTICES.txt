@@ -70,6 +70,21 @@ Role in package : Source files redistributed (and used) by iMirror for AirPlay
 License         : GNU General Public License, version 3 (GPLv3).
                   License text: ThirdParty/playfair/LICENSE.md
 
+Upstream        : The "playfair" FairPlay SAP implementation distributed with
+                  the RPiPlay and UxPlay AirPlay receiver projects
+                  (lib/playfair/ in https://github.com/FD-/RPiPlay and
+                  https://github.com/FDH2/UxPlay). The files shipped here are
+                  hand_garble.c, modified_md5.c, omg_hax.c, omg_hax.h and
+                  sap_hash.c. They carry no copyright header; the authorship
+                  is the upstream projects'. The exact upstream revision these
+                  copies were taken from is not recorded in this repository.
+
+Modifications   : (GPLv3 §5(a)) Each .c file in this repository starts with
+                  `#define printf(...) (void)0;`, which silences the upstream
+                  debug output. No other local changes are known.
+                  iMirror does not compile these files; AirPlayPlayFair.cs
+                  reads the S-box tables out of them at runtime.
+
 Corresponding source (GPLv3 §6):
                   The playfair source is itself included in the package under
                   ThirdParty/playfair/, which constitutes the corresponding
