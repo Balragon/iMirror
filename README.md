@@ -1,4 +1,4 @@
-﻿<p align="center"><img src="Assets/iMirror.png" alt="iMirror" width="128"></p>
+<p align="center"><img src="Assets/iMirror.png" alt="iMirror" width="128"></p>
 
 # iMirror
 

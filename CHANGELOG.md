@@ -1,4 +1,4 @@
-﻿# Changelog
+# Changelog
 
 All notable changes to iMirror are documented in this file. The format follows [Keep a Changelog](https://keepachangelog.com/).
 
