@@ -96,7 +96,14 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 
 	private readonly object _h264GateLock = new object();
 
-	private readonly object _frameGate = new object();
+	private readonly LatestFrameMailbox _frameMailbox;
+	private readonly ThrottledLogGate _renderLogGate = new ThrottledLogGate(TimeSpan.FromSeconds(1));
+	private readonly ThrottledLogGate _videoHealthLogGate = new ThrottledLogGate(TimeSpan.FromSeconds(10));
+	private readonly ThrottledLogGate _staleD3DDropLogGate = new ThrottledLogGate(TimeSpan.FromSeconds(1));
+	private readonly ThrottledLogGate _staleSoftwareDropLogGate = new ThrottledLogGate(TimeSpan.FromSeconds(1));
+	private readonly ThrottledLogGate _gateDecisionLogGate = new ThrottledLogGate(TimeSpan.FromSeconds(1));
+	private readonly ThrottledLogGate _pendingVideoDropLogGate = new ThrottledLogGate(TimeSpan.FromSeconds(1));
+	private readonly ThrottledLogGate _diagnosticsUpdateGate = new ThrottledLogGate(TimeSpan.FromMilliseconds(250));
 
 
 	private readonly PendingVideoBuffer _pendingVideoBeforeSink = new PendingVideoBuffer(MaxPendingVideoPacketsBeforeSink, MaxPendingVideoBytesBeforeSink);
@@ -120,13 +127,7 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 
 	private IHighResolutionD3DDecoder? _mediaFoundationD3DDecoder;
 
-	private IHighResolutionD3DFrame? _pendingD3DFrame;
-
 	private long _staleD3DFramesDropped;
-
-	private long _lastStaleD3DFrameDropLogTick;
-
-	private VideoFrame? _pendingFrame;
 
 	private StreamConfig? _streamConfig;
 
@@ -143,8 +144,6 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 
 	private long _staleSoftwareFramesDropped;
 
-	private long _lastStaleSoftwareFrameDropLogTick;
-
 	// UI thread only.
 	private long _lastSoftwarePresentTick;
 
@@ -152,21 +151,11 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 
 	private long _latestDecodeToRenderMs;
 
-	private long _lastDiagnosticsTick;
-
-	private long _lastGateLogTick;
-
-	private long _lastRenderLogTick;
-
-	private long _lastVideoHealthLogTick;
-
 	private long _lastVideoHealthPackets;
 
 	private long _lastVideoHealthDecodedFrames;
 
 	private long _lastVideoHealthRenderedFrames;
-
-	private long _lastPendingVideoDropLogTick;
 
 	private long _decoderRestarts;
 
@@ -175,9 +164,6 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 	private bool _gpuPathDisabledThisSession;
 
 	private CancellationTokenSource? _videoWatchdogCts;
-
-	private int _renderQueued;
-
 
 	private int _diagnosticsQueued;
 
@@ -247,6 +233,8 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 			this,
 			ShutdownApplicationAsync,
 			() => _shutdownStarted);
+		_frameMailbox = new LatestFrameMailbox(
+			() => base.Dispatcher.BeginInvoke(new Action(DrainLatestFrame), DispatcherPriority.Render));
 		_audioSession = new AudioSessionHost(
 			() => Volatile.Read(ref _connectionGeneration),
 			ResolveAudioSyncTargetLatencyMilliseconds);
@@ -1057,23 +1045,23 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 			_renderedFrames = 0L;
 			_renderDroppedFrames = 0L;
 			_staleSoftwareFramesDropped = 0L;
-			_lastStaleSoftwareFrameDropLogTick = 0L;
+			_staleSoftwareDropLogGate.Reset();
 			_lastSoftwarePresentTick = 0L;
 			_latestReceiveToRenderMs = 0L;
 			_latestDecodeToRenderMs = 0L;
 			_receiveToPresentLatencyWindow.Reset();
-			_lastRenderLogTick = 0L;
-			_lastVideoHealthLogTick = 0L;
+			_renderLogGate.Reset();
+			_videoHealthLogGate.Reset();
 			_lastVideoHealthPackets = 0L;
 			_lastVideoHealthDecodedFrames = 0L;
 			_lastVideoHealthRenderedFrames = 0L;
 			_decoderRestarts = 0L;
 			_gpuPathDisabledThisSession = false;
-			_lastGateLogTick = 0L;
+			_gateDecisionLogGate.Reset();
 			_pendingVideoBeforeSink.ResetDroppedCount();
-			_lastPendingVideoDropLogTick = 0L;
+			_pendingVideoDropLogGate.Reset();
 			_staleD3DFramesDropped = 0L;
-			_lastStaleD3DFrameDropLogTick = 0L;
+			_staleD3DDropLogGate.Reset();
 			_audioSession.ResetForNewConnection();
 			_streamConfig = null;
 			_decoderStatus = "waiting for stream config";
@@ -2173,96 +2161,6 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 		return true;
 	}
 
-	private void QueueFrameForPresentation(VideoFrame frame)
-	{
-		Interlocked.Increment(ref _decodedFrames);
-		lock (_frameGate)
-		{
-			if (_pendingFrame != null)
-			{
-				Interlocked.Increment(ref _renderDroppedFrames);
-				_pendingFrame.Release();
-			}
-			_pendingFrame = frame;
-		}
-		if (Interlocked.Exchange(ref _renderQueued, 1) == 0)
-		{
-			base.Dispatcher.BeginInvoke(new Action(DrainLatestFrame), DispatcherPriority.Render);
-		}
-	}
-
-	private void QueueD3DFrameForPresentation(IHighResolutionD3DFrame frame)
-	{
-		Interlocked.Increment(ref _decodedFrames);
-		lock (_frameGate)
-		{
-			if (_pendingD3DFrame != null)
-			{
-				Interlocked.Increment(ref _renderDroppedFrames);
-				_pendingD3DFrame.Dispose();
-			}
-			_pendingD3DFrame = frame;
-		}
-		if (Interlocked.Exchange(ref _renderQueued, 1) == 0)
-		{
-			base.Dispatcher.BeginInvoke(new Action(DrainLatestFrame), DispatcherPriority.Render);
-		}
-	}
-
-	private void ReleasePendingFrame()
-	{
-		lock (_frameGate)
-		{
-			_pendingFrame?.Release();
-			_pendingFrame = null;
-		}
-	}
-
-	private void ReleasePendingD3DFrame()
-	{
-		lock (_frameGate)
-		{
-			_pendingD3DFrame?.Dispose();
-			_pendingD3DFrame = null;
-		}
-	}
-
-	private void DrainLatestFrame()
-	{
-		VideoFrame? pendingFrame;
-		IHighResolutionD3DFrame? pendingD3DFrame;
-		lock (_frameGate)
-		{
-			pendingFrame = _pendingFrame;
-			_pendingFrame = null;
-			pendingD3DFrame = _pendingD3DFrame;
-			_pendingD3DFrame = null;
-		}
-		if (pendingFrame != null)
-		{
-			PresentFrame(pendingFrame);
-		}
-		if (pendingD3DFrame != null)
-		{
-			PresentD3DFrame(pendingD3DFrame);
-		}
-		Interlocked.Exchange(ref _renderQueued, 0);
-		lock (_frameGate)
-		{
-			if (_pendingFrame == null
-				&& _pendingD3DFrame == null
-			)
-			{
-				return;
-			}
-		}
-		if (Interlocked.Exchange(ref _renderQueued, 1) == 0)
-		{
-			base.Dispatcher.BeginInvoke(new Action(DrainLatestFrame), DispatcherPriority.Render);
-		}
-	}
-
-
 	private void PresentFrame(VideoFrame frame)
 	{
 		long renderStartTick = Stopwatch.GetTimestamp();
@@ -2320,6 +2218,39 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 
 
 
+
+	private void QueueFrameForPresentation(VideoFrame frame)
+	{
+		Interlocked.Increment(ref _decodedFrames);
+		if (_frameMailbox.Offer(frame))
+		{
+			Interlocked.Increment(ref _renderDroppedFrames);
+		}
+	}
+
+	private void QueueD3DFrameForPresentation(IHighResolutionD3DFrame frame)
+	{
+		Interlocked.Increment(ref _decodedFrames);
+		if (_frameMailbox.Offer(frame))
+		{
+			Interlocked.Increment(ref _renderDroppedFrames);
+		}
+	}
+
+	private void ReleasePendingFrame()
+	{
+		_frameMailbox.ReleasePendingSoftwareFrame();
+	}
+
+	private void ReleasePendingD3DFrame()
+	{
+		_frameMailbox.ReleasePendingD3DFrame();
+	}
+
+	private void DrainLatestFrame()
+	{
+		_frameMailbox.Drain(PresentFrame, PresentD3DFrame);
+	}
 
 	private void PresentFrameToActiveRenderer(VideoFrame frame)
 	{
@@ -2386,19 +2317,16 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 
 	private void LogRenderLatencyThrottled(long renderStartTick, long renderDoneTick, long renderedFrames)
 	{
-		long tickCount = Environment.TickCount64;
-		long previous = Interlocked.Read(ref _lastRenderLogTick);
-		if (tickCount - previous < 1000)
+		if (!_renderLogGate.TryPass())
 		{
 			return;
 		}
-		Interlocked.Exchange(ref _lastRenderLogTick, tickCount);
 		AppLog.Write(
 			$"Render stats: received={Interlocked.Read(ref _videoPackets):N0}, decoded={Interlocked.Read(ref _decodedFrames):N0}, rendered={renderedFrames:N0}, " +
 			$"renderDropped={Interlocked.Read(ref _renderDroppedFrames):N0}, receive->render={Interlocked.Read(ref _latestReceiveToRenderMs)}ms, " +
 			$"decode->render={Interlocked.Read(ref _latestDecodeToRenderMs)}ms, render={ElapsedMilliseconds(renderStartTick, renderDoneTick)}ms, " +
 			$"receive->present window={FormatLatencyWindow(_receiveToPresentLatencyWindow.GetCurrentOrLastSnapshot(Stopwatch.GetTimestamp()))}, " +
-			$"pendingRender={GetPendingRenderFrameCount()}, dispatcherQueued={Volatile.Read(ref _renderQueued)}, " +
+			$"pendingRender={GetPendingRenderFrameCount()}, dispatcherQueued={_frameMailbox.DrainQueued}, " +
 			$"decoderQueue={ActiveQueuedInputPackets} packets/{(double)ActiveQueuedInputBytes / 1024.0:N1}KB, " +
 			$"ffmpegPipeline={ActiveFfmpegPipelineDepth} frames, " +
 			$"h264 accepted/written/dropped={ActiveAcceptedInputPackets:N0}/{ActiveWrittenInputPackets:N0}/{ActiveDroppedInputPackets:N0}, " +
@@ -2407,13 +2335,7 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 
 	private void LogVideoHealthThrottled()
 	{
-		long tickCount = Environment.TickCount64;
-		long previous = Interlocked.Read(ref _lastVideoHealthLogTick);
-		if (tickCount - previous < 10000)
-		{
-			return;
-		}
-		if (Interlocked.CompareExchange(ref _lastVideoHealthLogTick, tickCount, previous) != previous)
+		if (!_videoHealthLogGate.TryPass())
 		{
 			return;
 		}
@@ -2625,7 +2547,7 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 			long decodedFrames = Interlocked.Read(ref _decodedFrames);
 				long renderedFrames = Interlocked.Read(ref _renderedFrames);
 				int pendingRenderFrames = GetPendingRenderFrameCount();
-				int dispatcherQueued = Volatile.Read(ref _renderQueued);
+				int dispatcherQueued = _frameMailbox.DrainQueued;
 				int pendingVideoBeforeSinkPackets = _pendingVideoBeforeSink.Count;
 				long pendingVideoBeforeSinkBytes = _pendingVideoBeforeSink.Bytes;
 					(long h264Forwarded, long h264Dropped) = GetH264GateCounts();
@@ -2694,13 +2616,10 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 
 	private void LogStaleD3DFrameDropThrottled(long ageMs, long staleDropped)
 	{
-		long tickCount = Environment.TickCount64;
-		long previous = Interlocked.Read(ref _lastStaleD3DFrameDropLogTick);
-		if (tickCount - previous < 1000)
+		if (!_staleD3DDropLogGate.TryPass())
 		{
 			return;
 		}
-		Interlocked.Exchange(ref _lastStaleD3DFrameDropLogTick, tickCount);
 		AppLog.Write(
 			$"Dropped stale D3D frame: age={ageMs}ms, staleDropped={staleDropped:N0}, " +
 			$"decoderQueue={ActiveQueuedInputPackets} packets/{(double)ActiveQueuedInputBytes / 1024.0:N1}KB.");
@@ -2708,13 +2627,10 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 
 	private void LogStaleSoftwareFrameDropThrottled(long ageMs, long staleDropped)
 	{
-		long tickCount = Environment.TickCount64;
-		long previous = Interlocked.Read(ref _lastStaleSoftwareFrameDropLogTick);
-		if (tickCount - previous < 1000)
+		if (!_staleSoftwareDropLogGate.TryPass())
 		{
 			return;
 		}
-		Interlocked.Exchange(ref _lastStaleSoftwareFrameDropLogTick, tickCount);
 		AppLog.Write(
 			$"Dropped stale FFmpeg frame: age={ageMs}ms, staleDropped={staleDropped:N0}, " +
 			$"decoderQueue={ActiveQueuedInputPackets} packets/{(double)ActiveQueuedInputBytes / 1024.0:N1}KB.");
@@ -2812,24 +2728,13 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 
 	private int GetPendingRenderFrameCount()
 	{
-		lock (_frameGate)
-		{
-			int count = _pendingFrame == null ? 0 : 1;
-			if (_pendingD3DFrame != null)
-			{
-				count++;
-			}
-			return count;
-		}
+		return _frameMailbox.PendingCount;
 	}
 
 	private void LogGateDecisionThrottled()
 	{
-		long tickCount = Environment.TickCount64;
-		long num = Interlocked.Read(ref _lastGateLogTick);
-		if (tickCount - num >= 1000)
+		if (_gateDecisionLogGate.TryPass())
 		{
-			Interlocked.Exchange(ref _lastGateLogTick, tickCount);
 			AppLog.Write("H264 gate: " + GetH264GateLastDecision());
 		}
 	}
@@ -2842,24 +2747,18 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 			return;
 		}
 
-		long tickCount = Environment.TickCount64;
-		long previous = Interlocked.Read(ref _lastPendingVideoDropLogTick);
-		if (tickCount - previous >= 1000)
+		if (_pendingVideoDropLogGate.TryPass())
 		{
-			Interlocked.Exchange(ref _lastPendingVideoDropLogTick, tickCount);
 			AppLog.Write($"Pre-render video queue dropped={dropped:N0}, pending={_pendingVideoBeforeSink.Count:N0} packets/{(double)_pendingVideoBeforeSink.Bytes / 1024.0:N1} KB");
 		}
 	}
 
 	private void QueueDiagnosticsUpdate()
 	{
-		long tickCount = Environment.TickCount64;
-		long num = Interlocked.Read(ref _lastDiagnosticsTick);
-		if (tickCount - num < 250)
+		if (!_diagnosticsUpdateGate.TryPass())
 		{
 			return;
 		}
-		Interlocked.Exchange(ref _lastDiagnosticsTick, tickCount);
 		if (Interlocked.Exchange(ref _diagnosticsQueued, 1) != 0)
 		{
 			return;
