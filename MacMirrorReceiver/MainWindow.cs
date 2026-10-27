@@ -399,8 +399,7 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 		await RunStartupStepAsync("startup preflight", async () => report = await StartupDiagnostics.RunAsync(_airPlayProbe));
 		if (report != null)
 		{
-			AppLog.Write($"Preflight: {report.Worst} - " +
-				string.Join("; ", System.Linq.Enumerable.Select(report.Checks, check => $"{check.Id}={check.Status}")));
+			LogPreflight("Preflight", report);
 			BindReadinessStrip(report);
 		}
 		else
@@ -408,6 +407,12 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 			SetStatus("Startup checks could not run; see the log for details.");
 		}
 		_ = _updateController.CheckForUpdatesOnStartupAsync();
+	}
+
+	private static void LogPreflight(string label, PreflightReport report)
+	{
+		AppLog.Write($"{label}: {report.Worst} - " +
+			string.Join("; ", System.Linq.Enumerable.Select(report.Checks, check => $"{check.Id}={check.Status}")));
 	}
 
 	private static async Task RunStartupStepAsync(string label, Func<Task> step)
@@ -544,6 +549,7 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 		try
 		{
 			PreflightReport report = await StartupDiagnostics.RunAsync(_airPlayProbe);
+			LogPreflight("Preflight re-check", report);
 			BindReadinessStrip(report);
 		}
 		finally
