@@ -105,7 +105,6 @@ public sealed class AirPlayProbeService : IDisposable
 	private readonly bool _dumpAudio;
 	private readonly AirPlayPairingContext _pairing = new AirPlayPairingContext();
 	private readonly AirPlayFairPlayContext _fairPlay = new AirPlayFairPlayContext();
-	private readonly AirPlayTimingClient _timingClient;
 	private readonly AirPlayListenerPorts _ports;
 	private readonly AirPlayAudioReceiver _audioReceiver = new AirPlayAudioReceiver();
 	private readonly AirPlaySetupContext _setup;
@@ -205,7 +204,6 @@ public sealed class AirPlayProbeService : IDisposable
 	{
 		_mdnsPort = mdnsPort;
 		_ports = listenerPorts ?? AirPlayListenerPorts.Default;
-		_timingClient = new AirPlayTimingClient(_ports.Timing);
 		_displayName = SanitizeLabel(displayName);
 		_hostName = SanitizeLabel(Environment.MachineName) + ".local";
 		_deviceId = ResolveDeviceId();
@@ -218,7 +216,7 @@ public sealed class AirPlayProbeService : IDisposable
 		_dumpAudio = dumpAudio;
 		_audioReceiver.StreamStarted += info => AudioStreamStarted?.Invoke(info.SampleRate, info.Channels, info.SamplesPerFrame);
 		_audioReceiver.AudioFrameReceived += (frame, timestamp, sequence) => AudioFrameReceived?.Invoke(frame, timestamp, sequence);
-		_setup = new AirPlaySetupContext(_timingClient, _audioReceiver, TryGetAudioCrypto, _dumpAudio);
+		_setup = new AirPlaySetupContext(_audioReceiver, TryGetAudioCrypto, _dumpAudio);
 		if (AudioDiscoveryLogging)
 		{
 			AppLog.Write("IMIRROR_AUDIO_DISCOVERY enabled: verbose data-stream logging only.");
@@ -2780,7 +2778,6 @@ public sealed class AirPlayProbeService : IDisposable
 		_dataListener?.Stop();
 		_eventListener?.Stop();
 		_timingListener?.Stop();
-		_timingClient.Dispose();
 		_audioReceiver.Dispose();
 			lock (_mirrorKeyGate)
 				{
