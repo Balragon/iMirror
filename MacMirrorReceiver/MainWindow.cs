@@ -1254,19 +1254,25 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 
 		try
 		{
+			long startTick = Stopwatch.GetTimestamp();
 			var output = new WasapiAudioOutput(_audioSampleRate, _audioChannels);
 			output.StatusChanged += HandleAudioStatus;
 			_audioOutput = output;
+			long outputTick = Stopwatch.GetTimestamp();
 
 			var decoder = new FfmpegAudioDecoder(_audioSampleRate, _audioChannels, _audioSamplesPerFrame);
 			decoder.StatusChanged += HandleAudioStatus;
 			decoder.PcmFrameDecoded += HandleAudioPcmFrame;
 			_audioDecoder = decoder;
 			decoder.Start();
+			long decoderTick = Stopwatch.GetTimestamp();
 
 			_audioStatus = $"started ({_audioSampleRate}Hz/{_audioChannels}ch/{_audioSamplesPerFrame}spf)";
 			_audioStartBackoff.Reset();
-			AppLog.Write("Audio pipeline started for " + reason + ".");
+			AppLog.Write(
+				$"Audio pipeline started for {reason} in {Stopwatch.GetElapsedTime(startTick, decoderTick).TotalMilliseconds:N0}ms " +
+				$"(wasapi={Stopwatch.GetElapsedTime(startTick, outputTick).TotalMilliseconds:N0}ms, " +
+				$"ffmpeg={Stopwatch.GetElapsedTime(outputTick, decoderTick).TotalMilliseconds:N0}ms).");
 			QueueDiagnosticsUpdate();
 		}
 		catch (Exception ex)
@@ -3684,17 +3690,14 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 			: $"output: {_decoder.OutputWidth}x{_decoder.OutputHeight}, {(double)_decoder.OutputFrameBytes / 1024.0 / 1024.0:N1} MB/frame";
 	}
 
-	private string ResolveAudioDiagnostics()
+	internal string ResolveAudioDiagnostics()
 	{
-		FfmpegAudioDecoder? decoder;
-		WasapiAudioOutput? output;
-		bool audioFirewallWarning;
-		lock (_audioGate)
-		{
-			decoder = _audioDecoder;
-			output = _audioOutput;
-			audioFirewallWarning = _audioFirewallWarningActive;
-		}
+		// Snapshot without _audioGate: StartAudioPipelineLocked holds it while WASAPI and the FFmpeg
+		// audio process start (seconds on some PCs). UpdateDiagnostics runs on the UI thread, and the
+		// AirPlay data thread waits on the UI thread to apply the stream config before the first IDR.
+		FfmpegAudioDecoder? decoder = Volatile.Read(ref _audioDecoder);
+		WasapiAudioOutput? output = Volatile.Read(ref _audioOutput);
+		bool audioFirewallWarning = _audioFirewallWarningActive;
 
 		string firewallHint = audioFirewallWarning
 			? " (no audio RTP after SETUP; allow iMirror in Windows Firewall for Private and Public networks)"
