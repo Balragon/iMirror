@@ -2535,19 +2535,6 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 				UpdateDiagnostics();
 			}));
 		};
-		decoder.InputQueueOverflowed += delegate
-		{
-			base.Dispatcher.BeginInvoke(new Action(delegate
-			{
-				if (!ReferenceEquals(_decoder, decoder))
-				{
-					return;
-				}
-				RequireH264Keyframe();
-				AppLog.Write("Decoder input queue overflowed; holding video until next keyframe.");
-				UpdateDiagnostics();
-			}));
-		};
 		decoder.Start();
 		_decoderStatus = "started";
 		_videoSinkAcceptingInput = true;
