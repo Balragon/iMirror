@@ -397,14 +397,37 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 
 	private async void Window_Loaded(object sender, RoutedEventArgs e)
 	{
+		// async void: an unhandled exception here goes to DispatcherUnhandledException, which
+		// only logs it, so the process would exit at startup. Each step is isolated so a
+		// failing discovery/listener/preflight step degrades the UI instead of killing the app.
 		AppLog.Write("MainWindow Loaded entered.");
-		await _browser.StartAsync();
-		await _airPlayProbe.StartAsync();
-		PreflightReport report = await StartupDiagnostics.RunAsync(_airPlayProbe);
-		AppLog.Write($"Preflight: {report.Worst} - " +
-			string.Join("; ", System.Linq.Enumerable.Select(report.Checks, check => $"{check.Id}={check.Status}")));
-		BindReadinessStrip(report);
+		await RunStartupStepAsync("mDNS browser start", () => _browser.StartAsync());
+		await RunStartupStepAsync("AirPlay probe start", () => _airPlayProbe.StartAsync());
+		PreflightReport? report = null;
+		await RunStartupStepAsync("startup preflight", async () => report = await StartupDiagnostics.RunAsync(_airPlayProbe));
+		if (report != null)
+		{
+			AppLog.Write($"Preflight: {report.Worst} - " +
+				string.Join("; ", System.Linq.Enumerable.Select(report.Checks, check => $"{check.Id}={check.Status}")));
+			BindReadinessStrip(report);
+		}
+		else
+		{
+			SetStatus("Startup checks could not run; see the log for details.");
+		}
 		_ = _updateController.CheckForUpdatesOnStartupAsync();
+	}
+
+	private static async Task RunStartupStepAsync(string label, Func<Task> step)
+	{
+		try
+		{
+			await step();
+		}
+		catch (Exception ex)
+		{
+			AppLog.Write($"Startup step '{label}' failed: {ex}");
+		}
 	}
 
 	private void BindReadinessStrip(PreflightReport report)
@@ -873,6 +896,16 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 		if (base.Dispatcher.CheckAccess())
 		{
 			ResetAirPlayMirrorSessionState(activeSession: false, "AirPlay session ended.", "AirPlay mirror session state reset after sender ended the session.");
+			return;
+		}
+
+		if (Volatile.Read(ref _shutdownStarted))
+		{
+			// During shutdown the UI thread is blocked inside _airPlayProbe.Dispose() (which
+			// waits up to 1 s for the network tasks that raise this event), so a blocking
+			// Invoke could never be pumped and only burned the whole wait. The session state
+			// is about to be torn down anyway.
+			AppLog.Write("AirPlay mirror session ended during shutdown; skipping UI state reset.");
 			return;
 		}
 
