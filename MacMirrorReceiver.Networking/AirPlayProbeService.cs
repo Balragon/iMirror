@@ -167,6 +167,11 @@ public sealed class AirPlayProbeService : IDisposable
 	// open the TCP data stream; any other LAN host could otherwise supersede (and so terminate)
 	// the active sender's video connection just by connecting to the data port.
 	private IPAddress? _mirrorSetupAddress;
+	// The control connection whose mirror SETUP established the session (0 = none). Only its close or
+	// full TEARDOWN ends the session: the Mac runs the whole session on the RAOP port, and any other
+	// LAN host can open and drop a connection on the AirPlay port at will.
+	private long _mirrorOwnerConnectionId;
+	private long _nextControlConnectionId;
 	private List<AirPlayMirrorDecryptor>? _mirrorDecryptorProbePool;
 	private bool _loggedWaitingForMirrorDecryptor;
 	private readonly HashSet<int> _loggedDecryptPayloadFailureTypes = new HashSet<int>();
@@ -389,6 +394,7 @@ public sealed class AirPlayProbeService : IDisposable
 	private async Task HandleProbeClientAsync(TcpClient client, string label)
 	{
 		bool countedControlConnection = false;
+		long connectionId = 0;
 		using (client)
 		{
 			try
@@ -406,6 +412,7 @@ public sealed class AirPlayProbeService : IDisposable
 					return;
 				}
 				countedControlConnection = true;
+				connectionId = Interlocked.Increment(ref _nextControlConnectionId);
 
 				client.ReceiveTimeout = 2500;
 				client.SendTimeout = 2500;
@@ -422,10 +429,7 @@ public sealed class AirPlayProbeService : IDisposable
 					if (request == null)
 					{
 						AppLog.Write($"{label} control connection closed by peer ({client.Client.RemoteEndPoint}) after {servedRequests} request(s).");
-						if (IsMirrorControlLabel(label))
-						{
-							EndMirrorSessionIfAnnounced($"{label} control connection closed by peer");
-						}
+						EndMirrorSessionIfOwnedBy(connectionId, $"{label} control connection closed by peer");
 						break;
 					}
 
@@ -433,21 +437,20 @@ public sealed class AirPlayProbeService : IDisposable
 					AppLog.Write($"{label} request from {client.Client.RemoteEndPoint}: {request.FirstLine}");
 					SetStatus($"{label}: {request.Method} {request.Target}");
 
-					byte[] response = BuildResponse(request, client.Client.RemoteEndPoint);
+					byte[] response = BuildResponse(request, client.Client.RemoteEndPoint, connectionId);
 					await stream.WriteAsync(response, _cts.Token);
-					if (request.Method == "TEARDOWN" && IsMirrorControlLabel(label))
+					// The Mac also tears down just the audio stream mid-session (and SETUPs it again
+					// later on the same connection), so only a TEARDOWN that covers the video stream
+					// ends the session. The connection stays open: the sender closes it.
+					if (request.Method == "TEARDOWN" && IsMirrorTeardown(request.Body))
 					{
-						EndMirrorSessionIfAnnounced("TEARDOWN");
-						break;
+						EndMirrorSessionIfOwnedBy(connectionId, $"{label} TEARDOWN");
 					}
 					if (request.Headers.TryGetValue("Connection", out string? connection) &&
 						connection.Contains("close", StringComparison.OrdinalIgnoreCase))
 					{
 						AppLog.Write($"{label} control connection closed on request (Connection: close) after {servedRequests} request(s).");
-						if (IsMirrorControlLabel(label))
-						{
-							EndMirrorSessionIfAnnounced($"{label} control connection close requested");
-						}
+						EndMirrorSessionIfOwnedBy(connectionId, $"{label} control connection close requested");
 						break;
 					}
 				}
@@ -455,10 +458,7 @@ public sealed class AirPlayProbeService : IDisposable
 			catch (Exception ex) when (ex is IOException or SocketException or OperationCanceledException or ObjectDisposedException)
 			{
 				AppLog.Write($"{label} receiver client closed: {ex.Message}");
-				if (IsMirrorControlLabel(label))
-				{
-					EndMirrorSessionIfAnnounced($"{label} receiver client closed");
-				}
+				EndMirrorSessionIfOwnedBy(connectionId, $"{label} receiver client closed");
 			}
 			catch (Exception ex)
 			{
@@ -467,10 +467,7 @@ public sealed class AirPlayProbeService : IDisposable
 				// in AcceptLoopAsync: the connection vanished with no log line and the mirror
 				// session state was never reset. Log it with the stack and tear down explicitly.
 				AppLog.Write($"{label} receiver client failed with an unexpected error: {ex}");
-				if (IsMirrorControlLabel(label))
-				{
-					EndMirrorSessionIfAnnounced($"{label} receiver client failed: {ex.GetType().Name}");
-				}
+				EndMirrorSessionIfOwnedBy(connectionId, $"{label} receiver client failed: {ex.GetType().Name}");
 			}
 			finally
 			{
@@ -482,9 +479,25 @@ public sealed class AirPlayProbeService : IDisposable
 		}
 	}
 
-	internal static bool IsMirrorControlLabel(string label)
+	/// <summary>
+	/// True when a TEARDOWN ends the mirror stream: no body (the whole session), or a <c>streams</c>
+	/// list that includes the type-110 video stream. A TEARDOWN listing only audio (type 96) is not.
+	/// </summary>
+	internal static bool IsMirrorTeardown(byte[] body)
 	{
-		return string.Equals(label, "AirPlay", StringComparison.OrdinalIgnoreCase);
+		if (body.Length == 0 ||
+			AirPlayBinaryPlist.Read(body) is not Dictionary<string, object?> request ||
+			!request.ContainsKey("streams"))
+		{
+			return true;
+		}
+
+		bool mirror = ContainsMirrorVideoStream(request);
+		if (!mirror)
+		{
+			AppLog.Write("AirPlay TEARDOWN covers only non-video streams; mirror session kept.");
+		}
+		return mirror;
 	}
 
 	private async Task HandleDataClientAsync(TcpClient client)
@@ -1609,7 +1622,7 @@ public sealed class AirPlayProbeService : IDisposable
 		return new AirPlayRequest(parts[0], parts[1], parts.Length > 2 ? parts[2] : "RTSP/1.0", firstLine, headers, body);
 	}
 
-	private void ObserveSetupRequest(byte[] requestBody, string target)
+	private void ObserveSetupRequest(byte[] requestBody, string target, long connectionId)
 	{
 		Dictionary<string, object?>? request = AirPlayBinaryPlist.Read(requestBody) as Dictionary<string, object?>;
 		if (request == null)
@@ -1699,6 +1712,15 @@ public sealed class AirPlayProbeService : IDisposable
 			changed = true;
 		}
 
+		if (mirrorSetup)
+		{
+			// Before announcing, so the previous owner closing now cannot end the new session.
+			lock (_mirrorKeyGate)
+			{
+				_mirrorOwnerConnectionId = connectionId;
+			}
+		}
+
 		if (mirrorSetup && TryAnnounceMirrorSessionStarted(observedRtspTargetSessionId, observedStreamConnectionId))
 		{
 			_audioReceiver.Stop();
@@ -1768,9 +1790,9 @@ public sealed class AirPlayProbeService : IDisposable
 		}
 	}
 
-	private void EndMirrorSessionIfAnnounced(string reason)
+	private void EndMirrorSessionIfOwnedBy(long connectionId, string reason)
 	{
-		if (!ResetMirrorSessionState())
+		if (connectionId == 0 || !ResetMirrorSessionState(connectionId))
 		{
 			return;
 		}
@@ -1779,11 +1801,16 @@ public sealed class AirPlayProbeService : IDisposable
 		MirrorSessionEnded?.Invoke();
 	}
 
-	private bool ResetMirrorSessionState()
+	private bool ResetMirrorSessionState(long ownerConnectionId)
 	{
 		bool hadAnnouncedSession;
 		lock (_mirrorKeyGate)
 		{
+			if (_mirrorOwnerConnectionId != ownerConnectionId)
+			{
+				return false;
+			}
+
 			hadAnnouncedSession =
 				_announcedMirrorRtspTargetSessionId != null ||
 				_announcedMirrorStreamConnectionId != null ||
@@ -1798,6 +1825,7 @@ public sealed class AirPlayProbeService : IDisposable
 			_announcedMirrorStreamConnectionId = null;
 			_announcedIdentitylessMirrorSession = false;
 			_mirrorSetupAddress = null;
+			_mirrorOwnerConnectionId = 0;
 		}
 
 		try
@@ -2030,7 +2058,7 @@ public sealed class AirPlayProbeService : IDisposable
 		return copy;
 	}
 
-	private byte[] BuildResponse(AirPlayRequest request, EndPoint? remoteEndPoint)
+	private byte[] BuildResponse(AirPlayRequest request, EndPoint? remoteEndPoint, long connectionId)
 	{
 		string method = request.Method.ToUpperInvariant();
 		string target = request.Target.ToLowerInvariant();
@@ -2064,7 +2092,7 @@ public sealed class AirPlayProbeService : IDisposable
 			if (method == "SETUP")
 			{
 				LogPairBody("setup", request.Body);
-				ObserveSetupRequest(request.Body, request.Target);
+				ObserveSetupRequest(request.Body, request.Target, connectionId);
 				IPAddress? remoteAddress = (remoteEndPoint as IPEndPoint)?.Address;
 				lock (_mirrorKeyGate)
 				{
