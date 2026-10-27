@@ -627,6 +627,9 @@ public sealed class VorticeMediaFoundationD3D11Decoder : IHighResolutionD3DDecod
 				Fps = _fps,
 				Texture = texture,
 				SubresourceIndex = subresourceIndex,
+				// The frame's own sample reference keeps the allocator from reusing this slice until the
+				// frame is presented or dropped; DrainOutput still releases the decoder's reference.
+				Sample = Marshal.GetIUnknownForObject(sample),
 				ReceivedTick = packet.ReceivedTick,
 				DecodedTick = Stopwatch.GetTimestamp(),
 				SourceTimestampNanos = packet.SourceTimestampNanos
