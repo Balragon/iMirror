@@ -11,18 +11,15 @@ internal sealed class AirPlaySetupContext
 	private const int DataPort = 7100;
 	private const int TimingPort = 7102;
 
-	private readonly AirPlayTimingClient _timingClient;
 	private readonly AirPlayAudioReceiver _audioReceiver;
 	private readonly Func<AirPlayAudioCrypto?> _audioCryptoProvider;
 	private readonly bool _dumpAudio;
 
 	public AirPlaySetupContext(
-		AirPlayTimingClient timingClient,
 		AirPlayAudioReceiver audioReceiver,
 		Func<AirPlayAudioCrypto?> audioCryptoProvider,
 		bool dumpAudio = false)
 	{
-		_timingClient = timingClient;
 		_audioReceiver = audioReceiver;
 		_audioCryptoProvider = audioCryptoProvider;
 		_dumpAudio = dumpAudio;
@@ -40,10 +37,9 @@ internal sealed class AirPlaySetupContext
 		List<Dictionary<string, object?>> requestStreams = ReadStreams(request);
 		int timingPort = ReadInt(request, "timingPort") ?? 0;
 		AppLog.Write($"AirPlay SETUP parsed keys={string.Join(",", request.Keys)}, timingPort={timingPort}, streamTypes={string.Join(",", requestStreams.Select(s => ReadInt(s, "type")?.ToString() ?? "?"))}.");
-		if (remoteAddress != null && timingPort > 0)
-		{
-			_timingClient.Start(remoteAddress, timingPort);
-		}
+		// The sender's timingPort is logged but not used: A/V sync is latency-matched on the
+		// receiver (see docs/specs/v03-av-sync-hardening.md), so no NTP exchange is run. We
+		// still advertise our own timingPort below and keep the TCP listener on it.
 
 		Dictionary<string, object> response = new Dictionary<string, object>
 		{
