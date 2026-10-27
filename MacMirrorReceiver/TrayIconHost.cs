@@ -8,48 +8,35 @@ namespace MacMirrorReceiver;
 
 /// <summary>
 /// Owns the notification-area icon and its menu (Show, Settings..., Exit). The window supplies
-/// the three actions; this class owns the NotifyIcon, the menu and the icon image, swaps the
-/// image when the theme changes, and disposes all three together.
+/// the three actions and the menu's status line; this class owns the NotifyIcon and the icon
+/// image, opens a <see cref="TrayMenuWindow"/> on right-click, swaps the image when the theme
+/// changes, and disposes the icon and any open menu together.
 /// </summary>
 internal sealed class TrayIconHost : IDisposable
 {
+	private readonly Action _showWindow;
+	private readonly Action _showSettings;
+	private readonly Func<Task> _exit;
+	private readonly Func<TrayMenuStatus> _status;
 	private Forms.NotifyIcon? _trayIcon;
-	private Forms.ContextMenuStrip? _trayMenu;
+	private TrayMenuWindow? _openMenu;
 	private DrawingIcon? _trayIconImage;
 
 	/// <summary>
 	/// Creates the icon. A failure (no shell, broken icon resource) is logged and leaves the host
 	/// inactive rather than throwing, so the window still opens.
 	/// </summary>
-	public TrayIconHost(Action showWindow, Action showSettings, Func<Task> exit)
+	public TrayIconHost(Action showWindow, Action showSettings, Func<Task> exit, Func<TrayMenuStatus> status)
 	{
+		_showWindow = showWindow;
+		_showSettings = showSettings;
+		_exit = exit;
+		_status = status;
 		try
 		{
 			_trayIconImage = CreateTrayIconImage();
-			_trayMenu = new Forms.ContextMenuStrip();
-			var showItem = new Forms.ToolStripMenuItem("Show iMirror");
-			showItem.Click += delegate
-			{
-				showWindow();
-			};
-			var settingsItem = new Forms.ToolStripMenuItem("Settings...");
-			settingsItem.Click += delegate
-			{
-				showSettings();
-			};
-			var exitItem = new Forms.ToolStripMenuItem("Exit");
-			exitItem.Click += async delegate
-			{
-				await exit();
-			};
-			_trayMenu.Items.Add(showItem);
-			_trayMenu.Items.Add(settingsItem);
-			_trayMenu.Items.Add(new Forms.ToolStripSeparator());
-			_trayMenu.Items.Add(exitItem);
-
 			_trayIcon = new Forms.NotifyIcon
 			{
-				ContextMenuStrip = _trayMenu,
 				Icon = _trayIconImage,
 				Text = "iMirror",
 				Visible = true
@@ -59,6 +46,11 @@ internal sealed class TrayIconHost : IDisposable
 				if (e.Button == Forms.MouseButtons.Left)
 				{
 					showWindow();
+				}
+				else if (e.Button == Forms.MouseButtons.Right)
+				{
+					System.Drawing.Point cursor = Forms.Cursor.Position;
+					ShowMenu(cursor.X, cursor.Y);
 				}
 			};
 			_trayIcon.DoubleClick += delegate
@@ -74,6 +66,43 @@ internal sealed class TrayIconHost : IDisposable
 	}
 
 	public bool IsActive => _trayIcon != null;
+
+	/// <summary>
+	/// Opens the menu at a screen point in physical pixels, replacing a menu that is still open.
+	/// A failure is logged; the tray icon keeps working for left-click.
+	/// </summary>
+	private void ShowMenu(int cursorX, int cursorY)
+	{
+		CloseMenu();
+		try
+		{
+			var menu = new TrayMenuWindow(_status(), AppIconTheme.IsSystemLightTheme(), cursorX, cursorY);
+			menu.ShowRequested += _showWindow;
+			menu.SettingsRequested += _showSettings;
+			menu.ExitRequested += async () => await _exit();
+			menu.Closed += delegate
+			{
+				if (ReferenceEquals(_openMenu, menu))
+				{
+					_openMenu = null;
+				}
+			};
+			_openMenu = menu;
+			menu.Show();
+		}
+		catch (Exception ex)
+		{
+			_openMenu = null;
+			AppLog.Write("Tray menu could not be shown: " + ex);
+		}
+	}
+
+	private void CloseMenu()
+	{
+		TrayMenuWindow? menu = _openMenu;
+		_openMenu = null;
+		menu?.Close();
+	}
 
 	/// <summary>
 	/// Replaces the tray image with the icon at <paramref name="resourceUri"/> (a pack URI to a
@@ -112,9 +141,7 @@ internal sealed class TrayIconHost : IDisposable
 			trayIcon.Dispose();
 		}
 
-		Forms.ContextMenuStrip? trayMenu = _trayMenu;
-		_trayMenu = null;
-		trayMenu?.Dispose();
+		CloseMenu();
 
 		DrawingIcon? trayIconImage = _trayIconImage;
 		_trayIconImage = null;
