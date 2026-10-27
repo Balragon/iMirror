@@ -18,6 +18,7 @@ For detailed release notes, see [GitHub Releases](https://github.com/Balragon/iM
 - Clean up leftover downloaded update installers (`setup.exe` / partial `.download` files) from `%LOCALAPPDATA%\iMirror\Updates` at startup instead of letting them accumulate one per update.
 - Cancel an in-flight update check or installer download when iMirror starts shutting down, instead of letting it race process teardown; a canceled install no longer flashes the retry UI on the closing window.
 - Make the settings "Save & Restart" handoff reliable: a relaunched iMirror now waits up to 5 seconds for the exiting instance to release the single-instance mutex instead of silently quitting when the old process is still shutting down.
+- Keep video playing when the software (FFmpeg) decoder's input queue overflows: drop only the incoming non-keyframe and keep the queued frames, as the Media Foundation path does. Previously the queue was flushed to wait for a keyframe that Mac senders never send again, so video stayed frozen until reconnect while audio kept playing.
 
 ---
 
