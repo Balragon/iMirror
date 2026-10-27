@@ -20,6 +20,16 @@ internal enum ReceiverStatusTone
 /// </summary>
 internal static class ReceiverChromeText
 {
+	/// <summary>Shortens a status line for the compact control bar (46 characters at most).</summary>
+	public static string CompactStatus(string message)
+	{
+		if (message.Length > 46)
+		{
+			return message.Substring(0, 43) + "...";
+		}
+		return message;
+	}
+
 	public static string CardTitle(ReceiverChromeState state)
 	{
 		if (state.Connected)
