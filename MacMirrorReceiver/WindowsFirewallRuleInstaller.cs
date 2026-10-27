@@ -228,6 +228,13 @@ if ($matchingRules.Count -gt 0) {
         -Enabled True `
         -Description $description | Out-Null
 }
+
+# Cancelling Windows' own "allow access" prompt leaves inbound block rules for the exe, and a block
+# rule beats any allow rule. The user asked to allow iMirror, so disable (not delete) them.
+Get-NetFirewallApplicationFilter -Program $program -ErrorAction SilentlyContinue |
+    Get-NetFirewallRule -ErrorAction SilentlyContinue |
+    Where-Object { $_.Direction.ToString() -eq 'Inbound' -and $_.Action.ToString() -eq 'Block' -and $_.Enabled.ToString() -eq 'True' } |
+    Disable-NetFirewallRule
 """;
 	}
 
