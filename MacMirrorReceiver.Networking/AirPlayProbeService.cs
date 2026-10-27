@@ -2,6 +2,7 @@ using System;
 using System.Buffers.Binary;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.IO;
 using System.Linq;
@@ -797,45 +798,25 @@ public sealed class AirPlayProbeService : IDisposable
 		}
 
 		IReadOnlyList<AirPlayMirrorDecryptorCandidate> baseCandidates = AirPlayMirrorDecryptor.BuildCandidates(aesKey, sharedSecret, streamConnectionId.Value, eiv, rtspTargetSessionId);
-		int tested = 0;
-		foreach (AirPlayMirrorDecryptorCandidate baseCandidate in baseCandidates)
+		long searchStartTick = Stopwatch.GetTimestamp();
+		if (TryFindMirrorDecryptor(baseCandidates, encryptedPayload, report, out AirPlayMirrorDecryptor? decryptor, out byte[] selectedAnnexB, out string selectedPayloadFormat, out int tested))
 		{
-			foreach (AirPlayMirrorDecryptorCandidate candidate in ExpandPayloadOffsetCandidates(baseCandidate, encryptedPayload.Length))
+			lock (_mirrorKeyGate)
 			{
-				tested++;
-				byte[] preview = AirPlayMirrorDecryptor.DecryptOnce(candidate, encryptedPayload);
-				if (TryNormalizeClearH264Payload(preview, out _, out string previewFormat))
-				{
-					AirPlayMirrorDecryptor decryptor = AirPlayMirrorDecryptor.Create(candidate);
-					byte[] selectedPayload = decryptor.Decrypt(encryptedPayload);
-					if (!TryNormalizeClearH264Payload(selectedPayload, out byte[] selectedAnnexB, out string selectedPayloadFormat))
-					{
-						decryptor.Dispose();
-						continue;
-					}
-
-						lock (_mirrorKeyGate)
-							{
-								_mirrorDecryptor?.Dispose();
-								DisposeMirrorProbePoolLocked();
-								_mirrorDecryptor = decryptor;
-								_decryptorStreamConnectionId = streamConnectionId.Value;
-						_loggedDecryptPayloadFailureTypes.Remove(payloadType);
-							_loggedDecryptCandidateReportTypes.Add(payloadType);
-						}
-
-					annexB = selectedAnnexB;
-					selectedName = candidate.Name;
-					selectedFormat = selectedPayloadFormat;
-					AppLog.Write($"AirPlay mirror decryptor auto-selected '{candidate.Name}' for type={payloadType}, streamConnectionID={streamConnectionId.Value}, format={previewFormat}.");
-					return true;
-				}
-
-				if (report.Count < 32)
-				{
-					report.Add(candidate.Name + "/" + DescribeH264Probe(preview));
-				}
+				_mirrorDecryptor?.Dispose();
+				DisposeMirrorProbePoolLocked();
+				_mirrorDecryptor = decryptor;
+				_decryptorStreamConnectionId = streamConnectionId.Value;
+				_loggedDecryptPayloadFailureTypes.Remove(payloadType);
+				_loggedDecryptCandidateReportTypes.Add(payloadType);
 			}
+
+			annexB = selectedAnnexB;
+			selectedName = decryptor.Name;
+			selectedFormat = selectedPayloadFormat;
+			long searchMs = (long)((Stopwatch.GetTimestamp() - searchStartTick) * 1000.0 / Stopwatch.Frequency);
+			AppLog.Write($"AirPlay mirror decryptor auto-selected '{decryptor.Name}' for type={payloadType}, streamConnectionID={streamConnectionId.Value}, format={selectedPayloadFormat}, tested={tested}, payloadBytes={encryptedPayload.Length}, search={searchMs}ms.");
+			return true;
 		}
 
 		lock (_mirrorKeyGate)
@@ -848,6 +829,89 @@ public sealed class AirPlayProbeService : IDisposable
 
 		TryWriteMirrorDiagnosticSnapshot(payloadType, packetHeader, encryptedPayload, encryptedKey, aesKey, sharedSecret, eiv, streamConnectionId.Value, rtspTargetSessionId, tested, baseCandidates.Count, report);
 		return false;
+	}
+
+	// Finds the first candidate, in BuildCandidates order with each base expanded over payload offsets,
+	// whose decryption of encryptedPayload normalizes to clear H.264, and returns a decryptor that has
+	// consumed encryptedPayload. A Mac sender's 'standard' key comes after ~2,400 candidates, and
+	// decrypting the whole first IDR for each of them took seconds on the data-receive thread, so each
+	// candidate is screened on a short decrypted prefix and only survivors decrypt the full payload.
+	internal static bool TryFindMirrorDecryptor(
+		IReadOnlyList<AirPlayMirrorDecryptorCandidate> baseCandidates,
+		byte[] encryptedPayload,
+		List<string> report,
+		[NotNullWhen(true)] out AirPlayMirrorDecryptor? decryptor,
+		out byte[] annexB,
+		out string format,
+		out int tested)
+	{
+		decryptor = null;
+		annexB = Array.Empty<byte>();
+		format = string.Empty;
+		tested = 0;
+		foreach (AirPlayMirrorDecryptorCandidate baseCandidate in baseCandidates)
+		{
+			foreach (AirPlayMirrorDecryptorCandidate candidate in ExpandPayloadOffsetCandidates(baseCandidate, encryptedPayload.Length))
+			{
+				tested++;
+				byte[] preview = AirPlayMirrorDecryptor.DecryptPrefixOnce(candidate, encryptedPayload, ClearH264ProbeBytes);
+				int decryptedLength = encryptedPayload.Length - Math.Max(0, candidate.PayloadOffset);
+				if (MayBeClearH264Payload(preview, decryptedLength))
+				{
+					AirPlayMirrorDecryptor candidateDecryptor = AirPlayMirrorDecryptor.Create(candidate);
+					if (TryNormalizeClearH264Payload(candidateDecryptor.Decrypt(encryptedPayload), out byte[] candidateAnnexB, out string candidateFormat))
+					{
+						decryptor = candidateDecryptor;
+						annexB = candidateAnnexB;
+						format = candidateFormat;
+						return true;
+					}
+
+					candidateDecryptor.Dispose();
+				}
+
+				if (report.Count < 32)
+				{
+					report.Add(candidate.Name + "/" + DescribeH264Probe(preview));
+				}
+			}
+		}
+
+		return false;
+	}
+
+	// TryNormalizeClearH264Payload settles on a first NAL unit using only this many leading bytes (an
+	// AVCC length + NAL header at each probed offset, or a leading Annex B start code), and
+	// DescribeH264Probe reads no further either.
+	internal const int ClearH264ProbeBytes = MaxH264PrefixProbeBytes + 5;
+
+	// Necessary condition for TryNormalizeClearH264Payload on a payload of payloadLength bytes, given
+	// at least its first min(ClearH264ProbeBytes, payloadLength) bytes: the first NAL unit must pass
+	// the same length and header checks at some probed AVCC offset, or follow an Annex B start code.
+	// Bytes decrypted with a wrong key almost never pass it.
+	internal static bool MayBeClearH264Payload(byte[] prefix, int payloadLength)
+	{
+		if (payloadLength < 5)
+		{
+			return false;
+		}
+
+		int maxOffset = Math.Min(MaxH264PrefixProbeBytes, Math.Max(0, payloadLength - 5));
+		for (int offset = 0; offset <= maxOffset; offset++)
+		{
+			int nalSize = BinaryPrimitives.ReadInt32BigEndian(prefix.AsSpan(offset, 4));
+			int nalOffset = offset + 4;
+			if (nalSize > 0 &&
+				nalSize <= MaxH264NalUnitLength &&
+				nalSize <= payloadLength - nalOffset &&
+				IsPlausibleH264NalHeader(prefix[nalOffset]))
+			{
+				return true;
+			}
+		}
+
+		int startCodeLength = StartCodeLengthAt(prefix, 0);
+		return startCodeLength > 0 && startCodeLength < payloadLength && IsPlausibleH264NalHeader(prefix[startCodeLength]);
 	}
 
 	private void TryWriteMirrorDiagnosticSnapshot(
@@ -926,7 +990,7 @@ public sealed class AirPlayProbeService : IDisposable
 		return bytes == null ? null : Convert.ToHexString(SHA256.HashData(bytes));
 	}
 
-	private static IEnumerable<AirPlayMirrorDecryptorCandidate> ExpandPayloadOffsetCandidates(AirPlayMirrorDecryptorCandidate candidate, int payloadLength)
+	internal static IEnumerable<AirPlayMirrorDecryptorCandidate> ExpandPayloadOffsetCandidates(AirPlayMirrorDecryptorCandidate candidate, int payloadLength)
 	{
 		yield return candidate;
 		if (candidate.InitialSkipBytes != 0 || candidate.PayloadOffset != 0)
@@ -1028,7 +1092,7 @@ public sealed class AirPlayProbeService : IDisposable
 		return Math.Clamp((int)Math.Round(value), 2, 8192);
 	}
 
-	private static bool TryNormalizeClearH264Payload(byte[] payload, out byte[] annexB, out string format)
+	internal static bool TryNormalizeClearH264Payload(byte[] payload, out byte[] annexB, out string format)
 	{
 		annexB = Array.Empty<byte>();
 		format = string.Empty;
@@ -1270,7 +1334,7 @@ public sealed class AirPlayProbeService : IDisposable
 		}
 	}
 
-	private static string DescribeH264Probe(byte[] payload)
+	internal static string DescribeH264Probe(byte[] payload)
 	{
 		if (payload.Length < 5)
 		{

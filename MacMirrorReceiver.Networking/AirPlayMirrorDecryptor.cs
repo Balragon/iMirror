@@ -17,6 +17,8 @@ internal sealed class AirPlayMirrorDecryptor : IDisposable
 	private int _keyStreamOffset = 16;
 	private int _partialKeyStreamOffset = 16;
 	private readonly int _payloadOffset;
+	// Counter blocks encrypted per ECB call when decrypting a run of whole blocks.
+	private const int KeyStreamBatchBytes = 4096;
 
 	private AirPlayMirrorDecryptor(byte[] key, byte[] iv, bool littleEndianCounter, int initialSkipBytes, int payloadOffset, string name)
 	{
@@ -183,10 +185,22 @@ internal sealed class AirPlayMirrorDecryptor : IDisposable
 		}
 	}
 
-	public static byte[] DecryptOnce(AirPlayMirrorDecryptorCandidate candidate, byte[] input)
+	// The first `count` bytes a fresh decryptor for `candidate` would return from Decrypt(input). A CTR
+	// keystream byte does not depend on the data after it, so this matches the start of a full decrypt
+	// without paying for the rest of a large payload.
+	public static byte[] DecryptPrefixOnce(AirPlayMirrorDecryptorCandidate candidate, byte[] input, int count)
 	{
-		using AirPlayMirrorDecryptor decryptor = Create(candidate);
-		return decryptor.Decrypt(input);
+		int bodyOffset = Math.Max(0, candidate.PayloadOffset);
+		int length = Math.Min(count, input.Length - bodyOffset);
+		if (length <= 0)
+		{
+			return Array.Empty<byte>();
+		}
+
+		byte[] prefix = new byte[length];
+		Buffer.BlockCopy(input, bodyOffset, prefix, 0, length);
+		using AirPlayMirrorDecryptor decryptor = Create(candidate with { PayloadOffset = 0 });
+		return decryptor.Decrypt(prefix);
 	}
 
 	private static AirPlayMirrorDecryptorCandidate BuildStandardCandidate(
@@ -295,7 +309,41 @@ internal sealed class AirPlayMirrorDecryptor : IDisposable
 	private byte[] DecryptContinuous(byte[] input)
 	{
 		byte[] output = new byte[input.Length];
-		for (int i = 0; i < input.Length; i++)
+		int i = 0;
+		while (i < input.Length && _keyStreamOffset < _keyStream.Length)
+		{
+			output[i] = (byte)(input[i] ^ _keyStream[_keyStreamOffset]);
+			_keyStreamOffset++;
+			i++;
+		}
+
+		// The keystream is block aligned here, so encrypt the counter blocks for all whole blocks
+		// in batched ECB calls; one TransformBlock call per 16 bytes made a large IDR cost
+		// milliseconds to decrypt.
+		int wholeBlockBytes = ((input.Length - i) / 16) * 16;
+		if (wholeBlockBytes > 0)
+		{
+			byte[] counterBlocks = new byte[Math.Min(wholeBlockBytes, KeyStreamBatchBytes)];
+			byte[] keyStreamBlocks = new byte[counterBlocks.Length];
+			while (wholeBlockBytes > 0)
+			{
+				int batchBytes = Math.Min(wholeBlockBytes, counterBlocks.Length);
+				for (int offset = 0; offset < batchBytes; offset += 16)
+				{
+					Buffer.BlockCopy(_counter, 0, counterBlocks, offset, 16);
+					IncrementCounter(_counter, _littleEndianCounter);
+				}
+
+				_encryptor.TransformBlock(counterBlocks, 0, batchBytes, keyStreamBlocks, 0);
+				for (int k = 0; k < batchBytes; k++, i++)
+				{
+					output[i] = (byte)(input[i] ^ keyStreamBlocks[k]);
+				}
+				wholeBlockBytes -= batchBytes;
+			}
+		}
+
+		for (; i < input.Length; i++)
 		{
 			if (_keyStreamOffset >= _keyStream.Length)
 			{
