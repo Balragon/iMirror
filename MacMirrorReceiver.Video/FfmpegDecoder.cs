@@ -330,9 +330,11 @@ public sealed class FfmpegDecoder : IDisposable
 					_stream.Flush();
 					_bytes += payload.Length;
 				}
-				catch (Exception ex) when (ex is IOException || ex is ObjectDisposedException)
+				catch (Exception ex)
 				{
-					// Stop dumping after the first write failure instead of failing silently on every packet.
+					// Stop dumping after the first write failure instead of failing silently on every
+					// packet. Any exception is caught: this runs on the receive path and a diagnostic
+					// file must never take the session down.
 					_stream.Dispose();
 					_stream = null;
 					this.WriteFailed?.Invoke(ex.Message);
