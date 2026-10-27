@@ -58,12 +58,17 @@ for the software video fallback.
 
 ## Tagging A Release
 
-Tag the release from the commit that should be published:
+Tag the release from the commit that should be published. The message of an
+annotated tag becomes the GitHub release notes: its first line is the heading
+and the rest is Markdown. Write it to a file and keep lines starting with `#`:
 
 ```powershell
-git tag v0.2.0 -m "v0.2.0"
-git push origin v0.2.0
+git tag -a v0.8.0 --cleanup=verbatim -F release-notes.md
+git push origin v0.8.0
 ```
+
+A lightweight tag (`git tag v0.8.0`) publishes the default notes template
+(installation, notes and license) instead.
 
 CI publishes the tagged release automatically.
 

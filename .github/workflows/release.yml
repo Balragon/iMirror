@@ -165,11 +165,21 @@ jobs:
           $bodyPath = "release-body.md"
           $body = ""
 
+          # actions/checkout re-fetches the pushed tag as "+<sha>:refs/tags/<tag>", which turns an
+          # annotated tag into a lightweight one locally. Fetch the tag object itself back so its
+          # message can be used as the release notes.
+          & git fetch --force --no-tags origin "+refs/tags/${tag}:refs/tags/${tag}"
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "::warning::Could not re-fetch tag $tag; release notes fall back to the default template."
+          }
+
           $objectType = (& git cat-file -t "refs/tags/$tag" 2>$null) -join "`n"
           if ($objectType.Trim() -eq "tag") {
             $subject = (& git for-each-ref "refs/tags/$tag" "--format=%(contents:subject)") -join "`n"
             $annotationBody = (& git for-each-ref "refs/tags/$tag" "--format=%(contents:body)") -join "`n"
             $body = (@($subject.Trim(), "", $annotationBody.Trim()) -join "`n").Trim()
+          } else {
+            Write-Host "::warning::$tag is not an annotated tag; using the default release notes template."
           }
 
           if ([string]::IsNullOrWhiteSpace($body)) {
