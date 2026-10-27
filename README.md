@@ -1,3 +1,5 @@
+<p align="center"><img src="Assets/iMirror.png" alt="iMirror" width="128"></p>
+
 # iMirror
 
 iMirror is a Windows AirPlay mirroring receiver for local development and real-device validation.
