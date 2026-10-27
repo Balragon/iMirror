@@ -26,7 +26,7 @@ using Wpf.Ui.Controls;
 
 namespace MacMirrorReceiver;
 
-public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
+public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView, IVideoEngineView
 {
 	private enum RenderMode
 	{
@@ -108,9 +108,9 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 
 	private readonly PendingVideoBuffer _pendingVideoBeforeSink = new PendingVideoBuffer(MaxPendingVideoPacketsBeforeSink, MaxPendingVideoBytesBeforeSink);
 
-	private volatile bool _videoSinkAcceptingInput;
-
 	private readonly AudioSessionHost _audioSession;
+
+	private readonly VideoEngineHost _videoEngine;
 
 	// 3s warmup grace: BeginWarmup fires at decoder (re)start, but frames only flow after FFmpeg/MF
 	// spin-up (~0.8s) plus decryptor settling, so a shorter grace lets a startup straggler inflate
@@ -119,13 +119,7 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 
 	private MirrorClient? _client;
 
-	private FfmpegDecoder? _decoder;
-
 	private WriteableBitmap? _bitmap;
-
-	private IHighResolutionD3DPresenter? _highResolutionD3DPresenter;
-
-	private IHighResolutionD3DDecoder? _mediaFoundationD3DDecoder;
 
 	private long _staleD3DFramesDropped;
 
@@ -157,19 +151,7 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 
 	private long _lastVideoHealthRenderedFrames;
 
-	private long _decoderRestarts;
-
-	// Set when the GPU engine faults at runtime (device-lost/TDR); the session then stays on the
-	// software decoder until the next connection. Reset in ResetStreamStateForNewConnection.
-	private bool _gpuPathDisabledThisSession;
-
-	private CancellationTokenSource? _videoWatchdogCts;
-
 	private int _diagnosticsQueued;
-
-	private int _decoderOutputFps;
-
-	private int _decoderMaxRenderWidth = RealtimeMaxRenderWidth;
 
 	private int _autoRenderResizeVersion;
 
@@ -184,8 +166,6 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 	private IPEndPoint? _lastEndpoint;
 
 	private string? _lastPin;
-
-	private string _decoderStatus = "not started";
 
 	private string _statusText = "Waiting for iPhone or iPad...";
 
@@ -235,6 +215,15 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 			() => _shutdownStarted);
 		_frameMailbox = new LatestFrameMailbox(
 			() => base.Dispatcher.BeginInvoke(new Action(DrainLatestFrame), DispatcherPriority.Render));
+		_videoEngine = new VideoEngineHost(
+			this,
+			new DefaultVideoDecoderFactory(),
+			ShouldUseHighResolutionD3DPath,
+			config => Math.Min(ResolveMaxRenderWidth(config), ResponsiveMaxRenderWidth),
+			ResolveOutputFps,
+			HighResolutionMaxRenderFps,
+			RealtimeMaxRenderWidth,
+			StartupReceiverSettings.Effective.DumpH264);
 		_audioSession = new AudioSessionHost(
 			() => Volatile.Read(ref _connectionGeneration),
 			ResolveAudioSyncTargetLatencyMilliseconds);
@@ -716,7 +705,7 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 
 	private void Window_SizeChanged(object sender, SizeChangedEventArgs e)
 	{
-		if (CurrentRenderMode != RenderMode.Auto || _streamConfig == null || _decoder == null)
+		if (CurrentRenderMode != RenderMode.Auto || _streamConfig == null || _videoEngine.SoftwareDecoder == null)
 		{
 			return;
 		}
@@ -785,15 +774,7 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 	{
 		int generation = Interlocked.Increment(ref _connectionGeneration);
 		Volatile.Write(ref _airPlaySessionGeneration, activeSession ? generation : 0);
-		CleanupGuards.RunStep("video watchdog stop", StopVideoWatchdog);
-		_videoSinkAcceptingInput = false;
-		FfmpegDecoder? decoder = _decoder;
-		_decoder = null;
-		CleanupGuards.RunStep("ffmpeg decoder dispose", () => decoder?.Dispose());
-		IHighResolutionD3DDecoder? mediaFoundationD3DDecoder = _mediaFoundationD3DDecoder;
-		_mediaFoundationD3DDecoder = null;
-		CleanupGuards.RunStep("Media Foundation D3D decoder dispose", () => mediaFoundationD3DDecoder?.Dispose());
-		CleanupGuards.RunStep("D3D presenter dispose", DisposeHighResolutionD3DPresenter);
+		_videoEngine.Stop();
 		CleanupGuards.RunStep("pending D3D frame release", ReleasePendingD3DFrame);
 		CleanupGuards.RunStep("pending frame release", ReleasePendingFrame);
 		CleanupGuards.RunStep("audio pipeline stop", _audioSession.Stop);
@@ -801,8 +782,6 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 		VideoImage.Source = null;
 		VideoImage.Visibility = Visibility.Visible;
 		ShowEmptyStateSurface();
-		_decoderOutputFps = 0;
-		_decoderMaxRenderWidth = RealtimeMaxRenderWidth;
 		ResetStreamStateForNewConnection();
 		SetStatus(statusMessage);
 		AppLog.Write(logMessage);
@@ -843,16 +822,14 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 			}
 
 			bool sameStreamConfig = _streamConfig != null
-				&& (_decoder != null
-					|| _mediaFoundationD3DDecoder != null
-				)
+				&& _videoEngine.HasDecoder
 				&& _streamConfig.Width == config.Width
 				&& _streamConfig.Height == config.Height
 				&& _streamConfig.Fps == config.Fps
 				&& string.Equals(_streamConfig.Codec, config.Codec, StringComparison.OrdinalIgnoreCase);
 			if (sameStreamConfig)
 			{
-				if (_mediaFoundationD3DDecoder != null)
+				if (_videoEngine.GpuDecoder != null)
 				{
 					AppLog.Write("AirPlay stream config repeated for high-resolution D3D path; keeping active renderer.");
 					UpdateHighResolutionD3DPresenterLayout();
@@ -1038,7 +1015,7 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 
 		private void ResetStreamStateForNewConnection()
 		{
-			StopVideoWatchdog();
+			_videoEngine.ResetForNewConnection();
 				_videoPackets = 0L;
 				_videoBytes = 0L;
 			_decodedFrames = 0L;
@@ -1055,8 +1032,6 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 			_lastVideoHealthPackets = 0L;
 			_lastVideoHealthDecodedFrames = 0L;
 			_lastVideoHealthRenderedFrames = 0L;
-			_decoderRestarts = 0L;
-			_gpuPathDisabledThisSession = false;
 			_gateDecisionLogGate.Reset();
 			_pendingVideoBeforeSink.ResetDroppedCount();
 			_pendingVideoDropLogGate.Reset();
@@ -1064,8 +1039,6 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 			_staleD3DDropLogGate.Reset();
 			_audioSession.ResetForNewConnection();
 			_streamConfig = null;
-			_decoderStatus = "waiting for stream config";
-			_videoSinkAcceptingInput = false;
 			ClearPendingVideoBeforeSink();
 			ResetH264Gate();
 			UpdateDiagnostics();
@@ -1084,7 +1057,7 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 			Interlocked.Add(ref _videoBytes, payload.Length);
 			if (num == 1)
 			{
-				StopVideoWatchdog();
+				_videoEngine.StopWatchdog();
 				AppLog.Write($"First video packet received: {payload.Length} bytes.");
 			}
 		}
@@ -1096,8 +1069,8 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 			return;
 		}
 
-		FfmpegDecoder? decoder = _decoder;
-		IHighResolutionD3DDecoder? mediaFoundationD3DDecoder = _mediaFoundationD3DDecoder;
+		ISoftwareVideoDecoder? decoder = _videoEngine.SoftwareDecoder;
+		IHighResolutionD3DDecoder? mediaFoundationD3DDecoder = _videoEngine.GpuDecoder;
 		byte[]? array = ProcessH264Payload(payload, out long h264ForwardedPackets, out string h264LastDecision);
 		if (mediaFoundationD3DDecoder != null && array != null)
 		{
@@ -1107,7 +1080,7 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 			}
 			if (!mediaFoundationD3DDecoder.QueueH264(array, sourceTimestampNanos, receivedTick))
 			{
-				_decoderStatus = "Media Foundation D3D11 decoder input unavailable; waiting for decoder";
+				_videoEngine.Status = "Media Foundation D3D11 decoder input unavailable; waiting for decoder";
 				AppLog.Write("Media Foundation D3D11 decoder input unavailable; packet was not queued.");
 			}
 		}
@@ -1119,18 +1092,18 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 			}
 				if (!decoder.QueueH264(array, sourceTimestampNanos, receivedTick))
 				{
-					_decoderStatus = "decoder input unavailable; waiting for decoder";
+					_videoEngine.Status = "decoder input unavailable; waiting for decoder";
 					AppLog.Write("Decoder input unavailable; packet was not queued.");
 				}
 			}
 		else if (decoder != null)
 		{
-			_decoderStatus = h264LastDecision;
+			_videoEngine.Status = h264LastDecision;
 			LogGateDecisionThrottled();
 		}
 		else if (mediaFoundationD3DDecoder != null)
 		{
-			_decoderStatus = h264LastDecision;
+			_videoEngine.Status = h264LastDecision;
 			LogGateDecisionThrottled();
 		}
 		if (countReceived)
@@ -1142,21 +1115,7 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 
 	private bool HasVideoSinkReady()
 	{
-		if (!_videoSinkAcceptingInput)
-		{
-			return false;
-		}
-
-		if (_decoder != null)
-		{
-			return true;
-		}
-		if (_mediaFoundationD3DDecoder != null)
-		{
-			return true;
-		}
-
-		return false;
+		return _videoEngine.SinkAcceptingInput && _videoEngine.HasDecoder;
 	}
 
 	private byte[]? ProcessH264Payload(byte[] payload, out long forwardedPackets, out string lastDecision)
@@ -1689,18 +1648,18 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 
 	private void RestartDecoderIfRenderWidthChanged(string reason)
 	{
-		if (_streamConfig == null || _decoder == null)
+		if (_streamConfig == null || _videoEngine.SoftwareDecoder == null)
 		{
 			return;
 		}
 		int newMaxWidth = ResolveMaxRenderWidth(_streamConfig);
-		if (newMaxWidth == _decoderMaxRenderWidth)
+		if (newMaxWidth == _videoEngine.MaxRenderWidth)
 		{
 			return;
 		}
-		Interlocked.Increment(ref _decoderRestarts);
+		_videoEngine.CountRestart();
 		RequireH264Keyframe();
-		StartFreshDecoder(_streamConfig, reason);
+		_videoEngine.StartFresh(_streamConfig, reason);
 		UpdateDiagnostics();
 	}
 
@@ -1712,13 +1671,13 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 			_streamConfig = config;
 			AppLog.Write($"Stream config received: {config.Width}x{config.Height} @ {config.Fps} codec={config.Codec}.");
 			ResizeWindowToStream(config);
-			StartFreshDecoder(config, "stream config");
+			_videoEngine.StartFresh(config, "stream config");
 			SetStatus($"Mirroring {config.Width}x{config.Height} @ {config.Fps} fps.");
 			UpdateDiagnostics();
 		}
 		catch (Exception ex)
 		{
-			_decoderStatus = "failed: " + ex.Message;
+			_videoEngine.Status = "failed: " + ex.Message;
 			SetStatus("Decoder failed: " + ex.Message);
 			AppLog.Write("Decoder failed: " + ex);
 			UpdateDiagnostics();
@@ -1796,110 +1755,6 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 		Top = work.Top + (work.Height - Height) / 2.0;
 	}
 
-	private void StartFreshDecoder(StreamConfig config, string reason)
-	{
-		StopVideoWatchdog();
-		_videoSinkAcceptingInput = false;
-		_decoder?.Dispose();
-		_decoder = null;
-		_mediaFoundationD3DDecoder?.Dispose();
-		_mediaFoundationD3DDecoder = null;
-		DisposeHighResolutionD3DPresenter();
-		ReleasePendingD3DFrame();
-		ReleasePendingFrame();
-		ShowVideoSurface();
-		// Restart the latency warmup grace so decoder/renderer spin-up and reconnect/session-refresh
-		// catch-up are excluded from steady-state percentiles instead of inflating the first window.
-		_receiveToPresentLatencyWindow.BeginWarmup();
-		bool requireHighResolutionD3DPath = ShouldUseHighResolutionD3DPath(config) && !_gpuPathDisabledThisSession;
-		if (requireHighResolutionD3DPath && TryStartHighResolutionD3DPath(config, reason))
-		{
-			_decoderMaxRenderWidth = config.Width;
-			_decoderOutputFps = Math.Clamp(config.Fps, 1, HighResolutionMaxRenderFps);
-			_videoSinkAcceptingInput = true;
-			FlushPendingVideoToSink();
-			AppLog.Write("Media Foundation D3D11 renderer started for " + reason + ".");
-			StartVideoWatchdog(config, _connectionGeneration);
-			return;
-		}
-		if (requireHighResolutionD3DPath)
-		{
-			// GPU engine init failed (no/blocked hardware decode, driver issue). Fall through to the
-			// software FFmpeg path, which decodes the (native) stream and downscales for present.
-			_decoderStatus = "GPU decode unavailable; falling back to software decoder.";
-			AppLog.Write("High-resolution D3D path failed; falling back to FFmpeg software decoder for " + reason + ".");
-		}
-		// Software (FFmpeg) decode of >1080 streams (e.g. GPU-fault fallback at native res) is heavy;
-		// cap the decoded/presented output to keep decode + present load manageable.
-		_decoderMaxRenderWidth = Math.Min(ResolveMaxRenderWidth(config), ResponsiveMaxRenderWidth);
-		_decoderOutputFps = ResolveOutputFps(config, _decoderMaxRenderWidth);
-		// Every callback below checks that the raising decoder is still the active one: a
-		// callback from a decoder that StartFreshDecoder has already replaced (its Dispose only
-		// waits ~1 s for the read/write tasks) must not touch the new decoder's state.
-		FfmpegDecoder decoder = new FfmpegDecoder(config.Width, config.Height, config.Fps, _decoderMaxRenderWidth, _decoderOutputFps);
-		_decoder = decoder;
-		decoder.DumpH264Enabled = StartupReceiverSettings.Effective.DumpH264;
-		decoder.StatusChanged += delegate(string message)
-		{
-			string message2 = message;
-			base.Dispatcher.BeginInvoke(new Action(delegate
-			{
-				if (!ReferenceEquals(_decoder, decoder))
-				{
-					return;
-				}
-				_decoderStatus = message2;
-				AppLog.Write("Decoder status: " + message2);
-				if (IsDecoderResyncError(message2))
-				{
-					_decoderStatus = "decoder resync warning: " + CompactStatus(message2);
-				}
-				else
-				{
-					SetStatus(message2);
-				}
-				// NOTE: Do NOT restart the decoder on mb_width/height overflow or
-				// sps_id-out-of-range. Those are symptoms of mid-stream bitstream corruption,
-				// not a genuine SPS change (no SPS NAL actually arrives). Restarting only
-				// re-arms the keyframe gate, and the Mac sender does not emit a fresh IDR on
-				// demand, so the gate gets stuck dropping P-slices ("saw NAL 1") and the
-				// decoder never recovers. Let ffmpeg keep its state and resync on the next IDR.
-				UpdateDiagnostics();
-			}), DispatcherPriority.Background);
-		};
-		decoder.FrameDecoded += delegate(VideoFrame frame)
-		{
-			if (!ReferenceEquals(Volatile.Read(ref _decoder), decoder))
-			{
-				frame.Release();
-				return;
-			}
-			QueueFrameForPresentation(frame);
-		};
-		// BeginInvoke, not Invoke: this fires from the decoder's read task, which Dispose()
-		// waits on from the UI thread, so a blocking Invoke here could deadlock for that wait.
-		decoder.DecoderRestarted += delegate
-		{
-			base.Dispatcher.BeginInvoke(new Action(delegate
-			{
-				if (!ReferenceEquals(_decoder, decoder))
-				{
-					return;
-				}
-				Interlocked.Increment(ref _decoderRestarts);
-				RequireH264Keyframe();
-				AppLog.Write("Decoder restarted (hwaccel fallback); requiring fresh SPS/PPS keyframe.");
-				UpdateDiagnostics();
-			}));
-		};
-		decoder.Start();
-		_decoderStatus = "started";
-		_videoSinkAcceptingInput = true;
-		FlushPendingVideoToSink();
-		AppLog.Write("FFmpeg software decoder started for " + reason + ".");
-		StartVideoWatchdog(config, _connectionGeneration);
-	}
-
 	private static bool ShouldUseHighResolutionD3DPath(StreamConfig config)
 	{
 		return ShouldUseHighResolutionD3DPath(
@@ -1921,97 +1776,9 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 			&& (config.Width > ResponsiveMaxRenderWidth || config.Height > 1080);
 	}
 
-	private bool TryStartHighResolutionD3DPath(StreamConfig config, string reason)
-	{
-		try
-		{
-			var vorticePresenter = new VorticeD3D11SwapChainVideoPresenter();
-			IHighResolutionD3DPresenter presenter = vorticePresenter;
-			IHighResolutionD3DDecoder decoder = new VorticeMediaFoundationD3D11Decoder(config.Width, config.Height, config.Fps, vorticePresenter.Device);
-
-			decoder.DumpH264Enabled = StartupReceiverSettings.Effective.DumpH264;
-			_highResolutionD3DPresenter = presenter;
-			_mediaFoundationD3DDecoder = decoder;
-			// Host the swap-chain child window in the video stage (bypasses WPF D3DImage composition).
-			VideoImage.Visibility = Visibility.Collapsed;
-			VideoImage.Source = null;
-			_bitmap = null;
-			VideoStage.Children.Insert(0, presenter.View);
-			presenter.View.HorizontalAlignment = HorizontalAlignment.Center;
-			presenter.View.VerticalAlignment = VerticalAlignment.Center;
-			UpdateHighResolutionD3DPresenterLayout(presenter, config);
-			VideoStage.UpdateLayout();
-			presenter.StatusChanged += delegate(string message)
-			{
-				string message2 = message;
-				base.Dispatcher.BeginInvoke(new Action(delegate
-				{
-					AppLog.Write("D3D11 presenter status: " + message2);
-					UpdateDiagnostics();
-				}), DispatcherPriority.Background);
-			};
-			// Each callback checks that this decoder is still the active one. Without that, a
-			// queued Faulted from a decoder that StartFreshDecoder (or a synchronous present
-			// failure) already replaced would dispose the replacement and disable the GPU
-			// path for the session, and a late FrameDecoded could hand a texture from the
-			// old device to the new presenter.
-			decoder.StatusChanged += delegate(string message)
-			{
-				string message2 = message;
-				base.Dispatcher.BeginInvoke(new Action(delegate
-				{
-					if (!ReferenceEquals(_mediaFoundationD3DDecoder, decoder))
-					{
-						return;
-					}
-					_decoderStatus = message2;
-					AppLog.Write("Media Foundation D3D11 decoder status: " + message2);
-					SetStatus(message2);
-					UpdateDiagnostics();
-				}), DispatcherPriority.Background);
-			};
-			decoder.Faulted += delegate(string message)
-			{
-				string message2 = message;
-				base.Dispatcher.BeginInvoke(new Action(delegate
-				{
-					if (!ReferenceEquals(_mediaFoundationD3DDecoder, decoder))
-					{
-						AppLog.Write("Ignoring fault from a superseded Media Foundation decoder: " + message2);
-						return;
-					}
-					HandleHighResolutionD3DFatal("High-resolution D3D decoder faulted: " + message2);
-				}), DispatcherPriority.Background);
-			};
-			decoder.FrameDecoded += delegate(IHighResolutionD3DFrame frame)
-			{
-				if (!ReferenceEquals(Volatile.Read(ref _mediaFoundationD3DDecoder), decoder))
-				{
-					frame.Dispose();
-					return;
-				}
-				QueueD3DFrameForPresentation(frame);
-			};
-			decoder.Start();
-			_decoderStatus = "Media Foundation D3D11 decoder started";
-			AppLog.Write($"High-resolution D3D path active for {reason}: {config.Width}x{config.Height}@{config.Fps}, gpuBinding=Vortice, d3d11MultithreadProtected={presenter.IsMultithreadProtected}.");
-			return true;
-		}
-		catch (Exception ex)
-		{
-			_decoderStatus = "Media Foundation D3D11 path failed: " + ex.Message;
-			AppLog.Write("Media Foundation D3D11 path failed; high-resolution fallback is blocked: " + ex);
-			_mediaFoundationD3DDecoder?.Dispose();
-			_mediaFoundationD3DDecoder = null;
-			DisposeHighResolutionD3DPresenter();
-			ReleasePendingD3DFrame();
-			return false;
-		}
-	}
-
 	private void UpdateHighResolutionD3DPresenterLayout()
 	{
-		IHighResolutionD3DPresenter? presenter = _highResolutionD3DPresenter;
+		IHighResolutionD3DPresenter? presenter = _videoEngine.GpuPresenter;
 		StreamConfig? config = _streamConfig;
 		if (presenter == null || config == null)
 		{
@@ -2068,97 +1835,6 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 		double cardHeightDip = ReceiverCardBorder.ActualHeight > 0.0 ? ReceiverCardBorder.ActualHeight : 44.0;
 		double desiredInsetDip = ReceiverCardBorder.Margin.Top + cardHeightDip + 12.0;
 		return Math.Min(Math.Max(0.0, desiredInsetDip), Math.Max(0.0, stageHeightDip - 1.0));
-	}
-
-	private void HandleHighResolutionD3DFatal(string message)
-	{
-		AppLog.Write(message);
-		_decoderStatus = message;
-		// Disable the GPU engine for the rest of this session (reset on the next connection) and
-		// restart on the software decoder so a runtime GPU fault (device-lost/TDR) does not kill
-		// the mirror.
-		_gpuPathDisabledThisSession = true;
-		_mediaFoundationD3DDecoder?.Dispose();
-		_mediaFoundationD3DDecoder = null;
-		DisposeHighResolutionD3DPresenter();
-		ReleasePendingD3DFrame();
-		RequireH264Keyframe();
-		if (_streamConfig != null)
-		{
-			SetStatus("GPU decode faulted; switching to software decoder.");
-			AppLog.Write("GPU decode faulted; restarting on FFmpeg software decoder.");
-			StartFreshDecoder(_streamConfig, "GPU fault fallback");
-		}
-		else
-		{
-			SetStatus("GPU decode failed.");
-			VideoImage.Source = null;
-			ShowEmptyStateSurface();
-		}
-		UpdateDiagnostics();
-	}
-
-	private void StartVideoWatchdog(StreamConfig config, int generation)
-	{
-		StopVideoWatchdog();
-		var cts = new CancellationTokenSource();
-		_videoWatchdogCts = cts;
-		Task.Run(async delegate
-		{
-			try
-			{
-				await Task.Delay(TimeSpan.FromSeconds(2.5), cts.Token);
-				if (cts.IsCancellationRequested ||
-					generation != Volatile.Read(ref _connectionGeneration) ||
-					Interlocked.Read(ref _videoPackets) > 0)
-				{
-					return;
-				}
-
-				await base.Dispatcher.BeginInvoke(new Action(delegate
-				{
-					if (cts.IsCancellationRequested ||
-						generation != _connectionGeneration ||
-						Interlocked.Read(ref _videoPackets) > 0)
-					{
-						return;
-					}
-
-						_decoderStatus = $"waiting for video packets ({config.Width}x{config.Height} @ {config.Fps})";
-						SetStatus("Connected, waiting for video frames.");
-						AppLog.Write("No video packets received 2.5s after stream config. Sender sent config/control data, but no H.264 video payload yet.");
-					UpdateDiagnostics();
-				}));
-			}
-			catch (OperationCanceledException)
-			{
-			}
-		});
-	}
-
-	private void StopVideoWatchdog()
-	{
-		var cts = Interlocked.Exchange(ref _videoWatchdogCts, null);
-		if (cts == null)
-		{
-			return;
-		}
-
-		cts.Cancel();
-		cts.Dispose();
-	}
-
-	private static bool IsDecoderResyncError(string message)
-	{
-		if (!message.Contains("non-existing PPS", StringComparison.OrdinalIgnoreCase)
-			&& !message.Contains("Invalid data found", StringComparison.OrdinalIgnoreCase)
-			&& !message.Contains("mb_width/height overflow", StringComparison.OrdinalIgnoreCase)
-			&& !message.Contains("reference count overflow", StringComparison.OrdinalIgnoreCase)
-			&& !(message.Contains("sps_id", StringComparison.OrdinalIgnoreCase) && message.Contains("out of range", StringComparison.OrdinalIgnoreCase)))
-		{
-			return message.Contains("no frame", StringComparison.OrdinalIgnoreCase);
-		}
-		return true;
 	}
 
 	private void PresentFrame(VideoFrame frame)
@@ -2381,16 +2057,8 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 				}
 			});
 
-			CleanupGuards.RunStep("video watchdog stop", StopVideoWatchdog);
-			_videoSinkAcceptingInput = false;
-			FfmpegDecoder? decoder = _decoder;
-			_decoder = null;
-			CleanupGuards.RunStep("ffmpeg decoder dispose", () => decoder?.Dispose());
+			_videoEngine.Stop();
 			CleanupGuards.RunStep("audio pipeline stop", _audioSession.Stop);
-			IHighResolutionD3DDecoder? mediaFoundationD3DDecoder = _mediaFoundationD3DDecoder;
-			_mediaFoundationD3DDecoder = null;
-			CleanupGuards.RunStep("Media Foundation D3D decoder dispose", () => mediaFoundationD3DDecoder?.Dispose());
-			CleanupGuards.RunStep("D3D presenter dispose", DisposeHighResolutionD3DPresenter);
 			_bitmap = null;
 			VideoImage.Source = null;
 			VideoImage.Visibility = Visibility.Visible;
@@ -2399,9 +2067,7 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 			CleanupGuards.RunStep("pending frame release", ReleasePendingFrame);
 			CleanupGuards.RunStep("pending D3D frame release", ReleasePendingD3DFrame);
 			_streamConfig = null;
-			_decoderStatus = "not started";
-			_decoderOutputFps = 0;
-			_decoderMaxRenderWidth = RealtimeMaxRenderWidth;
+			_videoEngine.Status = "not started";
 			ResetH264Gate();
 			SetConnectedUi(connected: false, finalStatus);
 			UpdateDiagnostics();
@@ -2410,31 +2076,6 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 		{
 			_disconnectGate.Release();
 		}
-	}
-
-	private void DisposeHighResolutionD3DPresenter()
-	{
-		IHighResolutionD3DPresenter? presenter = _highResolutionD3DPresenter;
-		if (presenter == null)
-		{
-			return;
-		}
-		_highResolutionD3DPresenter = null;
-		try
-		{
-			VideoStage.Children.Remove(presenter.View);
-		}
-		catch
-		{
-		}
-		try
-		{
-			presenter.Dispose();
-		}
-		catch
-		{
-		}
-		VideoImage.Visibility = Visibility.Visible;
 	}
 
 	private void SetConnectedUi(bool connected, string? disconnectedStatus = "Disconnected.")
@@ -2468,18 +2109,9 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 	{
 		_statusText = message;
 		StatusTextBlock.Text = message;
-		CompactStatusTextBlock.Text = CompactStatus(message);
+		CompactStatusTextBlock.Text = ReceiverChromeText.CompactStatus(message);
 		CompactControlBar.ToolTip = message;
 		UpdateReceiverChrome();
-	}
-
-	private static string CompactStatus(string message)
-	{
-		if (message.Length > 46)
-		{
-			return message.Substring(0, 43) + "...";
-		}
-		return message;
 	}
 
 	private void UpdateReceiverChrome()
@@ -2515,9 +2147,7 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 		return _client != null ||
 			Volatile.Read(ref _airPlaySessionGeneration) != 0 ||
 			_streamConfig != null ||
-			_decoder != null
-			|| _mediaFoundationD3DDecoder != null
-			;
+			_videoEngine.HasDecoder;
 	}
 
 	private Brush ResolveReceiverStatusBrush(ReceiverStatusTone tone)
@@ -2540,7 +2170,7 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 			RenderMode.Quality => "quality",
 			_ => "auto"
 		};
-		string value2 = ((_decoderOutputFps > 0) ? $"<= {_decoderMaxRenderWidth}px @ {_decoderOutputFps} fps ({renderMode})" : $"<= {RealtimeMaxRenderWidth}px @ up to {RealtimeMaxRenderFps} fps ({renderMode})");
+		string value2 = ((_videoEngine.OutputFps > 0) ? $"<= {_videoEngine.MaxRenderWidth}px @ {_videoEngine.OutputFps} fps ({renderMode})" : $"<= {RealtimeMaxRenderWidth}px @ up to {RealtimeMaxRenderFps} fps ({renderMode})");
 		string outputValue = ResolveOutputDiagnostics();
 			long value3 = Interlocked.Read(ref _videoPackets);
 			long num = Interlocked.Read(ref _videoBytes);
@@ -2552,8 +2182,8 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 				long pendingVideoBeforeSinkBytes = _pendingVideoBeforeSink.Bytes;
 					(long h264Forwarded, long h264Dropped) = GetH264GateCounts();
 					string latencyWindow = FormatLatencyWindow(_receiveToPresentLatencyWindow.GetCurrentOrLastSnapshot(Stopwatch.GetTimestamp()));
-					DiagnosticsTextBlock.Text = $"{value}\nrealtime output: {value2}\n{outputValue}\n{ResolveAudioDiagnostics()}\nreceived video: {value3:N0} / {(double)num / 1024.0:N1} KB\npre-render queue/dropped: {pendingVideoBeforeSinkPackets:N0} ({(double)pendingVideoBeforeSinkBytes / 1024.0:N1} KB) / {_pendingVideoBeforeSink.Dropped:N0}\nforwarded/dropped h264: {h264Forwarded:N0} / {h264Dropped:N0}\ndecoded/rendered: {decodedFrames:N0} / {renderedFrames:N0}\nrender dropped: {Interlocked.Read(ref _renderDroppedFrames):N0}\nlatest latency: recv->render {Interlocked.Read(ref _latestReceiveToRenderMs)} ms, decode->render {Interlocked.Read(ref _latestDecodeToRenderMs)} ms\nlatency window: {latencyWindow}\nrender queue: pending {pendingRenderFrames}, dispatcher {dispatcherQueued}\ndecoder input queued/dropped: {ActiveQueuedInputPackets:N0} ({(double)ActiveQueuedInputBytes / 1024.0:N1} KB) / {ActiveDroppedInputPackets:N0}\nh264 accepted/written: {ActiveAcceptedInputPackets:N0} / {ActiveWrittenInputPackets:N0}\nstdin write: {ActiveLatestWriteMilliseconds} ms, max {ActiveMaxWriteMilliseconds} ms, stalls {ActiveWriteStalls:N0}\ndecoder restarts: {Interlocked.Read(ref _decoderRestarts):N0}\ndecoder: {_decoderStatus}";
-		CompactStatusTextBlock.Text = ((renderedFrames > 0) ? $"Live: {renderedFrames:N0} frames" : CompactStatus(_statusText));
+					DiagnosticsTextBlock.Text = $"{value}\nrealtime output: {value2}\n{outputValue}\n{ResolveAudioDiagnostics()}\nreceived video: {value3:N0} / {(double)num / 1024.0:N1} KB\npre-render queue/dropped: {pendingVideoBeforeSinkPackets:N0} ({(double)pendingVideoBeforeSinkBytes / 1024.0:N1} KB) / {_pendingVideoBeforeSink.Dropped:N0}\nforwarded/dropped h264: {h264Forwarded:N0} / {h264Dropped:N0}\ndecoded/rendered: {decodedFrames:N0} / {renderedFrames:N0}\nrender dropped: {Interlocked.Read(ref _renderDroppedFrames):N0}\nlatest latency: recv->render {Interlocked.Read(ref _latestReceiveToRenderMs)} ms, decode->render {Interlocked.Read(ref _latestDecodeToRenderMs)} ms\nlatency window: {latencyWindow}\nrender queue: pending {pendingRenderFrames}, dispatcher {dispatcherQueued}\ndecoder input queued/dropped: {ActiveQueuedInputPackets:N0} ({(double)ActiveQueuedInputBytes / 1024.0:N1} KB) / {ActiveDroppedInputPackets:N0}\nh264 accepted/written: {ActiveAcceptedInputPackets:N0} / {ActiveWrittenInputPackets:N0}\nstdin write: {ActiveLatestWriteMilliseconds} ms, max {ActiveMaxWriteMilliseconds} ms, stalls {ActiveWriteStalls:N0}\ndecoder restarts: {_videoEngine.Restarts:N0}\ndecoder: {_videoEngine.Status}";
+		CompactStatusTextBlock.Text = ((renderedFrames > 0) ? $"Live: {renderedFrames:N0} frames" : ReceiverChromeText.CompactStatus(_statusText));
 	}
 
 	private void PresentD3DFrame(IHighResolutionD3DFrame frame)
@@ -2574,7 +2204,7 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 				}
 			}
 
-			IHighResolutionD3DPresenter? presenter = _highResolutionD3DPresenter;
+			IHighResolutionD3DPresenter? presenter = _videoEngine.GpuPresenter;
 			if (presenter == null)
 			{
 				return;
@@ -2586,7 +2216,7 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 			}
 			catch (Exception ex)
 			{
-				HandleHighResolutionD3DFatal("High-resolution D3D present failed: " + ex.Message);
+				_videoEngine.HandleGpuFatal("High-resolution D3D present failed: " + ex.Message);
 				return;
 			}
 			long renderDoneTick = Stopwatch.GetTimestamp();
@@ -2654,13 +2284,15 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 
 	private string ResolveOutputDiagnostics()
 	{
-		if (_mediaFoundationD3DDecoder != null)
+		IHighResolutionD3DDecoder? gpuDecoder = _videoEngine.GpuDecoder;
+		if (gpuDecoder != null)
 		{
-			return $"output: Media Foundation D3D11 {_mediaFoundationD3DDecoder.OutputWidth}x{_mediaFoundationD3DDecoder.OutputHeight}, GPU NV12";
+			return $"output: Media Foundation D3D11 {gpuDecoder.OutputWidth}x{gpuDecoder.OutputHeight}, GPU NV12";
 		}
-		return (_decoder == null)
+		ISoftwareVideoDecoder? decoder = _videoEngine.SoftwareDecoder;
+		return (decoder == null)
 			? "output: none"
-			: $"output: {_decoder.OutputWidth}x{_decoder.OutputHeight}, {(double)_decoder.OutputFrameBytes / 1024.0 / 1024.0:N1} MB/frame";
+			: $"output: {decoder.OutputWidth}x{decoder.OutputHeight}, {(double)decoder.OutputFrameBytes / 1024.0 / 1024.0:N1} MB/frame";
 	}
 
 	internal string ResolveAudioDiagnostics()
@@ -2685,46 +2317,135 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 	}
 
 	private int ActiveQueuedInputPackets =>
-		_mediaFoundationD3DDecoder?.QueuedInputPackets
+		_videoEngine.GpuDecoder?.QueuedInputPackets
 		??
-		_decoder?.QueuedInputPackets ?? 0;
+		_videoEngine.SoftwareDecoder?.QueuedInputPackets ?? 0;
 
 	private long ActiveQueuedInputBytes =>
-		_mediaFoundationD3DDecoder?.QueuedInputBytes
+		_videoEngine.GpuDecoder?.QueuedInputBytes
 		??
-		_decoder?.QueuedInputBytes ?? 0L;
+		_videoEngine.SoftwareDecoder?.QueuedInputBytes ?? 0L;
 
 	private long ActiveDroppedInputPackets =>
-		_mediaFoundationD3DDecoder?.DroppedInputPackets
+		_videoEngine.GpuDecoder?.DroppedInputPackets
 		??
-		_decoder?.DroppedInputPackets ?? 0L;
+		_videoEngine.SoftwareDecoder?.DroppedInputPackets ?? 0L;
 
 	private long ActiveAcceptedInputPackets =>
-		_mediaFoundationD3DDecoder?.AcceptedInputPackets
+		_videoEngine.GpuDecoder?.AcceptedInputPackets
 		??
-		_decoder?.AcceptedInputPackets ?? 0L;
+		_videoEngine.SoftwareDecoder?.AcceptedInputPackets ?? 0L;
 
 	private long ActiveWrittenInputPackets =>
-		_mediaFoundationD3DDecoder?.WrittenInputPackets
+		_videoEngine.GpuDecoder?.WrittenInputPackets
 		??
-		_decoder?.WrittenInputPackets ?? 0L;
+		_videoEngine.SoftwareDecoder?.WrittenInputPackets ?? 0L;
 
 	private long ActiveLatestWriteMilliseconds =>
-		_mediaFoundationD3DDecoder?.LatestWriteMilliseconds
+		_videoEngine.GpuDecoder?.LatestWriteMilliseconds
 		??
-		_decoder?.LatestWriteMilliseconds ?? 0L;
+		_videoEngine.SoftwareDecoder?.LatestWriteMilliseconds ?? 0L;
 
 	private long ActiveMaxWriteMilliseconds =>
-		_mediaFoundationD3DDecoder?.MaxWriteMilliseconds
+		_videoEngine.GpuDecoder?.MaxWriteMilliseconds
 		??
-		_decoder?.MaxWriteMilliseconds ?? 0L;
+		_videoEngine.SoftwareDecoder?.MaxWriteMilliseconds ?? 0L;
 
-	private int ActiveFfmpegPipelineDepth => _decoder?.PipelineDepthFrames ?? 0;
+	private int ActiveFfmpegPipelineDepth => _videoEngine.SoftwareDecoder?.PipelineDepthFrames ?? 0;
 
 	private long ActiveWriteStalls =>
-		_mediaFoundationD3DDecoder?.WriteStalls
+		_videoEngine.GpuDecoder?.WriteStalls
 		??
-		_decoder?.WriteStalls ?? 0L;
+		_videoEngine.SoftwareDecoder?.WriteStalls ?? 0L;
+
+	// IVideoEngineView: what VideoEngineHost needs from the window.
+
+	void IVideoEngineView.Post(Action action, DispatcherPriority priority)
+	{
+		base.Dispatcher.BeginInvoke(action, priority);
+	}
+
+	int IVideoEngineView.ConnectionGeneration => Volatile.Read(ref _connectionGeneration);
+
+	long IVideoEngineView.ReceivedVideoPackets => Interlocked.Read(ref _videoPackets);
+
+	StreamConfig? IVideoEngineView.CurrentStreamConfig => _streamConfig;
+
+	void IVideoEngineView.AttachGpuPresenter(IHighResolutionD3DPresenter presenter, StreamConfig config)
+	{
+		VideoImage.Visibility = Visibility.Collapsed;
+		VideoImage.Source = null;
+		_bitmap = null;
+		VideoStage.Children.Insert(0, presenter.View);
+		presenter.View.HorizontalAlignment = HorizontalAlignment.Center;
+		presenter.View.VerticalAlignment = VerticalAlignment.Center;
+		UpdateHighResolutionD3DPresenterLayout(presenter, config);
+		VideoStage.UpdateLayout();
+	}
+
+	void IVideoEngineView.DetachGpuPresenter(IHighResolutionD3DPresenter presenter)
+	{
+		try
+		{
+			VideoStage.Children.Remove(presenter.View);
+		}
+		catch
+		{
+		}
+		VideoImage.Visibility = Visibility.Visible;
+	}
+
+	void IVideoEngineView.ShowVideoSurface()
+	{
+		ShowVideoSurface();
+	}
+
+	void IVideoEngineView.ShowEmptyStateAfterGpuFailure()
+	{
+		VideoImage.Source = null;
+		ShowEmptyStateSurface();
+	}
+
+	void IVideoEngineView.ReleasePendingFrames()
+	{
+		ReleasePendingD3DFrame();
+		ReleasePendingFrame();
+	}
+
+	void IVideoEngineView.QueueSoftwareFrame(VideoFrame frame)
+	{
+		QueueFrameForPresentation(frame);
+	}
+
+	void IVideoEngineView.QueueGpuFrame(IHighResolutionD3DFrame frame)
+	{
+		QueueD3DFrameForPresentation(frame);
+	}
+
+	void IVideoEngineView.FlushPendingVideo()
+	{
+		FlushPendingVideoToSink();
+	}
+
+	void IVideoEngineView.RequireH264Keyframe()
+	{
+		RequireH264Keyframe();
+	}
+
+	void IVideoEngineView.BeginLatencyWarmup()
+	{
+		_receiveToPresentLatencyWindow.BeginWarmup();
+	}
+
+	void IVideoEngineView.SetStatus(string message)
+	{
+		SetStatus(message);
+	}
+
+	void IVideoEngineView.UpdateDiagnostics()
+	{
+		UpdateDiagnostics();
+	}
 
 	private int GetPendingRenderFrameCount()
 	{

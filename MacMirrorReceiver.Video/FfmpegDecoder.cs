@@ -9,7 +9,7 @@ using System.Threading.Tasks;
 
 namespace MacMirrorReceiver.Video;
 
-public sealed class FfmpegDecoder : IDisposable
+public sealed class FfmpegDecoder : ISoftwareVideoDecoder
 {
 	internal const int MaxQueuedInputPackets = 1024;
 
