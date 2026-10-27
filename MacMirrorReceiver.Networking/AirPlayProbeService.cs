@@ -25,8 +25,7 @@ public sealed class AirPlayProbeService : IDisposable
 	private const string AirPlayServiceType = "_airplay._tcp.local";
 	private const string RaopServiceType = "_raop._tcp.local";
 	private const int MdnsPort = 5353;
-	private const int AirPlayPort = 7000;
-	private const int RaopPort = 5000;
+	// Ports advertised in the legacy XML /info body; the live listeners use _ports.
 	private const int DataPort = 7100;
 	private const int EventPort = 7101;
 	private const int TimingPort = 7102;
@@ -68,14 +67,19 @@ public sealed class AirPlayProbeService : IDisposable
 
 	private static readonly IPAddress MulticastAddress = IPAddress.Parse("224.0.0.251");
 	private static readonly IPEndPoint MulticastEndpoint = new IPEndPoint(MulticastAddress, MdnsPort);
-	private static readonly bool QualityRenderMode = RenderModeSettings.Load().EffectiveMode == ReceiverRenderModeSetting.Quality;
+	// Evaluated on first use rather than at type load: constructing the service (e.g. in a unit
+	// test) must not read the developer's real settings file.
+	private static readonly Lazy<bool> QualityRenderModeLazy = new Lazy<bool>(
+		() => RenderModeSettings.Load().EffectiveMode == ReceiverRenderModeSetting.Quality);
+	private static bool QualityRenderMode => QualityRenderModeLazy.Value;
 #if HIGH_RESOLUTION_D3D
 	// GPU engine advertises native 2560x1440 by default so the Mac sends native and the GPU decodes
 	// it. The quality flag can still force the path on for local validation.
-	private static readonly bool GpuDisplayAvailable = (QualityRenderMode && RenderModeSettings.ExperimentalQualityEnabled)
-		|| RenderModeSettings.GpuVideoEngineEnabled;
+	private static readonly Lazy<bool> GpuDisplayAvailableLazy = new Lazy<bool>(
+		() => (QualityRenderMode && RenderModeSettings.ExperimentalQualityEnabled) || RenderModeSettings.GpuVideoEngineEnabled);
+	private static bool GpuDisplayAvailable => GpuDisplayAvailableLazy.Value;
 #else
-	private static readonly bool GpuDisplayAvailable = false;
+	private static bool GpuDisplayAvailable => false;
 #endif
 
 	private readonly CancellationTokenSource _cts = new CancellationTokenSource();
@@ -100,7 +104,8 @@ public sealed class AirPlayProbeService : IDisposable
 	private readonly bool _dumpAudio;
 	private readonly AirPlayPairingContext _pairing = new AirPlayPairingContext();
 	private readonly AirPlayFairPlayContext _fairPlay = new AirPlayFairPlayContext();
-	private readonly AirPlayTimingClient _timingClient = new AirPlayTimingClient(TimingPort);
+	private readonly AirPlayTimingClient _timingClient;
+	private readonly AirPlayListenerPorts _ports;
 	private readonly AirPlayAudioReceiver _audioReceiver = new AirPlayAudioReceiver();
 	private readonly AirPlaySetupContext _setup;
 	private readonly object _mirrorKeyGate = new object();
@@ -122,8 +127,13 @@ public sealed class AirPlayProbeService : IDisposable
 	public bool IsMdnsBound => _mdnsBound;
 	public bool IsAirPlayListenerBound => _airPlayListener != null;
 	public bool IsRaopListenerBound => _raopListener != null;
-	public int AirPlayListenerPort => AirPlayPort;
-	public int RaopListenerPort => RaopPort;
+	public int AirPlayListenerPort => BoundPort(_airPlayListener) ?? _ports.AirPlay;
+	public int RaopListenerPort => BoundPort(_raopListener) ?? _ports.Raop;
+
+	private static int? BoundPort(TcpListener? listener)
+	{
+		return listener?.LocalEndpoint is IPEndPoint endpoint ? endpoint.Port : null;
+	}
 	public string? AirPlayListenerBindError => _airPlayListenerBindError;
 	public string? RaopListenerBindError => _raopListenerBindError;
 
@@ -181,9 +191,12 @@ public sealed class AirPlayProbeService : IDisposable
 		bool advertiseAudio = AdvertiseAudioCapabilitiesDefault,
 		bool writeDiagnostics = false,
 		bool dumpAudio = false,
-		int mdnsPort = MdnsPort)
+		int mdnsPort = MdnsPort,
+		AirPlayListenerPorts? listenerPorts = null)
 	{
 		_mdnsPort = mdnsPort;
+		_ports = listenerPorts ?? AirPlayListenerPorts.Default;
+		_timingClient = new AirPlayTimingClient(_ports.Timing);
 		_displayName = SanitizeLabel(displayName);
 		_hostName = SanitizeLabel(Environment.MachineName) + ".local";
 		_deviceId = ResolveDeviceId();
@@ -270,11 +283,11 @@ public sealed class AirPlayProbeService : IDisposable
 			_mdnsClient = mdnsClient;
 			_mdnsBound = true;
 
-			_airPlayListener = TryStartListener(AirPlayPort, "AirPlay");
-			_raopListener = TryStartListener(RaopPort, "RAOP");
-			_dataListener = TryStartListener(DataPort, "AirPlay data");
-			_eventListener = TryStartListener(EventPort, "AirPlay event");
-			_timingListener = TryStartListener(TimingPort, "AirPlay timing");
+			_airPlayListener = TryStartListener(_ports.AirPlay, "AirPlay", error => _airPlayListenerBindError = error);
+			_raopListener = TryStartListener(_ports.Raop, "RAOP", error => _raopListenerBindError = error);
+			_dataListener = TryStartListener(_ports.Data, "AirPlay data", null);
+			_eventListener = TryStartListener(_ports.Event, "AirPlay event", null);
+			_timingListener = TryStartListener(_ports.Timing, "AirPlay timing", null);
 
 			_receiveTask = Task.Run(ReceiveLoopAsync);
 			_announceTask = Task.Run(AnnounceLoopAsync);
@@ -326,34 +339,21 @@ public sealed class AirPlayProbeService : IDisposable
 		_timingListener = null;
 	}
 
-	private TcpListener? TryStartListener(int port, string label)
+	private static TcpListener? TryStartListener(int port, string label, Action<string?>? setBindError)
 	{
 		try
 		{
 			var listener = new TcpListener(IPAddress.Any, port);
 			listener.Start();
-			SetListenerBindError(port, null);
-			AppLog.Write($"{label} receiver listener started on port {port}.");
+			setBindError?.Invoke(null);
+			AppLog.Write($"{label} receiver listener started on port {BoundPort(listener) ?? port}.");
 			return listener;
 		}
 		catch (Exception ex)
 		{
-			SetListenerBindError(port, ex.Message);
+			setBindError?.Invoke(ex.Message);
 			AppLog.Write($"{label} receiver listener unavailable on port {port}: {ex.Message}");
 			return null;
-		}
-	}
-
-	private void SetListenerBindError(int port, string? error)
-	{
-		switch (port)
-		{
-		case AirPlayPort:
-			_airPlayListenerBindError = error;
-			break;
-		case RaopPort:
-			_raopListenerBindError = error;
-			break;
 		}
 	}
 
@@ -2455,9 +2455,9 @@ public sealed class AirPlayProbeService : IDisposable
 		{
 			DnsRecord.Ptr(AirPlayServiceType, _airPlayInstanceName, ttlSeconds),
 			DnsRecord.Ptr(RaopServiceType, _raopInstanceName, ttlSeconds),
-			DnsRecord.Srv(_airPlayInstanceName, AirPlayPort, _hostName, ttlSeconds),
+			DnsRecord.Srv(_airPlayInstanceName, AirPlayListenerPort, _hostName, ttlSeconds),
 			DnsRecord.Txt(_airPlayInstanceName, BuildAirPlayTxt(), ttlSeconds),
-			DnsRecord.Srv(_raopInstanceName, RaopPort, _hostName, ttlSeconds),
+			DnsRecord.Srv(_raopInstanceName, RaopListenerPort, _hostName, ttlSeconds),
 			DnsRecord.Txt(_raopInstanceName, BuildRaopTxt(), ttlSeconds)
 		};
 
