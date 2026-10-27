@@ -9,6 +9,7 @@ namespace MacMirrorReceiver.Networking;
 
 internal sealed class AirPlayMirrorDecryptor : IDisposable
 {
+	private readonly Aes _aes;
 	private readonly ICryptoTransform _encryptor;
 	private readonly byte[] _counter;
 	private readonly bool _littleEndianCounter;
@@ -25,6 +26,7 @@ internal sealed class AirPlayMirrorDecryptor : IDisposable
 		aes.Padding = PaddingMode.None;
 		aes.KeySize = 128;
 		aes.Key = key;
+		_aes = aes;
 		_encryptor = aes.CreateEncryptor();
 		_counter = CopyOf(iv);
 		_littleEndianCounter = littleEndianCounter;
@@ -329,6 +331,7 @@ internal sealed class AirPlayMirrorDecryptor : IDisposable
 	public void Dispose()
 	{
 		_encryptor.Dispose();
+		_aes.Dispose();
 	}
 
 	private static byte[] BuildStreamHashInput(string label, byte[] streamConnectionIdBytes, byte[] mixedKey)
