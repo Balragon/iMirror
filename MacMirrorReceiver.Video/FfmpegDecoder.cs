@@ -3,7 +3,6 @@ using System.Buffers;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
-using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -44,13 +43,11 @@ public sealed class FfmpegDecoder : ISoftwareVideoDecoder
 
 	private readonly object _processGate = new object();
 
-	private readonly object _inputGate = new object();
+	private readonly PipeInputQueue<H264InputPacket> _inputQueue = new PipeInputQueue<H264InputPacket>(MaxQueuedInputPackets, MaxQueuedInputBytes, packet => packet.Payload.Length);
 
-	private readonly SemaphoreSlim _inputSignal = new SemaphoreSlim(0);
+	private readonly PipeWriteMetrics _writeMetrics = new PipeWriteMetrics(WriteStallThresholdMs);
 
-	private readonly Queue<H264InputPacket> _inputQueue = new Queue<H264InputPacket>();
-
-	private long _queuedInputBytes;
+	private readonly object _overflowStatusGate = new object();
 
 	private long _overflowDropsSinceStatus;
 
@@ -81,18 +78,6 @@ public sealed class FfmpegDecoder : ISoftwareVideoDecoder
 	private Task? _writeTask;
 
 	private long _decodedOutputFrames;
-
-	private long _acceptedInputPackets;
-
-	private long _writtenInputPackets;
-
-	private long _latestWriteMilliseconds;
-
-	private long _maxWriteMilliseconds;
-
-	private long _writeStalls;
-
-	private long _lastWriteStallStatusTick;
 
 	// Optional debug capture of the H.264 Annex B elementary stream, enabled by setting the
 	// IMIRROR_DUMP_H264 environment variable (to a file path, or "1"/"true" for a default
@@ -150,17 +135,17 @@ public sealed class FfmpegDecoder : ISoftwareVideoDecoder
 
 	private int _decoderCandidateIndex;
 
-	public long DroppedInputPackets { get; private set; }
+	public long DroppedInputPackets => _inputQueue.Dropped;
 
-	public long AcceptedInputPackets => Interlocked.Read(ref _acceptedInputPackets);
+	public long AcceptedInputPackets => _inputQueue.Accepted;
 
-	public long WrittenInputPackets => Interlocked.Read(ref _writtenInputPackets);
+	public long WrittenInputPackets => _writeMetrics.Written;
 
-	public long LatestWriteMilliseconds => Interlocked.Read(ref _latestWriteMilliseconds);
+	public long LatestWriteMilliseconds => _writeMetrics.LatestMilliseconds;
 
-	public long MaxWriteMilliseconds => Interlocked.Read(ref _maxWriteMilliseconds);
+	public long MaxWriteMilliseconds => _writeMetrics.MaxMilliseconds;
 
-	public long WriteStalls => Interlocked.Read(ref _writeStalls);
+	public long WriteStalls => _writeMetrics.Stalls;
 
 	public int PipelineDepthFrames => Volatile.Read(ref _pipelineDepthFrames);
 
@@ -170,27 +155,9 @@ public sealed class FfmpegDecoder : ISoftwareVideoDecoder
 
 	public int OutputFrameBytes => _frameSize;
 
-	public int QueuedInputPackets
-	{
-		get
-		{
-			lock (_inputGate)
-			{
-				return _inputQueue.Count;
-			}
-		}
-	}
+	public int QueuedInputPackets => _inputQueue.Count;
 
-	public long QueuedInputBytes
-	{
-		get
-		{
-			lock (_inputGate)
-			{
-				return _queuedInputBytes;
-			}
-		}
-	}
+	public long QueuedInputBytes => _inputQueue.Bytes;
 
 	public event Action<string>? StatusChanged;
 
@@ -225,13 +192,9 @@ public sealed class FfmpegDecoder : ISoftwareVideoDecoder
 
 	public void Start()
 	{
-		string? text = FindFfmpeg();
-		if (text == null)
-		{
-			throw new InvalidOperationException("ffmpeg.exe was not found. Put it on PATH or at tools\\ffmpeg\\bin\\ffmpeg.exe.");
-		}
+		string ffmpegPath = FfmpegPipe.FindFfmpegOrThrow();
 		TryOpenH264Dump();
-		StartFfmpegProcess(text);
+		StartFfmpegProcess(ffmpegPath);
 		_writeTask = Task.Run(WriteInputLoopAsync);
 	}
 
@@ -362,29 +325,19 @@ public sealed class FfmpegDecoder : ISoftwareVideoDecoder
 	private void StartFfmpegProcess(string ffmpegPath)
 	{
 		string arguments = BuildArguments();
-		var process = new Process
-		{
-			StartInfo = new ProcessStartInfo
-			{
-				FileName = ffmpegPath,
-				Arguments = arguments,
-				UseShellExecute = false,
-				RedirectStandardInput = true,
-				RedirectStandardOutput = true,
-				RedirectStandardError = true,
-				CreateNoWindow = true
-			},
-			EnableRaisingEvents = true
-		};
-		process.Start();
-		TrySetRealtimePriority(process);
+		Process process = FfmpegPipe.Start(ffmpegPath, arguments);
 		lock (_processGate)
 		{
 			_process = process;
 		}
 		this.StatusChanged?.Invoke($"FFmpeg started{GetDecoderLabel()}: {ffmpegPath} ({_inputWidth}x{_inputHeight} -> {_outputWidth}x{_outputHeight} @ {_targetOutputFps}fps)");
 		this.StatusChanged?.Invoke($"FFmpeg cmd: {ffmpegPath} {arguments}");
-		Task.Run(() => ReadErrorLinesAsync(process));
+		Task.Run(() => FfmpegPipe.ReadStderrLinesAsync(
+			process,
+			() => ReferenceEquals(_process, process),
+			_cts.Token,
+			OnStderrLine,
+			message => this.StatusChanged?.Invoke("FFmpeg stderr reader stopped: " + message)));
 		_readTask = Task.Run(() => ReadFramesAsync(process));
 		Task.Run(() => WatchFirstFrameTimeoutAsync(process));
 	}
@@ -467,38 +420,18 @@ public sealed class FfmpegDecoder : ISoftwareVideoDecoder
 		return $" [decoder:{_decoderCandidates[_decoderCandidateIndex].Label}]";
 	}
 
-	private async Task ReadErrorLinesAsync(Process process)
+	private void OnStderrLine(string line)
 	{
-		try
+		// The trailing AccessUnitDelimiter has no picture after it when stdin closes.
+		if (!line.Contains("missing picture in access unit with size 6", StringComparison.Ordinal))
 		{
-			while (!_cts.IsCancellationRequested && ReferenceEquals(_process, process))
-			{
-				string? text = await process.StandardError.ReadLineAsync();
-				if (text != null)
-				{
-					// The trailing AccessUnitDelimiter has no picture after it when stdin closes.
-					if (!string.IsNullOrWhiteSpace(text) && !text.Contains("missing picture in access unit with size 6", StringComparison.Ordinal))
-					{
-						this.StatusChanged?.Invoke(text.Trim());
-					}
-					continue;
-				}
-				break;
-			}
-		}
-		catch (Exception ex) when (ex is IOException || ex is ObjectDisposedException || ex is OperationCanceledException)
-		{
-			// Normal at shutdown; during a session it means ffmpeg diagnostics stop arriving.
-			if (!_cts.IsCancellationRequested)
-			{
-				this.StatusChanged?.Invoke("FFmpeg stderr reader stopped: " + ex.Message);
-			}
+			this.StatusChanged?.Invoke(line);
 		}
 	}
 
 	public bool QueueH264(byte[] payload, ulong sourceTimestampNanos, long receivedTick)
 	{
-		if (!IsProcessAlive(_process) || _cts.IsCancellationRequested)
+		if (!FfmpegPipe.IsAlive(_process) || _cts.IsCancellationRequested)
 		{
 			return false;
 		}
@@ -515,43 +448,24 @@ public sealed class FfmpegDecoder : ISoftwareVideoDecoder
 	// The overflow policy, split from QueueH264 so tests can drive it without an FFmpeg process.
 	internal void EnqueueInput(byte[] payload, ulong sourceTimestampNanos, long receivedTick)
 	{
-		bool shouldSignal = false;
-		int flushed = 0;
-		bool droppedIncoming = false;
-		long overflowDropsToReport = 0;
-		int queuedAfter;
-		lock (_inputGate)
+		// On overflow keep the queued GOP and drop only the incoming non-IDR packet. FFmpeg conceals
+		// the missing frame by repeating the previous reference, so the damage stays in the screen
+		// regions that frame changed and heals as they change again. Flushing the queue and waiting
+		// for the next keyframe instead loses video until reconnect: Mac senders send one IDR per
+		// connection and none on demand. An incoming IDR can start over, so it flushes the queue.
+		PipeEnqueueResult result = _inputQueue.Enqueue(new H264InputPacket(payload, sourceTimestampNanos, receivedTick), static packet => ContainsIdrNal(packet.Payload));
+		if (result.Flushed > 0)
 		{
-			if (_inputQueue.Count >= MaxQueuedInputPackets || _queuedInputBytes + payload.Length > MaxQueuedInputBytes)
-			{
-				// Keep the queued GOP and drop only the incoming non-IDR packet. FFmpeg conceals the
-				// missing frame by repeating the previous reference, so the damage stays in the screen
-				// regions that frame changed and heals as they change again. Flushing the queue and
-				// waiting for the next keyframe instead loses video until reconnect: Mac senders send
-				// one IDR per connection and none on demand.
-				if (ContainsIdrNal(payload))
-				{
-					flushed = _inputQueue.Count;
-					_inputQueue.Clear();
-					_queuedInputBytes = 0L;
-					DroppedInputPackets += flushed;
-				}
-				else
-				{
-					droppedIncoming = true;
-					DroppedInputPackets++;
-					_overflowDropsSinceStatus++;
-				}
-			}
+			this.StatusChanged?.Invoke($"Decoder input overflow: flushed {result.Flushed} queued packet(s); resuming from incoming keyframe.");
+		}
 
-			if (!droppedIncoming)
+		long overflowDropsToReport = 0;
+		lock (_overflowStatusGate)
+		{
+			if (result.Outcome == PipeEnqueueOutcome.DroppedIncoming)
 			{
-				shouldSignal = _inputQueue.Count == 0;
-				_inputQueue.Enqueue(new H264InputPacket(payload, sourceTimestampNanos, receivedTick));
-				_queuedInputBytes += payload.Length;
-				Interlocked.Increment(ref _acceptedInputPackets);
+				_overflowDropsSinceStatus++;
 			}
-
 			// One status line per second at most; the first drop of an overflow reports immediately.
 			if (_overflowDropsSinceStatus > 0)
 			{
@@ -563,19 +477,10 @@ public sealed class FfmpegDecoder : ISoftwareVideoDecoder
 					_lastOverflowStatusTick = now;
 				}
 			}
-			queuedAfter = _inputQueue.Count;
-		}
-		if (flushed > 0)
-		{
-			this.StatusChanged?.Invoke($"Decoder input overflow: flushed {flushed} queued packet(s); resuming from incoming keyframe.");
 		}
 		if (overflowDropsToReport > 0)
 		{
-			this.StatusChanged?.Invoke($"Decoder input overflow: dropped {overflowDropsToReport:N0} incoming non-keyframe(s) since last report and preserved queued GOP (queued={queuedAfter}).");
-		}
-		if (shouldSignal)
-		{
-			_inputSignal.Release();
+			this.StatusChanged?.Invoke($"Decoder input overflow: dropped {overflowDropsToReport:N0} incoming non-keyframe(s) since last report and preserved queued GOP (queued={result.QueuedAfter}).");
 		}
 	}
 
@@ -611,139 +516,72 @@ public sealed class FfmpegDecoder : ISoftwareVideoDecoder
 
 	public int ClearPendingInput()
 	{
-		lock (_inputGate)
+		int count = _inputQueue.Clear();
+		lock (_fifoGate)
 		{
-			int count = _inputQueue.Count;
-			_inputQueue.Clear();
-			_queuedInputBytes = 0L;
-			DroppedInputPackets += count;
-			lock (_fifoGate)
-			{
-				// In-flight frames belong to the (about to be replaced) process; drop their ticks
-				// so the new process's frames are not stamped with stale receivedTicks.
-				_writtenReceivedTicks.Clear();
-				Volatile.Write(ref _pipelineDepthFrames, 0);
-			}
-			return count;
+			// In-flight frames belong to the (about to be replaced) process; drop their ticks
+			// so the new process's frames are not stamped with stale receivedTicks.
+			_writtenReceivedTicks.Clear();
+			Volatile.Write(ref _pipelineDepthFrames, 0);
 		}
+		return count;
 	}
 
 	private async Task WriteInputLoopAsync()
 	{
-		SetCurrentThreadAboveNormal();
+		FfmpegPipe.SetCurrentThreadAboveNormal();
 		try
 		{
-			while (!_cts.IsCancellationRequested)
+			await FfmpegPipe.RunInputLoopAsync(_inputQueue, WritePacketAsync, _cts.Token);
+		}
+		catch (Exception ex)
+		{
+			this.StatusChanged?.Invoke("Decoder input closed: " + ex.Message);
+		}
+	}
+
+	// A packet for a dead process is skipped, not fatal: a hwaccel fallback may be replacing it.
+	private async Task<bool> WritePacketAsync(H264InputPacket packet)
+	{
+		Process? process = _process;
+		try
+		{
+			if (FfmpegPipe.IsAlive(process))
 			{
-				await _inputSignal.WaitAsync(_cts.Token);
-				while (!_cts.IsCancellationRequested)
+				Interlocked.Exchange(ref _latestInputReceivedTick, packet.ReceivedTick);
+				Interlocked.Exchange(ref _latestInputSourceTimestampNanos, unchecked((long)packet.SourceTimestampNanos));
+				long startTick = Stopwatch.GetTimestamp();
+				await process!.StandardInput.BaseStream.WriteAsync(packet.Payload, _cts.Token);
+				await process.StandardInput.BaseStream.WriteAsync(AccessUnitDelimiter, _cts.Token);
+				long endTick = Stopwatch.GetTimestamp();
+				lock (_fifoGate)
 				{
-					H264InputPacket? packet = null;
-					lock (_inputGate)
-					{
-						if (_inputQueue.Count > 0)
-						{
-							packet = _inputQueue.Dequeue();
-							_queuedInputBytes = Math.Max(0L, _queuedInputBytes - packet.Payload.Length);
-						}
-					}
-					if (packet == null)
-					{
-						break;
-					}
-					Process? process = _process;
-					try
-					{
-						if (process != null && IsProcessAlive(process))
-						{
-							Interlocked.Exchange(ref _latestInputReceivedTick, packet.ReceivedTick);
-							Interlocked.Exchange(ref _latestInputSourceTimestampNanos, unchecked((long)packet.SourceTimestampNanos));
-							long startTick = Stopwatch.GetTimestamp();
-							await process.StandardInput.BaseStream.WriteAsync(packet.Payload, _cts.Token);
-							await process.StandardInput.BaseStream.WriteAsync(AccessUnitDelimiter, _cts.Token);
-							long endTick = Stopwatch.GetTimestamp();
-							lock (_fifoGate)
-							{
-								_writtenReceivedTicks.Enqueue(packet.ReceivedTick);
-							}
-							if (_writtenDump != null && _writtenDump.Write(packet.Payload))
-							{
-								this.StatusChanged?.Invoke($"H264 written dump reached {MaxDumpBytes / (1024 * 1024)}MB cap; further packets are not captured.");
-							}
-							RecordWriteMetrics(ElapsedMilliseconds(startTick, endTick));
-						}
-					}
-					catch (Exception ex) when (ex is IOException || ex is InvalidOperationException || ex is ObjectDisposedException)
-					{
-						this.StatusChanged?.Invoke("Decoder input retrying: " + ex.Message);
-					}
-					}
+					_writtenReceivedTicks.Enqueue(packet.ReceivedTick);
+				}
+				if (_writtenDump != null && _writtenDump.Write(packet.Payload))
+				{
+					this.StatusChanged?.Invoke($"H264 written dump reached {MaxDumpBytes / (1024 * 1024)}MB cap; further packets are not captured.");
+				}
+				long writeMs = FfmpegPipe.ElapsedMilliseconds(startTick, endTick);
+				if (_writeMetrics.Record(writeMs))
+				{
+					this.StatusChanged?.Invoke($"FFmpeg stdin write stall: {writeMs}ms, queued={QueuedInputPackets}, dropped={DroppedInputPackets:N0}");
 				}
 			}
-			catch (OperationCanceledException)
-			{
-			}
-		catch (Exception ex2)
-		{
-			this.StatusChanged?.Invoke("Decoder input closed: " + ex2.Message);
 		}
+		catch (Exception ex) when (ex is IOException || ex is InvalidOperationException || ex is ObjectDisposedException)
+		{
+			this.StatusChanged?.Invoke("Decoder input retrying: " + ex.Message);
+		}
+		return true;
 	}
 
 	private async Task ReadFramesAsync(Process process)
 	{
-		SetCurrentThreadAboveNormal();
+		FfmpegPipe.SetCurrentThreadAboveNormal();
 		try
 		{
-			Stream stream = process.StandardOutput.BaseStream;
-			while (!_cts.IsCancellationRequested)
-			{
-				byte[] buffer = ArrayPool<byte>.Shared.Rent(_frameSize);
-				try
-				{
-					await ReadExactAsync(stream, buffer, _frameSize, _cts.Token);
-					long frameReceivedTick;
-					lock (_fifoGate)
-					{
-						if (_writtenReceivedTicks.Count > 0)
-						{
-							frameReceivedTick = _writtenReceivedTicks.Dequeue();
-							_lastReadReceivedTick = frameReceivedTick;
-						}
-						else
-						{
-							frameReceivedTick = _lastReadReceivedTick;
-						}
-						Volatile.Write(ref _pipelineDepthFrames, _writtenReceivedTicks.Count);
-					}
-					var frame = new VideoFrame
-					{
-						Width = _outputWidth,
-						Height = _outputHeight,
-						Buffer = buffer,
-						ReceivedTick = frameReceivedTick,
-						DecodedTick = Stopwatch.GetTimestamp(),
-						SourceTimestampNanos = unchecked((ulong)Interlocked.Read(ref _latestInputSourceTimestampNanos)),
-						ReturnBuffer = rented => ArrayPool<byte>.Shared.Return(rented)
-					};
-					if (FrameDecoded is { } handler)
-					{
-						handler(frame);
-					}
-					else
-					{
-						frame.Release();
-					}
-				}
-				catch
-				{
-					ArrayPool<byte>.Shared.Return(buffer);
-					throw;
-				}
-				if (Interlocked.Increment(ref _decodedOutputFrames) == 1)
-				{
-					this.StatusChanged?.Invoke("FFmpeg decoded first frame.");
-				}
-			}
+			await FfmpegPipe.ReadFixedSizeFramesAsync(process.StandardOutput.BaseStream, _frameSize, OnFrameRead, _cts.Token);
 		}
 		catch (OperationCanceledException)
 		{
@@ -758,53 +596,43 @@ public sealed class FfmpegDecoder : ISoftwareVideoDecoder
 		}
 	}
 
-	private void RecordWriteMetrics(long writeMs)
+	private void OnFrameRead(byte[] buffer)
 	{
-		Interlocked.Increment(ref _writtenInputPackets);
-		Interlocked.Exchange(ref _latestWriteMilliseconds, writeMs);
-		long previousMax;
-		do
+		long frameReceivedTick;
+		lock (_fifoGate)
 		{
-			previousMax = Interlocked.Read(ref _maxWriteMilliseconds);
-			if (writeMs <= previousMax)
+			if (_writtenReceivedTicks.Count > 0)
 			{
-				break;
+				frameReceivedTick = _writtenReceivedTicks.Dequeue();
+				_lastReadReceivedTick = frameReceivedTick;
 			}
+			else
+			{
+				frameReceivedTick = _lastReadReceivedTick;
+			}
+			Volatile.Write(ref _pipelineDepthFrames, _writtenReceivedTicks.Count);
 		}
-		while (Interlocked.CompareExchange(ref _maxWriteMilliseconds, writeMs, previousMax) != previousMax);
-
-		if (writeMs < WriteStallThresholdMs)
+		var frame = new VideoFrame
 		{
-			return;
+			Width = _outputWidth,
+			Height = _outputHeight,
+			Buffer = buffer,
+			ReceivedTick = frameReceivedTick,
+			DecodedTick = Stopwatch.GetTimestamp(),
+			SourceTimestampNanos = unchecked((ulong)Interlocked.Read(ref _latestInputSourceTimestampNanos)),
+			ReturnBuffer = rented => ArrayPool<byte>.Shared.Return(rented)
+		};
+		if (FrameDecoded is { } handler)
+		{
+			handler(frame);
 		}
-
-		Interlocked.Increment(ref _writeStalls);
-		long now = Environment.TickCount64;
-		long previous = Interlocked.Read(ref _lastWriteStallStatusTick);
-		if (now - previous >= 1000)
+		else
 		{
-			Interlocked.Exchange(ref _lastWriteStallStatusTick, now);
-			this.StatusChanged?.Invoke($"FFmpeg stdin write stall: {writeMs}ms, queued={QueuedInputPackets}, dropped={DroppedInputPackets:N0}");
+			frame.Release();
 		}
-	}
-
-	private static long ElapsedMilliseconds(long startTick, long endTick)
-	{
-		if (endTick <= startTick)
+		if (Interlocked.Increment(ref _decodedOutputFrames) == 1)
 		{
-			return 0L;
-		}
-		return Math.Max(0L, (long)Math.Round((double)(endTick - startTick) * 1000.0 / Stopwatch.Frequency));
-	}
-
-	private static void SetCurrentThreadAboveNormal()
-	{
-		try
-		{
-			Thread.CurrentThread.Priority = ThreadPriority.AboveNormal;
-		}
-		catch
-		{
+			this.StatusChanged?.Invoke("FFmpeg decoded first frame.");
 		}
 	}
 
@@ -828,7 +656,7 @@ public sealed class FfmpegDecoder : ISoftwareVideoDecoder
 				// fresh process would also sit idle -- and it only resets the gate and emits misleading
 				// "Output file does not contain any stream" errors. Keep waiting and report the real
 				// cause instead of churning decoders.
-				if (Interlocked.Read(ref _writtenInputPackets) == 0)
+				if (_writeMetrics.Written == 0)
 				{
 					if (!loggedNoKeyframe)
 					{
@@ -874,10 +702,10 @@ public sealed class FfmpegDecoder : ISoftwareVideoDecoder
 			string nextLabel = _decoderCandidates[_decoderCandidateIndex].Label;
 			string ffmpegPath = failedProcess.StartInfo.FileName;
 			this.StatusChanged?.Invoke($"Decoder {failedLabel} failed ({reason}); falling back to {nextLabel}.");
-			StopProcess(failedProcess);
+			FfmpegPipe.Stop(failedProcess);
 			// Drop packets queued for the dead process. They are mid-stream P-frames with no
 			// SPS/PPS/IDR; feeding them to the fresh process produces only decode errors until
-			// the next keyframe. The dead process blocks writes (IsProcessAlive == false), so
+			// the next keyframe. The dead process blocks writes (IsAlive == false), so
 			// clearing here before StartFfmpegProcess closes the window cleanly.
 			int discarded = ClearPendingInput();
 			if (discarded > 0)
@@ -893,145 +721,10 @@ public sealed class FfmpegDecoder : ISoftwareVideoDecoder
 		return true;
 	}
 
-	private static Task ReadExactAsync(Stream stream, byte[] buffer, CancellationToken cancellationToken)
-	{
-		return ReadExactAsync(stream, buffer, buffer.Length, cancellationToken);
-	}
-
-	private static async Task ReadExactAsync(Stream stream, byte[] buffer, int count, CancellationToken cancellationToken)
-	{
-		int num;
-		for (int offset = 0; offset < count; offset += num)
-		{
-			num = await stream.ReadAsync(buffer.AsMemory(offset, count - offset), cancellationToken);
-			if (num == 0)
-			{
-				throw new EndOfStreamException();
-			}
-		}
-	}
-
-	internal static string? FindFfmpeg()
-	{
-		string text = Path.Combine(AppContext.BaseDirectory, "tools", "ffmpeg", "bin", "ffmpeg.exe");
-		if (File.Exists(text))
-		{
-			return text;
-		}
-		// Only the install/build tree is probed. The working directory is whatever the launcher
-		// set (a shortcut's "Start in", a network share), so an ffmpeg.exe planted under its
-		// ancestors would otherwise be executed with the receiver's privileges.
-		string? localToolsFfmpeg = FindFfmpegInAncestorTools(AppContext.BaseDirectory);
-		if (localToolsFfmpeg != null)
-		{
-			return localToolsFfmpeg;
-		}
-		string[] array = (Environment.GetEnvironmentVariable("PATH") ?? "").Split(Path.PathSeparator);
-		foreach (string text2 in array)
-		{
-			if (!string.IsNullOrWhiteSpace(text2))
-			{
-				string text3 = Path.Combine(text2.Trim(), "ffmpeg.exe");
-				if (File.Exists(text3))
-				{
-					return text3;
-				}
-			}
-		}
-		try
-		{
-			string path3 = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Microsoft", "WinGet", "Packages");
-			if (Directory.Exists(path3))
-			{
-				string? text4 = Directory.EnumerateFiles(path3, "ffmpeg.exe", SearchOption.AllDirectories).FirstOrDefault((string path) => path.Contains("Gyan.FFmpeg", StringComparison.OrdinalIgnoreCase));
-				if (text4 != null)
-				{
-					return text4;
-				}
-			}
-		}
-		catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException || ex is System.Security.SecurityException)
-		{
-			AppLog.Write("ffmpeg.exe probe of the WinGet package folder failed: " + ex.Message);
-		}
-		return null;
-	}
-
-	internal static string? FindFfmpegInAncestorTools(string startDirectory)
-	{
-		var directory = new DirectoryInfo(startDirectory);
-		for (int depth = 0; directory != null && depth < 8; depth++, directory = directory.Parent)
-		{
-			string candidate = Path.Combine(directory.FullName, "tools", "ffmpeg", "bin", "ffmpeg.exe");
-			if (File.Exists(candidate))
-			{
-				return candidate;
-			}
-		}
-
-		return null;
-	}
-
-	private static void TrySetRealtimePriority(Process process)
-	{
-		try
-		{
-			process.PriorityClass = ProcessPriorityClass.AboveNormal;
-		}
-		catch
-		{
-		}
-	}
-
-	private static void StopProcess(Process process)
-	{
-		try
-		{
-			process.StandardInput.Close();
-		}
-		catch
-		{
-		}
-		try
-		{
-			if (IsProcessAlive(process))
-			{
-				process.Kill(entireProcessTree: true);
-			}
-		}
-		catch
-		{
-		}
-		try
-		{
-			process.Dispose();
-		}
-		catch
-		{
-		}
-	}
-
 	public void Dispose()
 	{
 		_cts.Cancel();
-		try
-		{
-			_process?.StandardInput.Close();
-		}
-		catch
-		{
-		}
-		try
-		{
-			Process? process = _process;
-			if (IsProcessAlive(process))
-			{
-				process!.Kill(entireProcessTree: true);
-			}
-		}
-		catch
-		{
-		}
+		FfmpegPipe.Kill(_process);
 		try
 		{
 			_readTask?.Wait(TimeSpan.FromSeconds(1.0));
@@ -1050,29 +743,12 @@ public sealed class FfmpegDecoder : ISoftwareVideoDecoder
 		}
 		if (remaining != null)
 		{
-			StopProcess(remaining);
+			FfmpegPipe.Stop(remaining);
 		}
 		_submittedDump?.Dispose();
 		_writtenDump?.Dispose();
-		_inputSignal.Dispose();
+		_inputQueue.Dispose();
 		_cts.Dispose();
-	}
-
-	private static bool IsProcessAlive(Process? process)
-	{
-		if (process == null)
-		{
-			return false;
-		}
-
-		try
-		{
-			return !process.HasExited;
-		}
-		catch (InvalidOperationException)
-		{
-			return false;
-		}
 	}
 }
 
