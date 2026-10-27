@@ -31,6 +31,8 @@ public class App : Application
 		AppDomain.CurrentDomain.UnhandledException += delegate(object _, UnhandledExceptionEventArgs args)
 		{
 			AppLog.Write("Unhandled domain exception: " + args.ExceptionObject);
+			// The process is about to die and ProcessExit will not run; get the queued lines out now.
+			AppLog.Flush();
 		};
 	}
 
@@ -94,6 +96,8 @@ public class App : Application
 	private static void OnDispatcherUnhandledException(object sender, DispatcherUnhandledExceptionEventArgs e)
 	{
 		AppLog.Write("Dispatcher exception: " + e.Exception);
+		// Unhandled, so the app is going down; the background writer would die with the queued lines.
+		AppLog.Flush();
 	}
 
 	// Long enough to cover a restart handoff (settings "Save & Restart" spawns the new
