@@ -17,9 +17,9 @@
        The remaining identity attributes stay hand-authored in Properties/AssemblyInfo.cs,
        so their SDK generators are disabled to avoid duplicate-attribute (CS0579) errors. -->
   <PropertyGroup>
-    <Version>0.8.0</Version>
-    <FileVersion>0.8.0.0</FileVersion>
-    <AssemblyVersion>0.8.0.0</AssemblyVersion>
+    <Version>0.8.1</Version>
+    <FileVersion>0.8.1.0</FileVersion>
+    <AssemblyVersion>0.8.1.0</AssemblyVersion>
     <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
     <GenerateAssemblyCompanyAttribute>false</GenerateAssemblyCompanyAttribute>
     <GenerateAssemblyConfigurationAttribute>false</GenerateAssemblyConfigurationAttribute>

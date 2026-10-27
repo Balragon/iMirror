@@ -10,6 +10,28 @@ For detailed release notes, see [GitHub Releases](https://github.com/Balragon/iM
 
 ---
 
+## [0.8.1] - 2026-10-28
+
+A refresh of the tray menu and the settings window to the Windows 11 look, plus internal cleanup. No settings or behaviour changes: existing settings carry over as they are.
+
+### Changed
+
+- The notification-area menu is a Windows 11 style menu: rounded corners, acrylic background, colours that follow the Windows light/dark theme, icons, and a header with the receiver state ("Ready for AirPlay", "Mirroring"). It opens beside the cursor and stays inside the screen for a taskbar on any edge (#98).
+- The settings window is laid out like Windows 11 Settings: wider, with General, Video, Audio, Advanced and About sections of setting cards. Quality mode and Video engine are drop-downs, Diagnostics is a collapsible card, and About shows a short version such as `0.8.0 (25aa284)` instead of the full commit hash (#99).
+
+### Fixed
+
+- Release notes are again taken from the annotated release tag. The release workflow re-fetches the tag object, which the checkout step had turned into a plain commit reference, so v0.8.0 was first published with the default notes (#96).
+
+### Internal
+
+- The software video decoder and the audio decoder share one FFmpeg process, input-queue and write-metrics implementation instead of two copies (#97).
+
+### Validation
+
+- `dotnet test .\iMirror.sln -c Release`: 308 tests passed.
+- Release gate on the packaged `iMirror-0.8.1-win-x64.zip` extracted outside the repository (local package with FFmpeg full_build; the published package is rebuilt by CI with the pinned Essentials build): firewall allow on a new install path, Mac mirroring with video and audio, latency gate on one continuous 11 min 10 s Mac session at 2560x1440 on the GPU path (`PASS`, 67 windows, worst p95 122 ms, worst max 235 ms, 0 windows ≥ 150 ms, `contiguousEvidence=True`), and three disconnect/reconnect cycles, each restarting the GPU path and audio cleanly.
+
 ## [0.8.0] - 2026-10-27
 
 Hardening release from the 2026-10-26 full code review: network-input limits, sender checks, lifecycle and deadlock fixes, firewall detection, and a large internal restructuring of the receiver window with new tests. Updating from 0.7.5: if the in-app update does not finish (a 0.7.5 handoff issue fixed in this release), download `iMirror-0.8.0-setup.exe` from this release and run it.
