@@ -67,6 +67,15 @@ public sealed class AirPlayProbeService : IDisposable
 #endif
 
 	private readonly CancellationTokenSource _cts = new CancellationTokenSource();
+
+	// Limits for the RTSP/HTTP control connections. Every LAN host can open these ports, so a
+	// request must not be able to pin an unbounded buffer or a thread for an unbounded time.
+	// Real AirPlay bodies (SETUP plists, pair-* blobs, feedback) are well under 64 KiB.
+	internal const int MaxRequestHeaderBytes = 64 * 1024;
+	internal const int MaxRequestBodyBytes = 1024 * 1024;
+	internal const int MaxControlConnections = 32;
+	internal static readonly TimeSpan DefaultRequestReadTimeout = TimeSpan.FromSeconds(15);
+	private int _activeControlConnections;
 	private readonly int _mdnsPort;
 	private readonly string _displayName;
 	private readonly string _hostName;
@@ -362,6 +371,7 @@ public sealed class AirPlayProbeService : IDisposable
 
 	private async Task HandleProbeClientAsync(TcpClient client, string label)
 	{
+		bool countedControlConnection = false;
 		using (client)
 		{
 			try
@@ -371,6 +381,14 @@ public sealed class AirPlayProbeService : IDisposable
 					await HandleDataClientAsync(client);
 					return;
 				}
+
+				if (Interlocked.Increment(ref _activeControlConnections) > MaxControlConnections)
+				{
+					Interlocked.Decrement(ref _activeControlConnections);
+					AppLog.Write($"{label} control connection from {client.Client.RemoteEndPoint} rejected: {MaxControlConnections} connections already open.");
+					return;
+				}
+				countedControlConnection = true;
 
 				client.ReceiveTimeout = 2500;
 				client.SendTimeout = 2500;
@@ -435,6 +453,13 @@ public sealed class AirPlayProbeService : IDisposable
 				if (IsMirrorControlLabel(label))
 				{
 					EndMirrorSessionIfAnnounced($"{label} receiver client failed: {ex.GetType().Name}");
+				}
+			}
+			finally
+			{
+				if (countedControlConnection)
+				{
+					Interlocked.Decrement(ref _activeControlConnections);
 				}
 			}
 		}
@@ -1455,16 +1480,46 @@ public sealed class AirPlayProbeService : IDisposable
 		return -1;
 	}
 
-	private static async Task<AirPlayRequest?> ReadRequestAsync(NetworkStream stream, CancellationToken token)
+	/// <summary>
+	/// Reads one RTSP/HTTP request. Waiting for the first byte of a request is unbounded (the
+	/// control connection idles between the sender's periodic feedback posts), but once a request
+	/// has started the rest of it must arrive within <paramref name="requestTimeout"/>, the header
+	/// block is capped at <see cref="MaxRequestHeaderBytes"/>, and a declared body larger than
+	/// <see cref="MaxRequestBodyBytes"/> is rejected before anything is allocated for it.
+	/// Returns null when the connection should be closed.
+	/// </summary>
+	internal static async Task<AirPlayRequest?> ReadRequestAsync(Stream stream, CancellationToken token, TimeSpan? requestTimeout = null)
+	{
+		TimeSpan timeout = requestTimeout ?? DefaultRequestReadTimeout;
+		using CancellationTokenSource requestCts = CancellationTokenSource.CreateLinkedTokenSource(token);
+		try
+		{
+			return await ReadRequestCoreAsync(stream, requestCts, timeout);
+		}
+		catch (OperationCanceledException) when (!token.IsCancellationRequested)
+		{
+			AppLog.Write($"AirPlay request did not complete within {timeout.TotalSeconds:N0}s; closing connection.");
+			return null;
+		}
+	}
+
+	private static async Task<AirPlayRequest?> ReadRequestCoreAsync(Stream stream, CancellationTokenSource requestCts, TimeSpan timeout)
 	{
 		List<byte> headerBytes = new List<byte>();
 		byte[] single = new byte[1];
-		while (headerBytes.Count < 64 * 1024)
+		CancellationToken requestToken = requestCts.Token;
+		bool headerComplete = false;
+		while (headerBytes.Count < MaxRequestHeaderBytes)
 		{
-			int count = await stream.ReadAsync(single, token);
+			int count = await stream.ReadAsync(single, requestToken);
 			if (count == 0)
 			{
 				return null;
+			}
+			if (headerBytes.Count == 0)
+			{
+				// First byte of a request: from here on the sender must finish it promptly.
+				requestCts.CancelAfter(timeout);
 			}
 			headerBytes.Add(single[0]);
 			int n = headerBytes.Count;
@@ -1474,8 +1529,15 @@ public sealed class AirPlayProbeService : IDisposable
 				headerBytes[n - 2] == '\r' &&
 				headerBytes[n - 1] == '\n')
 			{
+				headerComplete = true;
 				break;
 			}
+		}
+
+		if (!headerComplete)
+		{
+			AppLog.Write($"AirPlay request header exceeded {MaxRequestHeaderBytes:N0} bytes; closing connection.");
+			return null;
 		}
 
 		string headerText = Encoding.ASCII.GetString(headerBytes.ToArray());
@@ -1498,17 +1560,23 @@ public sealed class AirPlayProbeService : IDisposable
 			headers[line.Substring(0, colon).Trim()] = line.Substring(colon + 1).Trim();
 		}
 
-		int contentLength = 0;
-		if (headers.TryGetValue("Content-Length", out string? contentLengthValue))
+		long contentLength = 0;
+		if (headers.TryGetValue("Content-Length", out string? contentLengthValue) &&
+			!long.TryParse(contentLengthValue, NumberStyles.None, CultureInfo.InvariantCulture, out contentLength))
 		{
-			int.TryParse(contentLengthValue, out contentLength);
+			contentLength = 0;
+		}
+		if (contentLength > MaxRequestBodyBytes)
+		{
+			AppLog.Write($"AirPlay request declared Content-Length {contentLength:N0} exceeds {MaxRequestBodyBytes:N0} bytes; closing connection.");
+			return null;
 		}
 
-		byte[] body = new byte[Math.Max(0, contentLength)];
+		byte[] body = new byte[(int)Math.Max(0, contentLength)];
 		int offset = 0;
 		while (offset < body.Length)
 		{
-			int count = await stream.ReadAsync(body.AsMemory(offset, body.Length - offset), token);
+			int count = await stream.ReadAsync(body.AsMemory(offset, body.Length - offset), requestToken);
 			if (count == 0)
 			{
 				break;
@@ -2597,7 +2665,7 @@ public sealed class AirPlayProbeService : IDisposable
 		_cts.Dispose();
 	}
 
-	private sealed record AirPlayRequest(
+	internal sealed record AirPlayRequest(
 		string Method,
 		string Target,
 		string Protocol,
