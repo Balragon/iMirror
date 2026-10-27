@@ -133,6 +133,10 @@ public sealed class AirPlayProbeService : IDisposable
 	private bool _announcedIdentitylessMirrorSession;
 	private AirPlayMirrorDecryptor? _mirrorDecryptor;
 	private List<AirPlayMirrorDecryptor>? _mirrorDecryptorProbePool;
+	// A found candidate waiting for the next packet to confirm it (see SelectMirrorDecryptor).
+	private PendingMirrorDecryptor? _pendingMirrorDecryptor;
+	// The last confirmed candidate, tried first when a later session selects. Kept across sessions.
+	private string? _rememberedMirrorDecryptorName;
 	private bool _loggedWaitingForMirrorDecryptor;
 	private readonly HashSet<int> _loggedDecryptPayloadFailureTypes = new HashSet<int>();
 	private readonly HashSet<int> _loggedDecryptCandidateReportTypes = new HashSet<int>();
@@ -579,12 +583,19 @@ public sealed class AirPlayProbeService : IDisposable
 							AppLog.Write($"AirPlay mirror video type={payloadType} decrypted with stateful candidate '{selectedName}' ({selectedFormat}).");
 							emitted++;
 						}
-						else if (TrySelectMirrorDecryptor(payloadType, header, payload, out annexB, out selectedName, out selectedFormat))
+						else if (TrySelectMirrorDecryptor(payloadType, header, payload, out IReadOnlyList<byte[]> selectedFrames, out selectedName, out selectedFormat))
 						{
-							RecordVideoPayloadShape(annexB);
-							VideoPayloadReceived?.Invoke(annexB, 0, Stopwatch.GetTimestamp());
-							AppLog.Write($"AirPlay mirror video type={payloadType} decrypted with candidate '{selectedName}' ({selectedFormat}).");
-						emitted++;
+							// No frames while a found candidate is held for confirmation; the next packet emits both.
+							foreach (byte[] frame in selectedFrames)
+							{
+								RecordVideoPayloadShape(frame);
+								VideoPayloadReceived?.Invoke(frame, 0, Stopwatch.GetTimestamp());
+								emitted++;
+							}
+							if (selectedFrames.Count > 0)
+							{
+								AppLog.Write($"AirPlay mirror video type={payloadType} decrypted with candidate '{selectedName}' ({selectedFormat}).");
+							}
 					}
 					else
 					{
@@ -766,7 +777,9 @@ public sealed class AirPlayProbeService : IDisposable
 		return false;
 	}
 
-	private bool TrySelectMirrorDecryptor(int payloadType, byte[] packetHeader, byte[] encryptedPayload, out byte[] annexB, out string selectedName, out string selectedFormat)
+	// True when the packet was consumed by selection: annexBFrames holds the frames to emit now, which is
+	// empty while a newly found candidate waits for the next packet to confirm it.
+	private bool TrySelectMirrorDecryptor(int payloadType, byte[] packetHeader, byte[] encryptedPayload, out IReadOnlyList<byte[]> annexBFrames, out string selectedName, out string selectedFormat)
 	{
 		byte[]? aesKey;
 		byte[]? sharedSecret;
@@ -782,7 +795,7 @@ public sealed class AirPlayProbeService : IDisposable
 			streamConnectionId = _streamConnectionId;
 		}
 
-		annexB = Array.Empty<byte>();
+		annexBFrames = Array.Empty<byte[]>();
 		selectedName = string.Empty;
 		selectedFormat = string.Empty;
 		if (aesKey == null || sharedSecret == null || streamConnectionId == null)
@@ -798,24 +811,53 @@ public sealed class AirPlayProbeService : IDisposable
 		}
 
 		IReadOnlyList<AirPlayMirrorDecryptorCandidate> baseCandidates = AirPlayMirrorDecryptor.BuildCandidates(aesKey, sharedSecret, streamConnectionId.Value, eiv, rtspTargetSessionId);
-		long searchStartTick = Stopwatch.GetTimestamp();
-		if (TryFindMirrorDecryptor(baseCandidates, encryptedPayload, report, out AirPlayMirrorDecryptor? decryptor, out byte[] selectedAnnexB, out string selectedPayloadFormat, out int tested))
+		string? rememberedName;
+		PendingMirrorDecryptor? pending;
+		lock (_mirrorKeyGate)
 		{
+			rememberedName = _rememberedMirrorDecryptorName;
+			pending = _pendingMirrorDecryptor;
+			_pendingMirrorDecryptor = null;
+		}
+
+		long searchStartTick = Stopwatch.GetTimestamp();
+		MirrorDecryptorSelection selection = SelectMirrorDecryptor(baseCandidates, encryptedPayload, rememberedName, pending, report);
+		long searchMs = (long)((Stopwatch.GetTimestamp() - searchStartTick) * 1000.0 / Stopwatch.Frequency);
+		string rejected = selection.Rejected.Count == 0 ? string.Empty : ", rejected=" + string.Join("|", selection.Rejected);
+		if (selection.Status == MirrorDecryptorSelectionStatus.Held)
+		{
+			PendingMirrorDecryptor held = selection.Pending!;
+			lock (_mirrorKeyGate)
+			{
+				DisposeMirrorProbePoolLocked();
+				_pendingMirrorDecryptor = held;
+				_decryptorStreamConnectionId = streamConnectionId.Value;
+			}
+
+			annexBFrames = selection.AnnexBFrames;
+			AppLog.Write($"AirPlay mirror decryptor candidate '{held.Decryptor.Name}' found for type={payloadType}, streamConnectionID={streamConnectionId.Value}, format={held.FirstFormat}, tested={held.Tested}, payloadBytes={encryptedPayload.Length}, search={searchMs}ms{rejected}; holding the frame until the next packet confirms it.");
+			return true;
+		}
+
+		if (selection.Status == MirrorDecryptorSelectionStatus.Selected)
+		{
+			AirPlayMirrorDecryptor decryptor = selection.Decryptor!;
 			lock (_mirrorKeyGate)
 			{
 				_mirrorDecryptor?.Dispose();
 				DisposeMirrorProbePoolLocked();
 				_mirrorDecryptor = decryptor;
+				_rememberedMirrorDecryptorName = decryptor.Name;
 				_decryptorStreamConnectionId = streamConnectionId.Value;
 				_loggedDecryptPayloadFailureTypes.Remove(payloadType);
 				_loggedDecryptCandidateReportTypes.Add(payloadType);
 			}
 
-			annexB = selectedAnnexB;
+			annexBFrames = selection.AnnexBFrames;
 			selectedName = decryptor.Name;
-			selectedFormat = selectedPayloadFormat;
-			long searchMs = (long)((Stopwatch.GetTimestamp() - searchStartTick) * 1000.0 / Stopwatch.Frequency);
-			AppLog.Write($"AirPlay mirror decryptor auto-selected '{decryptor.Name}' for type={payloadType}, streamConnectionID={streamConnectionId.Value}, format={selectedPayloadFormat}, tested={tested}, payloadBytes={encryptedPayload.Length}, search={searchMs}ms.");
+			selectedFormat = selection.Format;
+			string how = selection.AnnexBFrames.Count > 1 ? "confirmed on next packet" : "remembered";
+			AppLog.Write($"AirPlay mirror decryptor auto-selected '{decryptor.Name}' ({how}) for type={payloadType}, streamConnectionID={streamConnectionId.Value}, format={selection.Format}, tested={selection.Tested}, payloadBytes={encryptedPayload.Length}, search={searchMs}ms{rejected}.");
 			return true;
 		}
 
@@ -823,11 +865,11 @@ public sealed class AirPlayProbeService : IDisposable
 		{
 			if (_loggedDecryptCandidateReportTypes.Add(payloadType))
 			{
-				AppLog.Write($"AirPlay mirror decryptor candidates did not produce clear H.264 for type={payloadType}. tested={tested}, baseCandidates={baseCandidates.Count}, probes=" + string.Join(", ", report));
+				AppLog.Write($"AirPlay mirror decryptor candidates did not produce clear H.264 for type={payloadType}. tested={selection.Tested}, baseCandidates={baseCandidates.Count}{rejected}, probes=" + string.Join(", ", report));
 			}
 		}
 
-		TryWriteMirrorDiagnosticSnapshot(payloadType, packetHeader, encryptedPayload, encryptedKey, aesKey, sharedSecret, eiv, streamConnectionId.Value, rtspTargetSessionId, tested, baseCandidates.Count, report);
+		TryWriteMirrorDiagnosticSnapshot(payloadType, packetHeader, encryptedPayload, encryptedKey, aesKey, sharedSecret, eiv, streamConnectionId.Value, rtspTargetSessionId, selection.Tested, baseCandidates.Count, report);
 		return false;
 	}
 
@@ -845,6 +887,21 @@ public sealed class AirPlayProbeService : IDisposable
 		out string format,
 		out int tested)
 	{
+		return TryFindMirrorDecryptor(baseCandidates, encryptedPayload, report, skipCandidates: 0, out decryptor, out annexB, out format, out tested);
+	}
+
+	// skipCandidates resumes a search: the first skipCandidates candidates in sweep order are counted in
+	// tested but neither decrypted nor reported, so passing a previous tested value continues after it.
+	internal static bool TryFindMirrorDecryptor(
+		IReadOnlyList<AirPlayMirrorDecryptorCandidate> baseCandidates,
+		byte[] encryptedPayload,
+		List<string> report,
+		int skipCandidates,
+		[NotNullWhen(true)] out AirPlayMirrorDecryptor? decryptor,
+		out byte[] annexB,
+		out string format,
+		out int tested)
+	{
 		decryptor = null;
 		annexB = Array.Empty<byte>();
 		format = string.Empty;
@@ -854,6 +911,11 @@ public sealed class AirPlayProbeService : IDisposable
 			foreach (AirPlayMirrorDecryptorCandidate candidate in ExpandPayloadOffsetCandidates(baseCandidate, encryptedPayload.Length))
 			{
 				tested++;
+				if (tested <= skipCandidates)
+				{
+					continue;
+				}
+
 				byte[] preview = AirPlayMirrorDecryptor.DecryptPrefixOnce(candidate, encryptedPayload, ClearH264ProbeBytes);
 				int decryptedLength = encryptedPayload.Length - Math.Max(0, candidate.PayloadOffset);
 				if (MayBeClearH264Payload(preview, decryptedLength))
@@ -878,6 +940,103 @@ public sealed class AirPlayProbeService : IDisposable
 		}
 
 		return false;
+	}
+
+	// The candidate called name, in the sweep for encryptedPayload, if its decryption normalizes to clear H.264.
+	internal static bool TryFindNamedMirrorDecryptor(
+		IReadOnlyList<AirPlayMirrorDecryptorCandidate> baseCandidates,
+		byte[] encryptedPayload,
+		string name,
+		[NotNullWhen(true)] out AirPlayMirrorDecryptor? decryptor,
+		out byte[] annexB,
+		out string format)
+	{
+		decryptor = null;
+		annexB = Array.Empty<byte>();
+		format = string.Empty;
+		foreach (AirPlayMirrorDecryptorCandidate baseCandidate in baseCandidates)
+		{
+			if (!name.StartsWith(baseCandidate.Name, StringComparison.Ordinal))
+			{
+				continue;
+			}
+
+			foreach (AirPlayMirrorDecryptorCandidate candidate in ExpandPayloadOffsetCandidates(baseCandidate, encryptedPayload.Length))
+			{
+				if (!string.Equals(candidate.Name, name, StringComparison.Ordinal))
+				{
+					continue;
+				}
+
+				AirPlayMirrorDecryptor candidateDecryptor = AirPlayMirrorDecryptor.Create(candidate);
+				if (TryNormalizeClearH264Payload(candidateDecryptor.Decrypt(encryptedPayload), out annexB, out format))
+				{
+					decryptor = candidateDecryptor;
+					return true;
+				}
+
+				candidateDecryptor.Dispose();
+				return false;
+			}
+		}
+
+		return false;
+	}
+
+	// One packet's worth of selection. The first candidate in sweep order that normalizes a packet can
+	// be a false match (2026-10-27 09:27:26: 'rtsp-target-uxplay-direct-payload-offset20', avcc-be@9/nal=1,
+	// ahead of the real 'standard'), and committing it left the whole session without video. So:
+	// - rememberedName, the last candidate confirmed in this app run, is tried first and committed at once;
+	// - any other winner is held as pending, with its frame, until the next packet decrypts with it too.
+	//   If that packet does not, the search over the held packet resumes after the rejected candidate,
+	//   and the first candidate that decrypts both packets is committed with both frames.
+	// Takes ownership of pending: its decryptor is either returned in the result or disposed.
+	internal static MirrorDecryptorSelection SelectMirrorDecryptor(
+		IReadOnlyList<AirPlayMirrorDecryptorCandidate> baseCandidates,
+		byte[] encryptedPayload,
+		string? rememberedName,
+		PendingMirrorDecryptor? pending,
+		List<string> report)
+	{
+		List<string> rejected = new List<string>();
+		if (pending != null)
+		{
+			AirPlayMirrorDecryptor candidate = pending.Decryptor;
+			byte[] firstAnnexB = pending.FirstAnnexB;
+			string firstFormat = pending.FirstFormat;
+			int tested = pending.Tested;
+			while (true)
+			{
+				if (TryNormalizeClearH264Payload(candidate.Decrypt(encryptedPayload), out byte[] nextAnnexB, out _))
+				{
+					return MirrorDecryptorSelection.Selected(candidate, firstFormat, tested, new[] { firstAnnexB, nextAnnexB }, rejected);
+				}
+
+				rejected.Add(candidate.Name);
+				candidate.Dispose();
+				if (!TryFindMirrorDecryptor(pending.BaseCandidates, pending.FirstPayload, new List<string>(), tested, out AirPlayMirrorDecryptor? next, out firstAnnexB, out firstFormat, out tested))
+				{
+					break;
+				}
+
+				candidate = next;
+			}
+
+			// No candidate decrypts both packets; this packet starts a new search on its own.
+		}
+
+		if (rememberedName != null &&
+			TryFindNamedMirrorDecryptor(baseCandidates, encryptedPayload, rememberedName, out AirPlayMirrorDecryptor? remembered, out byte[] rememberedAnnexB, out string rememberedFormat))
+		{
+			return MirrorDecryptorSelection.Selected(remembered, rememberedFormat, tested: 1, new[] { rememberedAnnexB }, rejected);
+		}
+
+		if (!TryFindMirrorDecryptor(baseCandidates, encryptedPayload, report, out AirPlayMirrorDecryptor? found, out byte[] annexB, out string format, out int searched))
+		{
+			return MirrorDecryptorSelection.NotFound(searched, rejected);
+		}
+
+		return MirrorDecryptorSelection.Held(new PendingMirrorDecryptor(baseCandidates, encryptedPayload, found, annexB, format, searched), rejected);
 	}
 
 	// TryNormalizeClearH264Payload settles on a first NAL unit using only this many leading bytes (an
@@ -1769,7 +1928,7 @@ public sealed class AirPlayProbeService : IDisposable
 		ulong? rtspTargetSessionId;
 				lock (_mirrorKeyGate)
 				{
-					if ((_mirrorDecryptor != null || _mirrorDecryptorProbePool != null) && _decryptorStreamConnectionId == _streamConnectionId)
+					if ((_mirrorDecryptor != null || _mirrorDecryptorProbePool != null || _pendingMirrorDecryptor != null) && _decryptorStreamConnectionId == _streamConnectionId)
 					{
 						return;
 					}
@@ -1833,8 +1992,11 @@ public sealed class AirPlayProbeService : IDisposable
 			candidate.Name.Contains("uxplay-direct", StringComparison.Ordinal);
 	}
 
+	// Also drops a candidate held for confirmation: every caller is resetting or replacing the selection.
 	private void DisposeMirrorProbePoolLocked()
 	{
+		_pendingMirrorDecryptor?.Dispose();
+		_pendingMirrorDecryptor = null;
 		if (_mirrorDecryptorProbePool == null)
 		{
 			return;
