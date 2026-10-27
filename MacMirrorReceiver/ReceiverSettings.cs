@@ -173,7 +173,12 @@ internal static class ReceiverSettings
 				Directory.CreateDirectory(directory);
 			}
 
-			File.WriteAllText(path, JsonSerializer.Serialize(dto, JsonOptions));
+			// Write-then-rename so a crash mid-write cannot leave a truncated settings.json,
+			// which LoadDto would silently replace with defaults (losing the receiver name and
+			// engine choice).
+			string tempPath = path + ".tmp";
+			File.WriteAllText(tempPath, JsonSerializer.Serialize(dto, JsonOptions));
+			File.Move(tempPath, path, overwrite: true);
 		}
 	}
 

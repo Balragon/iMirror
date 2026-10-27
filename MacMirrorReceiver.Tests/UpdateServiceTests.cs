@@ -157,6 +157,34 @@ public sealed class UpdateServiceTests
 	}
 
 	[Fact]
+	public async Task DownloadSetupAsync_FailsClosed_WhenChecksumUrlIsNotHttps()
+	{
+		byte[] setupBytes = Encoding.UTF8.GetBytes("fake setup bytes");
+		string sha256Sums = Convert.ToHexString(SHA256.HashData(setupBytes)).ToLowerInvariant() + "  iMirror-0.4.0-setup.exe";
+		var update = new UpdateInfo(
+			"0.4.0",
+			IsNewer: true,
+			IsPrerelease: false,
+			"iMirror-0.4.0-setup.exe",
+			"https://example.test/iMirror-0.4.0-setup.exe",
+			setupBytes.Length,
+			"http://example.test/SHA256SUMS",
+			"https://github.com/Balragon/iMirror/releases/tag/v0.4.0");
+		var client = new HttpClient(new StubHttpMessageHandler(request =>
+			request.RequestUri?.AbsolutePath.EndsWith("SHA256SUMS", StringComparison.OrdinalIgnoreCase) == true
+				? TextResponse(sha256Sums)
+				: BytesResponse(setupBytes)));
+		string downloadDirectory = CreateTempDirectory();
+		var service = new UpdateService(client, "0.3.0", downloadDirectory);
+
+		InvalidOperationException ex = await Assert.ThrowsAsync<InvalidOperationException>(
+			() => service.DownloadSetupAsync(update, progress: null, CancellationToken.None));
+
+		Assert.Contains("Cannot verify", ex.Message);
+		Assert.Empty(Directory.GetFiles(downloadDirectory));
+	}
+
+	[Fact]
 	public async Task DownloadSetupAsync_FailsClosed_WhenNoChecksumAssetAvailable()
 	{
 		byte[] setupBytes = Encoding.UTF8.GetBytes("fake setup bytes");
