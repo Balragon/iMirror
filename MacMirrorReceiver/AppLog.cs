@@ -5,8 +5,6 @@ namespace MacMirrorReceiver;
 
 internal static class AppLog
 {
-	private static readonly object Gate = new object();
-
 	private static readonly string LogPath = Path.Combine(
 		AppPaths.LogsDirectory,
 #if HARDWARE_PROBE
@@ -15,23 +13,26 @@ internal static class AppLog
 			"iMirror.log");
 #endif
 
+	// One background writer; callers (network receive, decoder, UI render path) no longer
+	// open/append/close the file under a global lock per line, and the file rotates at
+	// 5 MB x 3 instead of growing for the lifetime of the install.
+	private static readonly RollingFileLog Log = CreateLog();
+
+	private static RollingFileLog CreateLog()
+	{
+		var log = new RollingFileLog(LogPath);
+		AppDomain.CurrentDomain.ProcessExit += (_, _) => log.Flush();
+		return log;
+	}
+
 	public static void Write(string message)
 	{
-		lock (Gate)
-		{
-			try
-			{
-				string? directory = Path.GetDirectoryName(LogPath);
-				if (!string.IsNullOrWhiteSpace(directory))
-				{
-					Directory.CreateDirectory(directory);
-				}
+		Log.Write($"[{DateTimeOffset.Now:O}] {message}");
+	}
 
-				File.AppendAllText(LogPath, $"[{DateTimeOffset.Now:O}] {message}{Environment.NewLine}");
-			}
-			catch
-			{
-			}
-		}
+	/// <summary>Waits for queued lines to reach disk; used before shutdown and process handoffs.</summary>
+	public static void Flush()
+	{
+		Log.Flush();
 	}
 }

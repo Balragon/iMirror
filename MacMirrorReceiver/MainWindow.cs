@@ -838,6 +838,7 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 			CleanupGuards.RunStep("mDNS browser dispose", () => _browser.Dispose());
 			CleanupGuards.RunStep("theme watcher unsubscribe", () => Microsoft.Win32.SystemEvents.UserPreferenceChanged -= SystemEvents_UserPreferenceChanged);
 			CleanupGuards.RunStep("tray icon dispose", DisposeTrayIcon);
+			AppLog.Flush();
 			Application.Current.Shutdown();
 		}
 	}
