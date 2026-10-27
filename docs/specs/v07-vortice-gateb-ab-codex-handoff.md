@@ -1,4 +1,4 @@
-﻿# v0.7 Vortice Gate B A/B + Default-Flip — Codex Handoff
+# v0.7 Vortice Gate B A/B + Default-Flip — Codex Handoff
 
 **Owner:** codex (real-hardware A/B) · **Tracked by:** roadmap v0.7 · **Deadline:** none
 (SharpDX works on net10; modernization, not a forcing function).

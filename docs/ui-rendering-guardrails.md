@@ -1,4 +1,4 @@
-﻿# UI Rendering Guardrails
+# UI Rendering Guardrails
 
 These rules are canonical for iMirror UI work. Cosmetic changes must never destabilize
 the video pipeline.
