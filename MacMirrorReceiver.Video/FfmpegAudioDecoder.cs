@@ -25,12 +25,9 @@ public sealed class FfmpegAudioDecoder : IDisposable
 	private readonly CancellationTokenSource _cts = new CancellationTokenSource();
 	private readonly object _processGate = new object();
 	private readonly object _inputGate = new object();
-	private readonly object _timingGate = new object();
 	private readonly SemaphoreSlim _inputSignal = new SemaphoreSlim(0);
 	private readonly Queue<AacAudioInputFrame> _inputQueue = new Queue<AacAudioInputFrame>();
-	private readonly Queue<AudioFrameTiming> _writtenTiming = new Queue<AudioFrameTiming>();
-	// Far above ffmpeg's real in-flight depth (a few frames); only guards against unbounded growth.
-	private const int MaxWrittenTimingEntries = 256;
+	private readonly AudioTimingQueue _writtenTiming = new AudioTimingQueue();
 	private readonly HashSet<ushort> _seenSequences = new HashSet<ushort>();
 	private readonly Queue<ushort> _seenSequenceOrder = new Queue<ushort>();
 	private long _queuedInputBytes;
@@ -274,15 +271,10 @@ public sealed class FfmpegAudioDecoder : IDisposable
 						await process!.StandardInput.BaseStream.WriteAsync(segment, _cts.Token);
 						await process.StandardInput.BaseStream.FlushAsync(_cts.Token);
 						long endTick = Stopwatch.GetTimestamp();
-						lock (_timingGate)
+						int staleTimings = _writtenTiming.Enqueue(new AudioFrameTiming(packet.RtpTimestamp, packet.Sequence, packet.ReceivedTick, sourceTimestampNanos), startTick);
+						if (staleTimings > 0)
 						{
-							_writtenTiming.Enqueue(new AudioFrameTiming(packet.RtpTimestamp, packet.Sequence, packet.ReceivedTick, sourceTimestampNanos));
-							// ffmpeg emits one PCM frame per written AAC frame; a frame it swallowed
-							// (decode error) would otherwise leave a permanently stale entry at the head.
-							while (_writtenTiming.Count > MaxWrittenTimingEntries)
-							{
-								_writtenTiming.Dequeue();
-							}
+							this.StatusChanged?.Invoke($"Audio decoder realigned frame timing: dropped {staleTimings} stale entr{(staleTimings == 1 ? "y" : "ies")} left by frames ffmpeg never returned.");
 						}
 						RecordWriteMetrics(ElapsedMilliseconds(startTick, endTick));
 					}
@@ -315,13 +307,7 @@ public sealed class FfmpegAudioDecoder : IDisposable
 				try
 				{
 					await ReadExactAsync(stream, buffer, _pcmFrameBytes, _cts.Token);
-					AudioFrameTiming timing;
-					lock (_timingGate)
-					{
-						timing = _writtenTiming.Count > 0
-							? _writtenTiming.Dequeue()
-							: AudioFrameTiming.Empty;
-					}
+					AudioFrameTiming timing = _writtenTiming.DequeueOrEmpty();
 
 					var frame = new AudioPcmFrame
 					{
