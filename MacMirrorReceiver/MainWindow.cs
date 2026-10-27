@@ -2430,13 +2430,21 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 		// cap the decoded/presented output to keep decode + present load manageable.
 		_decoderMaxRenderWidth = Math.Min(ResolveMaxRenderWidth(config), ResponsiveMaxRenderWidth);
 		_decoderOutputFps = ResolveOutputFps(config, _decoderMaxRenderWidth);
-		_decoder = new FfmpegDecoder(config.Width, config.Height, config.Fps, _decoderMaxRenderWidth, _decoderOutputFps);
-		_decoder.DumpH264Enabled = StartupReceiverSettings.Effective.DumpH264;
-		_decoder.StatusChanged += delegate(string message)
+		// Every callback below checks that the raising decoder is still the active one: a
+		// callback from a decoder that StartFreshDecoder has already replaced (its Dispose only
+		// waits ~1 s for the read/write tasks) must not touch the new decoder's state.
+		FfmpegDecoder decoder = new FfmpegDecoder(config.Width, config.Height, config.Fps, _decoderMaxRenderWidth, _decoderOutputFps);
+		_decoder = decoder;
+		decoder.DumpH264Enabled = StartupReceiverSettings.Effective.DumpH264;
+		decoder.StatusChanged += delegate(string message)
 		{
 			string message2 = message;
 			base.Dispatcher.BeginInvoke(new Action(delegate
 			{
+				if (!ReferenceEquals(_decoder, decoder))
+				{
+					return;
+				}
 				_decoderStatus = message2;
 				AppLog.Write("Decoder status: " + message2);
 				if (IsDecoderResyncError(message2))
@@ -2456,27 +2464,45 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 				UpdateDiagnostics();
 			}), DispatcherPriority.Background);
 		};
-		_decoder.FrameDecoded += QueueFrameForPresentation;
-		_decoder.DecoderRestarted += delegate
+		decoder.FrameDecoded += delegate(VideoFrame frame)
 		{
-			base.Dispatcher.Invoke(delegate
+			if (!ReferenceEquals(Volatile.Read(ref _decoder), decoder))
 			{
+				frame.Release();
+				return;
+			}
+			QueueFrameForPresentation(frame);
+		};
+		// BeginInvoke, not Invoke: this fires from the decoder's read task, which Dispose()
+		// waits on from the UI thread, so a blocking Invoke here could deadlock for that wait.
+		decoder.DecoderRestarted += delegate
+		{
+			base.Dispatcher.BeginInvoke(new Action(delegate
+			{
+				if (!ReferenceEquals(_decoder, decoder))
+				{
+					return;
+				}
 				Interlocked.Increment(ref _decoderRestarts);
 				RequireH264Keyframe();
 				AppLog.Write("Decoder restarted (hwaccel fallback); requiring fresh SPS/PPS keyframe.");
 				UpdateDiagnostics();
-			});
+			}));
 		};
-		_decoder.InputQueueOverflowed += delegate
+		decoder.InputQueueOverflowed += delegate
 		{
 			base.Dispatcher.BeginInvoke(new Action(delegate
 			{
+				if (!ReferenceEquals(_decoder, decoder))
+				{
+					return;
+				}
 				RequireH264Keyframe();
 				AppLog.Write("Decoder input queue overflowed; holding video until next keyframe.");
 				UpdateDiagnostics();
 			}));
 		};
-		_decoder.Start();
+		decoder.Start();
 		_decoderStatus = "started";
 		_videoSinkAcceptingInput = true;
 		FlushPendingVideoToSink();
@@ -2535,11 +2561,20 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 					UpdateDiagnostics();
 				}), DispatcherPriority.Background);
 			};
+			// Each callback checks that this decoder is still the active one. Without that, a
+			// queued Faulted from a decoder that StartFreshDecoder (or a synchronous present
+			// failure) already replaced would dispose the replacement and disable the GPU
+			// path for the session, and a late FrameDecoded could hand a texture from the
+			// old device to the new presenter.
 			decoder.StatusChanged += delegate(string message)
 			{
 				string message2 = message;
 				base.Dispatcher.BeginInvoke(new Action(delegate
 				{
+					if (!ReferenceEquals(_mediaFoundationD3DDecoder, decoder))
+					{
+						return;
+					}
 					_decoderStatus = message2;
 					AppLog.Write("Media Foundation D3D11 decoder status: " + message2);
 					SetStatus(message2);
@@ -2551,10 +2586,23 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 				string message2 = message;
 				base.Dispatcher.BeginInvoke(new Action(delegate
 				{
+					if (!ReferenceEquals(_mediaFoundationD3DDecoder, decoder))
+					{
+						AppLog.Write("Ignoring fault from a superseded Media Foundation decoder: " + message2);
+						return;
+					}
 					HandleHighResolutionD3DFatal("High-resolution D3D decoder faulted: " + message2);
 				}), DispatcherPriority.Background);
 			};
-			decoder.FrameDecoded += QueueD3DFrameForPresentation;
+			decoder.FrameDecoded += delegate(IHighResolutionD3DFrame frame)
+			{
+				if (!ReferenceEquals(Volatile.Read(ref _mediaFoundationD3DDecoder), decoder))
+				{
+					frame.Dispose();
+					return;
+				}
+				QueueD3DFrameForPresentation(frame);
+			};
 			decoder.Start();
 			_decoderStatus = "Media Foundation D3D11 decoder started";
 			AppLog.Write($"High-resolution D3D path active for {reason}: {config.Width}x{config.Height}@{config.Fps}, gpuBinding=Vortice, d3d11MultithreadProtected={presenter.IsMultithreadProtected}.");
