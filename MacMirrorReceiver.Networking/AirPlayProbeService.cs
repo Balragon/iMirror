@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Buffers.Binary;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -72,15 +72,11 @@ public sealed class AirPlayProbeService : IDisposable
 	private static readonly Lazy<bool> QualityRenderModeLazy = new Lazy<bool>(
 		() => RenderModeSettings.Load().EffectiveMode == ReceiverRenderModeSetting.Quality);
 	private static bool QualityRenderMode => QualityRenderModeLazy.Value;
-#if HIGH_RESOLUTION_D3D
 	// GPU engine advertises native 2560x1440 by default so the Mac sends native and the GPU decodes
 	// it. The quality flag can still force the path on for local validation.
 	private static readonly Lazy<bool> GpuDisplayAvailableLazy = new Lazy<bool>(
 		() => (QualityRenderMode && RenderModeSettings.ExperimentalQualityEnabled) || RenderModeSettings.GpuVideoEngineEnabled);
 	private static bool GpuDisplayAvailable => GpuDisplayAvailableLazy.Value;
-#else
-	private static bool GpuDisplayAvailable => false;
-#endif
 
 	private readonly CancellationTokenSource _cts = new CancellationTokenSource();
 

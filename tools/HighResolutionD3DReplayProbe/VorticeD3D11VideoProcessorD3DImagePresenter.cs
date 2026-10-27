@@ -1,4 +1,3 @@
-#if HIGH_RESOLUTION_D3D
 using System;
 using System.Windows;
 using System.Windows.Interop;
@@ -374,4 +373,3 @@ public sealed class VorticeD3D11VideoProcessorD3DImagePresenter : IDisposable
 		_d3d11Device.Dispose();
 	}
 }
-#endif

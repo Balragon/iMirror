@@ -1,4 +1,3 @@
-#if HIGH_RESOLUTION_D3D
 using System;
 using D3D11 = Vortice.Direct3D11;
 
@@ -109,4 +108,3 @@ internal static class D3D11VideoProcessorColorSpace
 			+ ", nominalRange=" + colorSpace.Nominal_Range;
 	}
 }
-#endif
