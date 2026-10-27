@@ -15,15 +15,202 @@ namespace MacMirrorReceiver.Tests;
 
 public sealed class AirPlayProbeServiceTests
 {
-	[Theory]
-	[InlineData("AirPlay", true)]
-	[InlineData("airplay", true)]
-	[InlineData("RAOP", false)]
-	[InlineData("AirPlay data", false)]
-	[InlineData("", false)]
-	public void IsMirrorControlLabel_MatchesOnlyAirPlayControlConnection(string label, bool expected)
+	private static readonly TimeSpan SessionEventTimeout = TimeSpan.FromSeconds(5);
+	// How long a connection that must not end the session gets to (wrongly) do so.
+	private static readonly TimeSpan NoSessionEndGrace = TimeSpan.FromMilliseconds(500);
+
+	[Fact]
+	public void IsMirrorTeardown_IsFalseOnlyForATeardownOfNonVideoStreams()
 	{
-		Assert.Equal(expected, AirPlayProbeService.IsMirrorControlLabel(label));
+		Assert.True(AirPlayProbeService.IsMirrorTeardown(Array.Empty<byte>()));
+		Assert.True(AirPlayProbeService.IsMirrorTeardown(new byte[] { 1, 2, 3 }));
+		Assert.True(AirPlayProbeService.IsMirrorTeardown(StreamsPlist(110)));
+		Assert.True(AirPlayProbeService.IsMirrorTeardown(StreamsPlist(96, 110)));
+		Assert.False(AirPlayProbeService.IsMirrorTeardown(StreamsPlist(96)));
+	}
+
+	[Fact]
+	public async Task MirrorSession_EndsWhenTheRaopConnectionThatSetItUpCloses()
+	{
+		// The Mac runs the whole mirroring session on the RAOP port (5000), not the AirPlay port.
+		await using var harness = await SessionHarness.StartAsync();
+		using TcpClient owner = await harness.ConnectAsync(harness.Service.RaopListenerPort);
+		await SendMirrorSetupAsync(owner);
+		await harness.WaitStartedAsync();
+
+		owner.Close();
+
+		await harness.WaitEndedAsync();
+	}
+
+	[Fact]
+	public async Task MirrorSession_EndsOnFullTeardownFromTheOwner_ButNotOnAnAudioOnlyTeardown()
+	{
+		await using var harness = await SessionHarness.StartAsync();
+		using TcpClient owner = await harness.ConnectAsync(harness.Service.RaopListenerPort);
+		await SendMirrorSetupAsync(owner);
+		await harness.WaitStartedAsync();
+
+		await SendRequestAsync(owner, "TEARDOWN", StreamsPlist(96));
+		Assert.False(await harness.EndedWithinAsync(NoSessionEndGrace), "an audio-only TEARDOWN must keep the mirror session");
+
+		await SendRequestAsync(owner, "TEARDOWN", Array.Empty<byte>());
+		await harness.WaitEndedAsync();
+	}
+
+	[Theory]
+	[InlineData(false)]
+	[InlineData(true)]
+	public async Task MirrorSession_SurvivesAnotherConnectionOnTheAirPlayPortClosing(bool oversizedRequest)
+	{
+		await using var harness = await SessionHarness.StartAsync();
+		using TcpClient owner = await harness.ConnectAsync(harness.Service.RaopListenerPort);
+		await SendMirrorSetupAsync(owner);
+		await harness.WaitStartedAsync();
+
+		using (TcpClient stranger = await harness.ConnectAsync(harness.Service.AirPlayListenerPort))
+		{
+			NetworkStream stream = stranger.GetStream();
+			string request = oversizedRequest
+				? "POST /feedback RTSP/1.0\r\nCSeq: 1\r\nContent-Length: 2147483647\r\n\r\n"
+				: "GET /info RTSP/1.0\r\nCSeq: 1\r\n\r\n";
+			await stream.WriteAsync(Encoding.ASCII.GetBytes(request));
+			if (!oversizedRequest)
+			{
+				await ReadResponseAsync(stream);
+			}
+		}
+
+		Assert.False(await harness.EndedWithinAsync(NoSessionEndGrace), "a connection that did not SETUP the session must not end it");
+		owner.Close();
+		await harness.WaitEndedAsync();
+	}
+
+	[Fact]
+	public async Task MirrorSession_OwnershipMovesToTheLatestMirrorSetup()
+	{
+		await using var harness = await SessionHarness.StartAsync();
+		using TcpClient first = await harness.ConnectAsync(harness.Service.RaopListenerPort);
+		await SendMirrorSetupAsync(first, sessionId: 1001);
+		await harness.WaitStartedAsync();
+		using TcpClient second = await harness.ConnectAsync(harness.Service.RaopListenerPort);
+		await SendMirrorSetupAsync(second, sessionId: 1002);
+
+		first.Close();
+
+		Assert.False(await harness.EndedWithinAsync(NoSessionEndGrace), "the replaced connection must not end the newer session");
+		second.Close();
+		await harness.WaitEndedAsync();
+	}
+
+	private static byte[] StreamsPlist(params int[] streamTypes)
+	{
+		return AirPlayBinaryPlist.Write(new Dictionary<string, object>
+		{
+			["streams"] = streamTypes.Select(type => (object)new Dictionary<string, object> { ["type"] = type }).ToList()
+		});
+	}
+
+	private static Task SendMirrorSetupAsync(TcpClient client, ulong sessionId = 1001)
+	{
+		byte[] body = AirPlayBinaryPlist.Write(new Dictionary<string, object>
+		{
+			["streams"] = new List<object>
+			{
+				new Dictionary<string, object> { ["type"] = 110, ["streamConnectionID"] = (long)(sessionId * 7) }
+			}
+		});
+		return SendRequestAsync(client, "SETUP", body, sessionId);
+	}
+
+	private static async Task SendRequestAsync(TcpClient client, string method, byte[] body, ulong sessionId = 1001)
+	{
+		NetworkStream stream = client.GetStream();
+		string head =
+			$"{method} rtsp://127.0.0.1/{sessionId} RTSP/1.0\r\nCSeq: 1\r\n" +
+			(body.Length > 0 ? "Content-Type: application/x-apple-binary-plist\r\n" : string.Empty) +
+			$"Content-Length: {body.Length}\r\n\r\n";
+		await stream.WriteAsync(Encoding.ASCII.GetBytes(head));
+		await stream.WriteAsync(body);
+		await ReadResponseAsync(stream);
+	}
+
+	private static async Task ReadResponseAsync(NetworkStream stream)
+	{
+		using var cts = new CancellationTokenSource(SessionEventTimeout);
+		var header = new List<byte>();
+		var one = new byte[1];
+		while (header.Count < 4 || header[^4] != '\r' || header[^3] != '\n' || header[^2] != '\r' || header[^1] != '\n')
+		{
+			if (await stream.ReadAsync(one, cts.Token) == 0)
+			{
+				throw new EndOfStreamException("Receiver closed the connection before responding.");
+			}
+			header.Add(one[0]);
+		}
+
+		string text = Encoding.ASCII.GetString(header.ToArray());
+		Assert.StartsWith("RTSP/1.0 200", text, StringComparison.Ordinal);
+		int length = 0;
+		foreach (string line in text.Split("\r\n"))
+		{
+			if (line.StartsWith("Content-Length:", StringComparison.OrdinalIgnoreCase))
+			{
+				length = int.Parse(line.AsSpan("Content-Length:".Length).Trim());
+			}
+		}
+		await stream.ReadExactlyAsync(new byte[length], cts.Token);
+	}
+
+	private sealed class SessionHarness : IAsyncDisposable
+	{
+		private readonly TaskCompletionSource _started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+		private readonly TaskCompletionSource _ended = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+		private SessionHarness(AirPlayProbeService service)
+		{
+			Service = service;
+			service.MirrorSessionStarted += () => _started.TrySetResult();
+			service.MirrorSessionEnded += () => _ended.TrySetResult();
+		}
+
+		public AirPlayProbeService Service { get; }
+
+		public static async Task<SessionHarness> StartAsync()
+		{
+			int mdnsPort;
+			using (UdpClient probe = BindExclusiveUdpPort())
+			{
+				mdnsPort = ((IPEndPoint)probe.Client.LocalEndPoint!).Port;
+			}
+			var harness = new SessionHarness(new AirPlayProbeService("iMirror Test", mdnsPort: mdnsPort, listenerPorts: AirPlayListenerPorts.Ephemeral));
+			await harness.Service.StartAsync();
+			Assert.True(harness.Service.IsAirPlayListenerBound);
+			Assert.True(harness.Service.IsRaopListenerBound);
+			return harness;
+		}
+
+		public async Task<TcpClient> ConnectAsync(int port)
+		{
+			var client = new TcpClient();
+			await client.ConnectAsync(IPAddress.Loopback, port);
+			return client;
+		}
+
+		public Task WaitStartedAsync() => _started.Task.WaitAsync(SessionEventTimeout);
+
+		public Task WaitEndedAsync() => _ended.Task.WaitAsync(SessionEventTimeout);
+
+		public async Task<bool> EndedWithinAsync(TimeSpan grace)
+		{
+			return await Task.WhenAny(_ended.Task, Task.Delay(grace)) == _ended.Task;
+		}
+
+		public ValueTask DisposeAsync()
+		{
+			Service.Dispose();
+			return ValueTask.CompletedTask;
+		}
 	}
 
 	[Fact]
