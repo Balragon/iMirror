@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Security.Cryptography;
 
 namespace MacMirrorReceiver.Networking;
@@ -54,8 +54,8 @@ internal sealed class AirPlayAudioDecryptor : IDisposable
 		int blockBytes = (payload.Length / 16) * 16;
 		if (blockBytes > 0)
 		{
-			using ICryptoTransform decryptor = _aes.CreateDecryptor(_aes.Key, _iv);
-			decryptor.TransformBlock(payload.Slice(0, blockBytes).ToArray(), 0, blockBytes, output, 0);
+			// One-shot CBC: no per-packet ICryptoTransform, key copy or input copy.
+			_aes.DecryptCbc(payload.Slice(0, blockBytes), _iv, output.AsSpan(0, blockBytes), PaddingMode.None);
 		}
 
 		int tail = payload.Length - blockBytes;
