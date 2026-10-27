@@ -1,4 +1,4 @@
-# Changelog
+﻿# Changelog
 
 All notable changes to iMirror are documented in this file. The format follows [Keep a Changelog](https://keepachangelog.com/).
 
@@ -13,6 +13,9 @@ For detailed release notes, see [GitHub Releases](https://github.com/Balragon/iM
 - New app icon: two overlapping rounded screen panels (blue and translucent silver) on a dark background, used for the executable, window title, tray and installer. A light-background variant (`Assets/iMirror-light.ico`) and the editable SVG sources (`Assets/icon-source/`) are included.
 - The window title and tray icons follow the Windows system theme (`SystemUsesLightTheme`): light variant on a light theme, dark otherwise, updated live when the theme changes. The executable and installer icons stay dark.
 - Refactor the update workflow (startup/manual checks, notice policy, download, installer handoff) out of `MainWindow` into a new `UpdateController` with injected UI/shutdown seams. No behavior change; the silent-update handoff and SHA-256 fail-closed verification are unchanged.
+- Removed the always-defined `HIGH_RESOLUTION_D3D` compile constant and the `#else` branches that no build ever compiled; moved `VorticeD3D11VideoProcessorD3DImagePresenter` (used only by the replay probe tool) out of the product sources.
+- Local/dev builds now report version 0.7.5 (matching the latest release) instead of 0.2.0, so an untagged build no longer always sees an update as available.
+- The FFmpeg decoder reports when its stderr reader stops mid-session, when an H.264 dump file stops accepting writes, and when the WinGet ffmpeg probe fails, instead of swallowing those errors.
 
 ### Fixed
 

@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Buffers;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -269,6 +269,8 @@ public sealed class FfmpegDecoder : IDisposable
 			string writtenPath = AppendSuffix(basePath, $"d{instance:00}.written");
 			_submittedDump = new DumpFile(submittedPath, MaxDumpBytes);
 			_writtenDump = new DumpFile(writtenPath, MaxDumpBytes);
+			_submittedDump.WriteFailed += message => this.StatusChanged?.Invoke("H264 submitted dump write failed; dump stopped: " + message);
+			_writtenDump.WriteFailed += message => this.StatusChanged?.Invoke("H264 written dump write failed; dump stopped: " + message);
 			this.StatusChanged?.Invoke($"H264 dump enabled (max {MaxDumpBytes / (1024 * 1024)}MB each): submitted={submittedPath}, written={writtenPath}.");
 		}
 		catch (Exception ex)
@@ -299,6 +301,8 @@ public sealed class FfmpegDecoder : IDisposable
 		private long _bytes;
 		private bool _capLogged;
 
+		public event Action<string>? WriteFailed;
+
 		public DumpFile(string path, long maxBytes)
 		{
 			_path = path;
@@ -326,8 +330,12 @@ public sealed class FfmpegDecoder : IDisposable
 					_stream.Flush();
 					_bytes += payload.Length;
 				}
-				catch
+				catch (Exception ex) when (ex is IOException || ex is ObjectDisposedException)
 				{
+					// Stop dumping after the first write failure instead of failing silently on every packet.
+					_stream.Dispose();
+					_stream = null;
+					this.WriteFailed?.Invoke(ex.Message);
 				}
 				return false;
 			}
@@ -476,8 +484,13 @@ public sealed class FfmpegDecoder : IDisposable
 				break;
 			}
 		}
-		catch
+		catch (Exception ex) when (ex is IOException || ex is ObjectDisposedException || ex is OperationCanceledException)
 		{
+			// Normal at shutdown; during a session it means ffmpeg diagnostics stop arriving.
+			if (!_cts.IsCancellationRequested)
+			{
+				this.StatusChanged?.Invoke("FFmpeg stderr reader stopped: " + ex.Message);
+			}
 		}
 	}
 
@@ -935,8 +948,9 @@ public sealed class FfmpegDecoder : IDisposable
 				}
 			}
 		}
-		catch
+		catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException || ex is System.Security.SecurityException)
 		{
+			AppLog.Write("ffmpeg.exe probe of the WinGet package folder failed: " + ex.Message);
 		}
 		return null;
 	}

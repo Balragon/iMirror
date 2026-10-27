@@ -1,4 +1,4 @@
-<Project Sdk="Microsoft.NET.Sdk">
+﻿<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <TargetFramework>net10.0-windows</TargetFramework>
@@ -6,8 +6,6 @@
     <Nullable>enable</Nullable>
     <LangVersion>12.0</LangVersion>
     <PlatformTarget>x64</PlatformTarget>
-    <HighResolutionD3D>true</HighResolutionD3D>
-    <DefineConstants>$(DefineConstants);HIGH_RESOLUTION_D3D</DefineConstants>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="Vortice.Direct3D11" Version="3.8.3" />
@@ -20,7 +18,6 @@
     <Compile Include="..\..\MacMirrorReceiver.Video\HighResolutionD3DInterfaces.cs" Link="Product\HighResolutionD3DInterfaces.cs" />
     <Compile Include="..\..\MacMirrorReceiver.Video\MediaFoundationNative.cs" Link="Product\MediaFoundationNative.cs" />
     <Compile Include="..\..\MacMirrorReceiver.Video\VorticeD3D11VideoFrame.cs" Link="Product\VorticeD3D11VideoFrame.cs" />
-    <Compile Include="..\..\MacMirrorReceiver.Video\VorticeD3D11VideoProcessorD3DImagePresenter.cs" Link="Product\VorticeD3D11VideoProcessorD3DImagePresenter.cs" />
     <Compile Include="..\..\MacMirrorReceiver.Video\VorticeMediaFoundationD3D11Decoder.cs" Link="Product\VorticeMediaFoundationD3D11Decoder.cs" />
   </ItemGroup>
 </Project>

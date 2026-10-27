@@ -1,4 +1,3 @@
-#if HIGH_RESOLUTION_D3D
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -1205,4 +1204,3 @@ public sealed class VorticeMediaFoundationD3D11Decoder : IHighResolutionD3DDecod
 		}
 	}
 }
-#endif

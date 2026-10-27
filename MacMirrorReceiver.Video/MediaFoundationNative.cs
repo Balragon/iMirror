@@ -1,4 +1,3 @@
-#if HIGH_RESOLUTION_D3D
 using System;
 using System.Runtime.InteropServices;
 
@@ -263,4 +262,3 @@ internal static class MftOutputStreamFlags
 {
 	public const int ProvidesSamples = 0x00000100;
 }
-#endif

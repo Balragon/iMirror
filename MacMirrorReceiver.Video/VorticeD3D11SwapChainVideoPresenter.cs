@@ -1,4 +1,3 @@
-#if HIGH_RESOLUTION_D3D
 using System;
 using System.Runtime.InteropServices;
 using System.Windows;
@@ -377,4 +376,3 @@ public sealed class VorticeD3D11SwapChainVideoPresenter : HwndHost, IHighResolut
 	[DllImport("user32.dll", SetLastError = true)]
 	private static extern bool GetClientRect(IntPtr hwnd, out RECT rect);
 }
-#endif

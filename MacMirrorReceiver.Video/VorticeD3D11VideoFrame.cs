@@ -1,4 +1,3 @@
-#if HIGH_RESOLUTION_D3D
 using System;
 using System.Runtime.InteropServices;
 using D3D11 = Vortice.Direct3D11;
@@ -44,4 +43,3 @@ public sealed class VorticeD3D11VideoFrame : IHighResolutionD3DFrame
 		}
 	}
 }
-#endif

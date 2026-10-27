@@ -1,4 +1,4 @@
-# v0.7 Vortice Gate B A/B + Default-Flip — Codex Handoff
+﻿# v0.7 Vortice Gate B A/B + Default-Flip — Codex Handoff
 
 **Owner:** codex (real-hardware A/B) · **Tracked by:** roadmap v0.7 · **Deadline:** none
 (SharpDX works on net10; modernization, not a forcing function).
@@ -89,5 +89,5 @@ reconnect notes, probe results. Cite each log filename and its `gpuBinding=` lin
 | Gate B checklist source | `docs/specs/v07-vortice-migration.md` §5 |
 | SharpDX baseline evidence | `docs/b3-hardening-evidence-2026-06-27.md` |
 | Soak gate + latency report | `scripts/soak-gate.ps1`, `docs/soak-gate.md`, `tools/LatencyAcceptanceReport` |
-| Load-bearing bridge (Vortice) | `MacMirrorReceiver.Video/VorticeD3D11VideoProcessorD3DImagePresenter.cs` (+ the SharpDX twin for A/B) |
+| Load-bearing bridge (Vortice) | `tools/HighResolutionD3DReplayProbe/VorticeD3D11VideoProcessorD3DImagePresenter.cs` (moved out of the product; only the replay probe uses it) (+ the SharpDX twin for A/B) |
 | Binding selector | `MacMirrorReceiver.Video/D3DGpuBindingSelector.cs` |

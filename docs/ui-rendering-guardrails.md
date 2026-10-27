@@ -1,4 +1,4 @@
-# UI Rendering Guardrails
+﻿# UI Rendering Guardrails
 
 These rules are canonical for iMirror UI work. Cosmetic changes must never destabilize
 the video pipeline.
@@ -18,7 +18,7 @@ the video pipeline.
 
 - Pipeline: `VorticeD3D11SwapChainVideoPresenter : HwndHost`.
 - File: `MacMirrorReceiver.Video/VorticeD3D11SwapChainVideoPresenter.cs`.
-- Enabled by the `HIGH_RESOLUTION_D3D` compile constant, which is always defined.
+- Always compiled; the former `HIGH_RESOLUTION_D3D` compile constant was removed once no build without it existed.
 - Activates for Quality mode with streams above 1080p.
 - `HwndHost` is an airspace surface: WPF cannot reliably composite over it.
 - Relevant symbols: `_highResolutionD3DPresenter`, `ShouldUseHighResolutionD3DPath`,
