@@ -1,5 +1,6 @@
 #if HIGH_RESOLUTION_D3D
 using System;
+using System.Runtime.InteropServices;
 using D3D11 = Vortice.Direct3D11;
 
 namespace MacMirrorReceiver.Video;
@@ -18,6 +19,11 @@ public sealed class VorticeD3D11VideoFrame : IHighResolutionD3DFrame
 
 	public required int SubresourceIndex { get; init; }
 
+	// An owned (AddRef'd) IUnknown of the decoder's IMFSample. The MFT's sample allocator recycles a
+	// texture-array slice when the *sample* is released, so holding only the texture lets the next
+	// decode overwrite this slice before it is presented. Released after the texture in Dispose.
+	public IntPtr Sample { get; init; }
+
 	public long ReceivedTick { get; init; }
 
 	public long DecodedTick { get; init; }
@@ -32,6 +38,10 @@ public sealed class VorticeD3D11VideoFrame : IHighResolutionD3DFrame
 		}
 		_disposed = true;
 		Texture.Dispose();
+		if (Sample != IntPtr.Zero)
+		{
+			Marshal.Release(Sample);
+		}
 	}
 }
 #endif
