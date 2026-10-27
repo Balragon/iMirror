@@ -42,33 +42,75 @@ internal static class AirPlayBinaryPlist
 		return output.ToArray();
 	}
 
+	// Guards for sender-supplied plists: a SETUP body comes from any LAN host, so a malformed
+	// object table must fail the parse (return null) rather than crash the receiver.
+	private const int MaxObjectCount = 4096;
+	private const int MaxNestingDepth = 32;
+	private static readonly object ParsingSentinel = new object();
+
+	/// <summary>
+	/// Parses a binary plist. Returns null when the data is not a well-formed plist (bad header,
+	/// truncated tables, invalid sizes, object-reference cycles, or nesting deeper than
+	/// <see cref="MaxNestingDepth"/>). Never throws on malformed input.
+	/// </summary>
 	public static object? Read(byte[] data)
 	{
-		if (data.Length < 40 || Encoding.ASCII.GetString(data, 0, 8) != "bplist00")
+		if (data == null || data.Length < 40 || Encoding.ASCII.GetString(data, 0, 8) != "bplist00")
 		{
 			return null;
 		}
 
+		try
+		{
+			return ReadCore(data);
+		}
+		catch (Exception ex) when (ex is InvalidDataException
+			or IndexOutOfRangeException
+			or ArgumentException
+			or ArithmeticException)
+		{
+			return null;
+		}
+	}
+
+	private static object? ReadCore(byte[] data)
+	{
 		int trailer = data.Length - 32;
 		int offsetSize = data[trailer + 6];
 		int objectRefSize = data[trailer + 7];
 		ulong objectCount = ReadUInt64(data, trailer + 8);
 		ulong topObject = ReadUInt64(data, trailer + 16);
 		ulong offsetTableOffset = ReadUInt64(data, trailer + 24);
-		if (objectCount > 4096 || topObject >= objectCount)
+		if (!IsValidIntegerSize(offsetSize) || !IsValidIntegerSize(objectRefSize))
 		{
-			return null;
+			throw new InvalidDataException("Invalid binary plist integer size.");
+		}
+		if (objectCount == 0 || objectCount > MaxObjectCount || topObject >= objectCount)
+		{
+			throw new InvalidDataException("Invalid binary plist object count.");
+		}
+		if (offsetTableOffset < 8 || offsetTableOffset > (ulong)trailer ||
+			(ulong)trailer - offsetTableOffset < objectCount * (ulong)offsetSize)
+		{
+			throw new InvalidDataException("Invalid binary plist offset table.");
 		}
 
 		long[] offsets = new long[objectCount];
 		for (int i = 0; i < offsets.Length; i++)
 		{
-			offsets[i] = ReadSizedInteger(data, checked((int)offsetTableOffset + (i * offsetSize)), offsetSize);
+			long offset = ReadSizedInteger(data, checked((int)offsetTableOffset + (i * offsetSize)), offsetSize);
+			if (offset < 8 || offset >= trailer)
+			{
+				throw new InvalidDataException("Binary plist object offset is out of range.");
+			}
+			offsets[i] = offset;
 		}
 
 		Dictionary<int, object?> cache = new Dictionary<int, object?>();
-		return ReadObject((int)topObject, data, offsets, objectRefSize, cache);
+		return ReadObject((int)topObject, data, offsets, objectRefSize, cache, 0);
 	}
+
+	private static bool IsValidIntegerSize(int size) => size is 1 or 2 or 4 or 8;
 
 	private static int AddObject(object value, List<PlistObject> objects)
 	{
@@ -121,10 +163,24 @@ internal static class AirPlayBinaryPlist
 		}
 	}
 
-	private static object? ReadObject(int index, byte[] data, long[] offsets, int objectRefSize, Dictionary<int, object?> cache)
+	private static object? ReadObject(int index, byte[] data, long[] offsets, int objectRefSize, Dictionary<int, object?> cache, int depth)
 	{
+		if (index < 0 || index >= offsets.Length)
+		{
+			throw new InvalidDataException("Binary plist object reference is out of range.");
+		}
+		if (depth > MaxNestingDepth)
+		{
+			throw new InvalidDataException("Binary plist nesting is too deep.");
+		}
 		if (cache.TryGetValue(index, out object? cached))
 		{
+			if (ReferenceEquals(cached, ParsingSentinel))
+			{
+				// A container that (directly or indirectly) references itself would otherwise
+				// recurse without bound and take the process down with a StackOverflowException.
+				throw new InvalidDataException("Binary plist contains an object reference cycle.");
+			}
 			return cached;
 		}
 
@@ -133,6 +189,8 @@ internal static class AirPlayBinaryPlist
 		int kind = marker & 0xF0;
 		int info = marker & 0x0F;
 
+		// Mark the object as in progress before descending so cycles are detected.
+		cache[index] = ParsingSentinel;
 		object? value = kind switch
 		{
 			0x00 => marker == 0x09,
@@ -141,8 +199,8 @@ internal static class AirPlayBinaryPlist
 			0x40 => ReadData(data, offset, info),
 			0x50 => ReadAsciiString(data, offset, info),
 			0x60 => ReadUtf16String(data, offset, info),
-			0xA0 => ReadArray(data, offsets, objectRefSize, cache, offset, info),
-			0xD0 => ReadDictionary(data, offsets, objectRefSize, cache, offset, info),
+			0xA0 => ReadArray(data, offsets, objectRefSize, cache, offset, info, depth + 1),
+			0xD0 => ReadDictionary(data, offsets, objectRefSize, cache, offset, info, depth + 1),
 			_ => null
 		};
 		cache[index] = value;
@@ -168,19 +226,19 @@ internal static class AirPlayBinaryPlist
 		return Encoding.BigEndianUnicode.GetString(bytes);
 	}
 
-	private static List<object?> ReadArray(byte[] data, long[] offsets, int objectRefSize, Dictionary<int, object?> cache, int offset, int info)
+	private static List<object?> ReadArray(byte[] data, long[] offsets, int objectRefSize, Dictionary<int, object?> cache, int offset, int info, int depth)
 	{
 		(int count, int start) = ReadCount(data, offset, info);
 		List<object?> values = new List<object?>();
 		for (int i = 0; i < count; i++)
 		{
 			int childIndex = (int)ReadSizedInteger(data, start + (i * objectRefSize), objectRefSize);
-			values.Add(ReadObject(childIndex, data, offsets, objectRefSize, cache));
+			values.Add(ReadObject(childIndex, data, offsets, objectRefSize, cache, depth));
 		}
 		return values;
 	}
 
-	private static Dictionary<string, object?> ReadDictionary(byte[] data, long[] offsets, int objectRefSize, Dictionary<int, object?> cache, int offset, int info)
+	private static Dictionary<string, object?> ReadDictionary(byte[] data, long[] offsets, int objectRefSize, Dictionary<int, object?> cache, int offset, int info, int depth)
 	{
 		(int count, int start) = ReadCount(data, offset, info);
 		Dictionary<string, object?> values = new Dictionary<string, object?>(StringComparer.Ordinal);
@@ -188,10 +246,10 @@ internal static class AirPlayBinaryPlist
 		{
 			int keyIndex = (int)ReadSizedInteger(data, start + (i * objectRefSize), objectRefSize);
 			int valueIndex = (int)ReadSizedInteger(data, start + ((count + i) * objectRefSize), objectRefSize);
-			string? key = ReadObject(keyIndex, data, offsets, objectRefSize, cache) as string;
+			string? key = ReadObject(keyIndex, data, offsets, objectRefSize, cache, depth) as string;
 			if (key != null)
 			{
-				values[key] = ReadObject(valueIndex, data, offsets, objectRefSize, cache);
+				values[key] = ReadObject(valueIndex, data, offsets, objectRefSize, cache, depth);
 			}
 		}
 		return values;
@@ -210,7 +268,16 @@ internal static class AirPlayBinaryPlist
 			throw new InvalidDataException("Invalid binary plist count marker.");
 		}
 		int lengthBytes = 1 << (marker & 0x0F);
-		return ((int)ReadSizedInteger(data, offset + 2, lengthBytes), offset + 2 + lengthBytes);
+		if (lengthBytes > 8)
+		{
+			throw new InvalidDataException("Invalid binary plist count size.");
+		}
+		long count = ReadSizedInteger(data, offset + 2, lengthBytes);
+		if (count < 0 || count > data.Length)
+		{
+			throw new InvalidDataException("Binary plist count exceeds the data length.");
+		}
+		return ((int)count, offset + 2 + lengthBytes);
 	}
 
 	private static void WriteObject(Stream stream, PlistObject value, int objectRefSize)
@@ -225,9 +292,21 @@ internal static class AirPlayBinaryPlist
 				stream.Write(data.Value);
 				break;
 			case PlistString text:
-				byte[] bytes = Encoding.ASCII.GetBytes(text.Value);
-				WriteCountMarker(stream, 0x50, bytes.Length);
-				stream.Write(bytes);
+				if (IsAscii(text.Value))
+				{
+					byte[] bytes = Encoding.ASCII.GetBytes(text.Value);
+					WriteCountMarker(stream, 0x50, bytes.Length);
+					stream.Write(bytes);
+				}
+				else
+				{
+					// bplist ASCII strings cannot carry non-ASCII (a receiver name like "거실 TV"
+					// came out as "?? TV" in /info); use the UTF-16BE string type, whose count
+					// is in UTF-16 code units.
+					byte[] bytes = Encoding.BigEndianUnicode.GetBytes(text.Value);
+					WriteCountMarker(stream, 0x60, bytes.Length / 2);
+					stream.Write(bytes);
+				}
 				break;
 			case PlistReal number:
 			{
@@ -264,6 +343,18 @@ internal static class AirPlayBinaryPlist
 				}
 				break;
 		}
+	}
+
+	private static bool IsAscii(string value)
+	{
+		foreach (char c in value)
+		{
+			if (c > 0x7F)
+			{
+				return false;
+			}
+		}
+		return true;
 	}
 
 	private static void WriteCountMarker(Stream stream, int marker, int count)
@@ -333,6 +424,10 @@ internal static class AirPlayBinaryPlist
 
 	private static long ReadSizedInteger(byte[] data, int offset, int size)
 	{
+		if (offset < 0 || size < 0 || size > data.Length - offset)
+		{
+			throw new InvalidDataException("Binary plist integer is truncated.");
+		}
 		long value = 0;
 		for (int i = 0; i < size; i++)
 		{

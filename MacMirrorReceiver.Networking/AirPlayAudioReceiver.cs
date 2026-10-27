@@ -32,8 +32,10 @@ internal sealed class AirPlayAudioReceiver : IDisposable
 	private Task? _controlTask;
 	private AudioDumpWriter? _dump;
 
-	private byte[]? _aesKey;
-	private byte[]? _eiv;
+	// The sender named by SETUP. The UDP sockets are bound to IPAddress.Any, so without this
+	// check any LAN host could inject packets into the decrypt/decode path.
+	private IPAddress? _remoteAddress;
+	private long _rejectedPacketCount;
 	private AirPlayAudioDecryptor? _decryptor;
 	private AirPlayAudioStreamInfo _info = AirPlayAudioStreamInfo.Empty;
 	private long _decryptedFrameCount;
@@ -85,8 +87,8 @@ internal sealed class AirPlayAudioReceiver : IDisposable
 				DataPort = ((IPEndPoint)_dataClient.Client.LocalEndPoint!).Port;
 				ControlPort = ((IPEndPoint)_controlClient.Client.LocalEndPoint!).Port;
 				_info = info;
-				_aesKey = aesKey == null ? null : CopyOf(aesKey);
-				_eiv = eiv == null ? null : CopyOf(eiv);
+				_remoteAddress = remoteAddress;
+				_rejectedPacketCount = 0;
 				_decryptor = AirPlayAudioDecryptor.TryCreate(crypto?.AesKey, crypto?.SharedSecret, crypto?.Eiv);
 				_packetCount = 0;
 				_decryptedFrameCount = 0;
@@ -145,8 +147,6 @@ internal sealed class AirPlayAudioReceiver : IDisposable
 			_controlClient = null;
 			_dump = null;
 			_decryptor = null;
-			_aesKey = null;
-			_eiv = null;
 		}
 
 		try
@@ -171,6 +171,10 @@ internal sealed class AirPlayAudioReceiver : IDisposable
 			try
 			{
 				UdpReceiveResult result = await client.ReceiveAsync(token);
+				if (!IsExpectedSender(result.RemoteEndPoint, "data"))
+				{
+					continue;
+				}
 				HandleDataPacket(result.Buffer);
 			}
 			catch (OperationCanceledException)
@@ -199,6 +203,10 @@ internal sealed class AirPlayAudioReceiver : IDisposable
 			try
 			{
 				UdpReceiveResult result = await client.ReceiveAsync(token);
+				if (!IsExpectedSender(result.RemoteEndPoint, "control"))
+				{
+					continue;
+				}
 				HandleControlPacket(result.Buffer);
 			}
 			catch (OperationCanceledException)
@@ -216,19 +224,46 @@ internal sealed class AirPlayAudioReceiver : IDisposable
 		}
 	}
 
+	private bool IsExpectedSender(IPEndPoint remote, string socketLabel)
+	{
+		IPAddress? expected;
+		lock (_gate)
+		{
+			expected = _remoteAddress;
+		}
+
+		// SETUP always arrives over TCP with a known peer, so expected is only null when the
+		// receiver was started without one; in that case there is nothing to filter against.
+		if (expected == null || PeerAddress.Matches(expected, remote.Address))
+		{
+			return true;
+		}
+
+		long rejected = Interlocked.Increment(ref _rejectedPacketCount);
+		if (rejected <= 3 || rejected % 1000 == 0)
+		{
+			AppLog.Write($"AirPlay audio {socketLabel} packet from {remote} rejected: sender is {expected} (rejected={rejected}).");
+		}
+		return false;
+	}
+
 	private void HandleDataPacket(byte[] packet)
 	{
-		if (packet.Length < RtpHeaderLength)
+		if (!RtpPacketHeader.TryParse(packet, out RtpPacketHeader rtp))
 		{
 			return;
 		}
 
-		int version = (packet[0] >> 6) & 0x03;
-		bool marker = (packet[1] & 0x80) != 0;
-		int payloadType = packet[1] & 0x7F;
-		int sequence = BinaryPrimitives.ReadUInt16BigEndian(packet.AsSpan(2, 2));
-		uint timestamp = BinaryPrimitives.ReadUInt32BigEndian(packet.AsSpan(4, 4));
-		uint ssrc = BinaryPrimitives.ReadUInt32BigEndian(packet.AsSpan(8, 4));
+		int version = rtp.Version;
+		if (version != 2)
+		{
+			return;
+		}
+		bool marker = rtp.Marker;
+		int payloadType = rtp.PayloadType;
+		int sequence = rtp.SequenceNumber;
+		uint timestamp = rtp.Timestamp;
+		uint ssrc = rtp.Ssrc;
 		int payloadLength = packet.Length - RtpHeaderLength;
 
 		long count = Interlocked.Increment(ref _packetCount);
@@ -342,12 +377,6 @@ internal sealed class AirPlayAudioReceiver : IDisposable
 		StopInternal();
 	}
 
-	private static byte[] CopyOf(byte[] source)
-	{
-		byte[] copy = new byte[source.Length];
-		Buffer.BlockCopy(source, 0, copy, 0, source.Length);
-		return copy;
-	}
 
 	// Private local capture gated by Settings or IMIRROR_DUMP_AUDIO. Writes a length-framed raw RTP stream
 	// (every packet, header included) plus a sidecar meta.json that records the FairPlay-unwrapped

@@ -12,8 +12,12 @@ namespace MacMirrorReceiver.Video;
 
 public sealed class VorticeMediaFoundationD3D11Decoder : IHighResolutionD3DDecoder
 {
-	private const int MaxQueuedInputPackets = 128;
-	private const long MaxQueuedInputBytes = 16L * 1024L * 1024L;
+	// Session start arrives as one burst while the MFT is still producing its first frame: video backs up on
+	// the TCP connection during FairPlay decryptor warm-up (1.5-6s measured) and MainWindow also flushes what
+	// it buffered before the decoder existed. 128 overflowed on a real Mac session (234+ packets).
+	// Same caps as FfmpegDecoder.
+	private const int MaxQueuedInputPackets = 1024;
+	private const long MaxQueuedInputBytes = 64L * 1024L * 1024L;
 	private const long WriteStallThresholdMs = 35;
 	private const long MaxDumpBytes = 512L * 1024L * 1024L;
 	private const int MfVersion = 0x00020070;
@@ -31,6 +35,8 @@ public sealed class VorticeMediaFoundationD3D11Decoder : IHighResolutionD3DDecod
 	private readonly SemaphoreSlim _inputSignal = new SemaphoreSlim(0);
 
 	private long _queuedInputBytes;
+	private long _overflowDropsSinceStatus;
+	private long _lastOverflowStatusTick;
 	private Task? _decodeTask;
 	private IntPtr _transformPtr;
 	private MfTransform? _transform;
@@ -239,10 +245,15 @@ public sealed class VorticeMediaFoundationD3D11Decoder : IHighResolutionD3DDecod
 		bool shouldSignal = false;
 		int flushed = 0;
 		bool droppedIncoming = false;
+		long overflowDropsToReport = 0;
+		int queuedAfter;
 		lock (_inputGate)
 		{
 			if (_inputQueue.Count >= MaxQueuedInputPackets || _queuedInputBytes + payload.Length > MaxQueuedInputBytes)
 			{
+				// Keep the queued GOP and drop only the incoming non-IDR packet. Flushing the queue and
+				// waiting for the next keyframe (FfmpegDecoder's policy) loses video until reconnect:
+				// Mac senders send one IDR per connection and none on demand.
 				if (ContainsIdrNal(payload))
 				{
 					flushed = _inputQueue.Count;
@@ -254,6 +265,7 @@ public sealed class VorticeMediaFoundationD3D11Decoder : IHighResolutionD3DDecod
 				{
 					droppedIncoming = true;
 					DroppedInputPackets++;
+					_overflowDropsSinceStatus++;
 				}
 			}
 
@@ -264,22 +276,37 @@ public sealed class VorticeMediaFoundationD3D11Decoder : IHighResolutionD3DDecod
 				_queuedInputBytes += payload.Length;
 				Interlocked.Increment(ref _acceptedInputPackets);
 			}
+
+			// One status line per second at most; the first drop of an overflow reports immediately.
+			if (_overflowDropsSinceStatus > 0)
+			{
+				long now = Environment.TickCount64;
+				if (now - _lastOverflowStatusTick >= 1000)
+				{
+					overflowDropsToReport = _overflowDropsSinceStatus;
+					_overflowDropsSinceStatus = 0;
+					_lastOverflowStatusTick = now;
+				}
+			}
+			queuedAfter = _inputQueue.Count;
 		}
 
 		if (flushed > 0)
 		{
 			StatusChanged?.Invoke($"Media Foundation decoder input overflow: flushed {flushed} queued packet(s); resuming from incoming keyframe.");
 		}
-		else if (droppedIncoming)
+		if (overflowDropsToReport > 0)
 		{
-			StatusChanged?.Invoke("Media Foundation decoder input overflow: dropped incoming non-keyframe and preserved queued GOP.");
+			StatusChanged?.Invoke($"Media Foundation decoder input overflow: dropped {overflowDropsToReport:N0} incoming non-keyframe(s) since last report and preserved queued GOP (queued={queuedAfter}).");
 		}
 
 		if (shouldSignal)
 		{
 			_inputSignal.Release();
 		}
-		return !droppedIncoming;
+		// A backpressure drop is counted in DroppedInputPackets, not reported as unavailable input:
+		// false makes MainWindow log "input unavailable" once per dropped packet.
+		return true;
 	}
 
 	public int ClearPendingInput()
@@ -627,6 +654,9 @@ public sealed class VorticeMediaFoundationD3D11Decoder : IHighResolutionD3DDecod
 				Fps = _fps,
 				Texture = texture,
 				SubresourceIndex = subresourceIndex,
+				// The frame's own sample reference keeps the allocator from reusing this slice until the
+				// frame is presented or dropped; DrainOutput still releases the decoder's reference.
+				Sample = Marshal.GetIUnknownForObject(sample),
 				ReceivedTick = packet.ReceivedTick,
 				DecodedTick = Stopwatch.GetTimestamp(),
 				SourceTimestampNanos = packet.SourceTimestampNanos

@@ -2,6 +2,7 @@ using System;
 using System.Buffers.Binary;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.IO;
 using System.Linq;
@@ -24,13 +25,23 @@ public sealed class AirPlayProbeService : IDisposable
 	private const string AirPlayServiceType = "_airplay._tcp.local";
 	private const string RaopServiceType = "_raop._tcp.local";
 	private const int MdnsPort = 5353;
-	private const int AirPlayPort = 7000;
-	private const int RaopPort = 5000;
+	// Ports advertised in the legacy XML /info body; the live listeners use _ports.
 	private const int DataPort = 7100;
 	private const int EventPort = 7101;
 	private const int TimingPort = 7102;
 	private const int MaxH264PrefixProbeBytes = 64;
 	private const int MaxH264NalUnitLength = 8 * 1024 * 1024;
+	// Largest mirror packet payload the framer accepts (a 4K IDR at a high bitrate is a few MiB).
+	private const int MirrorPacketHeaderBytes = 128;
+	private const int MaxMirrorPayloadBytes = 8 * 1024 * 1024;
+	// The reassembly buffer must be able to hold one full header + payload, otherwise a packet
+	// larger than the buffer could never be reassembled and the framer would resync into garbage.
+	private const int MaxPendingDataBytes = MirrorPacketHeaderBytes + MaxMirrorPayloadBytes;
+	private const int PendingDataTailBytes = 128 * 1024;
+	// Bound on the exhaustive key/IV/offset candidate sweep (~4,000 AES-CTR passes over the
+	// packet per attempt). It exists to recover from an unknown key derivation once per
+	// session, not to run on every packet that fails H.264 normalization.
+	private const int MaxDecryptorSweepAttemptsPerSession = 4;
 	private const int StableDisplayWidth = 1920;
 	private const int StableDisplayHeight = 1080;
 	// GPU (MediaFoundation/D3D11) path advertised geometry. Set to the Mac's native 2560x1440 so the
@@ -56,17 +67,31 @@ public sealed class AirPlayProbeService : IDisposable
 
 	private static readonly IPAddress MulticastAddress = IPAddress.Parse("224.0.0.251");
 	private static readonly IPEndPoint MulticastEndpoint = new IPEndPoint(MulticastAddress, MdnsPort);
-	private static readonly bool QualityRenderMode = RenderModeSettings.Load().EffectiveMode == ReceiverRenderModeSetting.Quality;
+	// Evaluated on first use rather than at type load: constructing the service (e.g. in a unit
+	// test) must not read the developer's real settings file.
+	private static readonly Lazy<bool> QualityRenderModeLazy = new Lazy<bool>(
+		() => RenderModeSettings.Load().EffectiveMode == ReceiverRenderModeSetting.Quality);
+	private static bool QualityRenderMode => QualityRenderModeLazy.Value;
 #if HIGH_RESOLUTION_D3D
 	// GPU engine advertises native 2560x1440 by default so the Mac sends native and the GPU decodes
 	// it. The quality flag can still force the path on for local validation.
-	private static readonly bool GpuDisplayAvailable = (QualityRenderMode && RenderModeSettings.ExperimentalQualityEnabled)
-		|| RenderModeSettings.GpuVideoEngineEnabled;
+	private static readonly Lazy<bool> GpuDisplayAvailableLazy = new Lazy<bool>(
+		() => (QualityRenderMode && RenderModeSettings.ExperimentalQualityEnabled) || RenderModeSettings.GpuVideoEngineEnabled);
+	private static bool GpuDisplayAvailable => GpuDisplayAvailableLazy.Value;
 #else
-	private static readonly bool GpuDisplayAvailable = false;
+	private static bool GpuDisplayAvailable => false;
 #endif
 
 	private readonly CancellationTokenSource _cts = new CancellationTokenSource();
+
+	// Limits for the RTSP/HTTP control connections. Every LAN host can open these ports, so a
+	// request must not be able to pin an unbounded buffer or a thread for an unbounded time.
+	// Real AirPlay bodies (SETUP plists, pair-* blobs, feedback) are well under 64 KiB.
+	internal const int MaxRequestHeaderBytes = 64 * 1024;
+	internal const int MaxRequestBodyBytes = 1024 * 1024;
+	internal const int MaxControlConnections = 32;
+	internal static readonly TimeSpan DefaultRequestReadTimeout = TimeSpan.FromSeconds(15);
+	private int _activeControlConnections;
 	private readonly int _mdnsPort;
 	private readonly string _displayName;
 	private readonly string _hostName;
@@ -79,7 +104,8 @@ public sealed class AirPlayProbeService : IDisposable
 	private readonly bool _dumpAudio;
 	private readonly AirPlayPairingContext _pairing = new AirPlayPairingContext();
 	private readonly AirPlayFairPlayContext _fairPlay = new AirPlayFairPlayContext();
-	private readonly AirPlayTimingClient _timingClient = new AirPlayTimingClient(TimingPort);
+	private readonly AirPlayTimingClient _timingClient;
+	private readonly AirPlayListenerPorts _ports;
 	private readonly AirPlayAudioReceiver _audioReceiver = new AirPlayAudioReceiver();
 	private readonly AirPlaySetupContext _setup;
 	private readonly object _mirrorKeyGate = new object();
@@ -101,8 +127,13 @@ public sealed class AirPlayProbeService : IDisposable
 	public bool IsMdnsBound => _mdnsBound;
 	public bool IsAirPlayListenerBound => _airPlayListener != null;
 	public bool IsRaopListenerBound => _raopListener != null;
-	public int AirPlayListenerPort => AirPlayPort;
-	public int RaopListenerPort => RaopPort;
+	public int AirPlayListenerPort => BoundPort(_airPlayListener) ?? _ports.AirPlay;
+	public int RaopListenerPort => BoundPort(_raopListener) ?? _ports.Raop;
+
+	private static int? BoundPort(TcpListener? listener)
+	{
+		return listener?.LocalEndpoint is IPEndPoint endpoint ? endpoint.Port : null;
+	}
 	public string? AirPlayListenerBindError => _airPlayListenerBindError;
 	public string? RaopListenerBindError => _raopListenerBindError;
 
@@ -131,6 +162,11 @@ public sealed class AirPlayProbeService : IDisposable
 	private TcpClient? _activeDataClient;
 	private bool _announcedIdentitylessMirrorSession;
 	private AirPlayMirrorDecryptor? _mirrorDecryptor;
+	private int _decryptorSweepAttempts;
+	// Address of the host whose SETUP most recently established the session. Only this host may
+	// open the TCP data stream; any other LAN host could otherwise supersede (and so terminate)
+	// the active sender's video connection just by connecting to the data port.
+	private IPAddress? _mirrorSetupAddress;
 	private List<AirPlayMirrorDecryptor>? _mirrorDecryptorProbePool;
 	private bool _loggedWaitingForMirrorDecryptor;
 	private readonly HashSet<int> _loggedDecryptPayloadFailureTypes = new HashSet<int>();
@@ -155,9 +191,12 @@ public sealed class AirPlayProbeService : IDisposable
 		bool advertiseAudio = AdvertiseAudioCapabilitiesDefault,
 		bool writeDiagnostics = false,
 		bool dumpAudio = false,
-		int mdnsPort = MdnsPort)
+		int mdnsPort = MdnsPort,
+		AirPlayListenerPorts? listenerPorts = null)
 	{
 		_mdnsPort = mdnsPort;
+		_ports = listenerPorts ?? AirPlayListenerPorts.Default;
+		_timingClient = new AirPlayTimingClient(_ports.Timing);
 		_displayName = SanitizeLabel(displayName);
 		_hostName = SanitizeLabel(Environment.MachineName) + ".local";
 		_deviceId = ResolveDeviceId();
@@ -244,11 +283,11 @@ public sealed class AirPlayProbeService : IDisposable
 			_mdnsClient = mdnsClient;
 			_mdnsBound = true;
 
-			_airPlayListener = TryStartListener(AirPlayPort, "AirPlay");
-			_raopListener = TryStartListener(RaopPort, "RAOP");
-			_dataListener = TryStartListener(DataPort, "AirPlay data");
-			_eventListener = TryStartListener(EventPort, "AirPlay event");
-			_timingListener = TryStartListener(TimingPort, "AirPlay timing");
+			_airPlayListener = TryStartListener(_ports.AirPlay, "AirPlay", error => _airPlayListenerBindError = error);
+			_raopListener = TryStartListener(_ports.Raop, "RAOP", error => _raopListenerBindError = error);
+			_dataListener = TryStartListener(_ports.Data, "AirPlay data", null);
+			_eventListener = TryStartListener(_ports.Event, "AirPlay event", null);
+			_timingListener = TryStartListener(_ports.Timing, "AirPlay timing", null);
 
 			_receiveTask = Task.Run(ReceiveLoopAsync);
 			_announceTask = Task.Run(AnnounceLoopAsync);
@@ -300,34 +339,21 @@ public sealed class AirPlayProbeService : IDisposable
 		_timingListener = null;
 	}
 
-	private TcpListener? TryStartListener(int port, string label)
+	private static TcpListener? TryStartListener(int port, string label, Action<string?>? setBindError)
 	{
 		try
 		{
 			var listener = new TcpListener(IPAddress.Any, port);
 			listener.Start();
-			SetListenerBindError(port, null);
-			AppLog.Write($"{label} receiver listener started on port {port}.");
+			setBindError?.Invoke(null);
+			AppLog.Write($"{label} receiver listener started on port {BoundPort(listener) ?? port}.");
 			return listener;
 		}
 		catch (Exception ex)
 		{
-			SetListenerBindError(port, ex.Message);
+			setBindError?.Invoke(ex.Message);
 			AppLog.Write($"{label} receiver listener unavailable on port {port}: {ex.Message}");
 			return null;
-		}
-	}
-
-	private void SetListenerBindError(int port, string? error)
-	{
-		switch (port)
-		{
-		case AirPlayPort:
-			_airPlayListenerBindError = error;
-			break;
-		case RaopPort:
-			_raopListenerBindError = error;
-			break;
 		}
 	}
 
@@ -362,6 +388,7 @@ public sealed class AirPlayProbeService : IDisposable
 
 	private async Task HandleProbeClientAsync(TcpClient client, string label)
 	{
+		bool countedControlConnection = false;
 		using (client)
 		{
 			try
@@ -371,6 +398,14 @@ public sealed class AirPlayProbeService : IDisposable
 					await HandleDataClientAsync(client);
 					return;
 				}
+
+				if (Interlocked.Increment(ref _activeControlConnections) > MaxControlConnections)
+				{
+					Interlocked.Decrement(ref _activeControlConnections);
+					AppLog.Write($"{label} control connection from {client.Client.RemoteEndPoint} rejected: {MaxControlConnections} connections already open.");
+					return;
+				}
+				countedControlConnection = true;
 
 				client.ReceiveTimeout = 2500;
 				client.SendTimeout = 2500;
@@ -425,6 +460,25 @@ public sealed class AirPlayProbeService : IDisposable
 					EndMirrorSessionIfAnnounced($"{label} receiver client closed");
 				}
 			}
+			catch (Exception ex)
+			{
+				// Anything else (a parser bug, a malformed request that slipped past the plist
+				// guards, an event subscriber throwing) used to escape the fire-and-forget Task.Run
+				// in AcceptLoopAsync: the connection vanished with no log line and the mirror
+				// session state was never reset. Log it with the stack and tear down explicitly.
+				AppLog.Write($"{label} receiver client failed with an unexpected error: {ex}");
+				if (IsMirrorControlLabel(label))
+				{
+					EndMirrorSessionIfAnnounced($"{label} receiver client failed: {ex.GetType().Name}");
+				}
+			}
+			finally
+			{
+				if (countedControlConnection)
+				{
+					Interlocked.Decrement(ref _activeControlConnections);
+				}
+			}
 		}
 	}
 
@@ -435,8 +489,19 @@ public sealed class AirPlayProbeService : IDisposable
 
 	private async Task HandleDataClientAsync(TcpClient client)
 	{
-		SetStatus("AirPlay data stream connected.");
 		EndPoint? remote = client.Client.RemoteEndPoint;
+		IPAddress? setupAddress;
+		lock (_mirrorKeyGate)
+		{
+			setupAddress = _mirrorSetupAddress;
+		}
+		if (!PeerAddress.Matches(setupAddress, (remote as IPEndPoint)?.Address))
+		{
+			AppLog.Write($"AirPlay data stream from {remote} rejected: it is not the host that performed SETUP ({setupAddress?.ToString() ?? "none"}).");
+			return;
+		}
+
+		SetStatus("AirPlay data stream connected.");
 		AppLog.Write("AirPlay data stream connected from " + remote);
 
 		// Supersede any previous sender's data connection so only the newest one feeds the pipeline.
@@ -455,6 +520,24 @@ public sealed class AirPlayProbeService : IDisposable
 			try { superseded.Close(); } catch { }
 		}
 
+		try
+		{
+			await ReadDataStreamAsync(client, remote, myDataGeneration);
+		}
+		finally
+		{
+			lock (_mirrorKeyGate)
+			{
+				if (ReferenceEquals(_activeDataClient, client))
+				{
+					_activeDataClient = null;
+				}
+			}
+		}
+	}
+
+	private async Task ReadDataStreamAsync(TcpClient client, EndPoint? remote, int myDataGeneration)
+	{
 		using NetworkStream stream = client.GetStream();
 		byte[] buffer = new byte[64 * 1024];
 		List<byte> pending = new List<byte>();
@@ -497,17 +580,10 @@ public sealed class AirPlayProbeService : IDisposable
 				SetStatus("AirPlay data arrived, but payload is not clear H.264 yet.");
 			}
 
-			if (pending.Count > 1024 * 1024)
+			if (pending.Count > MaxPendingDataBytes)
 			{
-				pending.RemoveRange(0, pending.Count - 128 * 1024);
-			}
-		}
-
-		lock (_mirrorKeyGate)
-		{
-			if (ReferenceEquals(_activeDataClient, client))
-			{
-				_activeDataClient = null;
+				AppLog.Write($"AirPlay data buffer exceeded {MaxPendingDataBytes:N0} bytes without a complete packet; discarding all but the last {PendingDataTailBytes:N0} bytes.");
+				pending.RemoveRange(0, pending.Count - PendingDataTailBytes);
 			}
 		}
 	}
@@ -521,7 +597,7 @@ public sealed class AirPlayProbeService : IDisposable
 			int payloadSize = BinaryPrimitives.ReadInt32LittleEndian(header.AsSpan(0, 4));
 			int payloadType = BinaryPrimitives.ReadUInt16LittleEndian(header.AsSpan(4, 2)) & 0xFF;
 			int payloadOption = BinaryPrimitives.ReadUInt16LittleEndian(header.AsSpan(6, 2));
-			if (payloadSize < 0 || payloadSize > 8 * 1024 * 1024)
+			if (payloadSize < 0 || payloadSize > MaxMirrorPayloadBytes)
 			{
 				AppLog.Write($"AirPlay mirror packet header invalid: size={payloadSize}, type={payloadType}, option={payloadOption}.");
 				pending.RemoveAt(0);
@@ -793,49 +869,42 @@ public sealed class AirPlayProbeService : IDisposable
 		ulong? rtspTargetSessionId;
 		lock (_mirrorKeyGate)
 		{
+			if (_mirrorDecryptor != null)
+			{
+				// A decryptor is already selected for this session. A packet that still fails
+				// H.264 normalization (e.g. a NAL type outside the plausibility whitelist) is a
+				// dropped packet, not evidence that the key derivation changed; re-running the
+				// full sweep here cost ~4,000 AES passes per packet and stalled the data loop.
+				return false;
+			}
+			if (_decryptorSweepAttempts >= MaxDecryptorSweepAttemptsPerSession)
+			{
+				return false;
+			}
+			_decryptorSweepAttempts++;
 			rtspTargetSessionId = _rtspTargetSessionId;
 		}
 
 		IReadOnlyList<AirPlayMirrorDecryptorCandidate> baseCandidates = AirPlayMirrorDecryptor.BuildCandidates(aesKey, sharedSecret, streamConnectionId.Value, eiv, rtspTargetSessionId);
-		int tested = 0;
-		foreach (AirPlayMirrorDecryptorCandidate baseCandidate in baseCandidates)
+		long searchStartTick = Stopwatch.GetTimestamp();
+		if (TryFindMirrorDecryptor(baseCandidates, encryptedPayload, report, out AirPlayMirrorDecryptor? decryptor, out byte[] selectedAnnexB, out string selectedPayloadFormat, out int tested))
 		{
-			foreach (AirPlayMirrorDecryptorCandidate candidate in ExpandPayloadOffsetCandidates(baseCandidate, encryptedPayload.Length))
+			lock (_mirrorKeyGate)
 			{
-				tested++;
-				byte[] preview = AirPlayMirrorDecryptor.DecryptOnce(candidate, encryptedPayload);
-				if (TryNormalizeClearH264Payload(preview, out _, out string previewFormat))
-				{
-					AirPlayMirrorDecryptor decryptor = AirPlayMirrorDecryptor.Create(candidate);
-					byte[] selectedPayload = decryptor.Decrypt(encryptedPayload);
-					if (!TryNormalizeClearH264Payload(selectedPayload, out byte[] selectedAnnexB, out string selectedPayloadFormat))
-					{
-						decryptor.Dispose();
-						continue;
-					}
-
-						lock (_mirrorKeyGate)
-							{
-								_mirrorDecryptor?.Dispose();
-								DisposeMirrorProbePoolLocked();
-								_mirrorDecryptor = decryptor;
-								_decryptorStreamConnectionId = streamConnectionId.Value;
-						_loggedDecryptPayloadFailureTypes.Remove(payloadType);
-							_loggedDecryptCandidateReportTypes.Add(payloadType);
-						}
-
-					annexB = selectedAnnexB;
-					selectedName = candidate.Name;
-					selectedFormat = selectedPayloadFormat;
-					AppLog.Write($"AirPlay mirror decryptor auto-selected '{candidate.Name}' for type={payloadType}, streamConnectionID={streamConnectionId.Value}, format={previewFormat}.");
-					return true;
-				}
-
-				if (report.Count < 32)
-				{
-					report.Add(candidate.Name + "/" + DescribeH264Probe(preview));
-				}
+				_mirrorDecryptor?.Dispose();
+				DisposeMirrorProbePoolLocked();
+				_mirrorDecryptor = decryptor;
+				_decryptorStreamConnectionId = streamConnectionId.Value;
+				_loggedDecryptPayloadFailureTypes.Remove(payloadType);
+				_loggedDecryptCandidateReportTypes.Add(payloadType);
 			}
+
+			annexB = selectedAnnexB;
+			selectedName = decryptor.Name;
+			selectedFormat = selectedPayloadFormat;
+			long searchMs = (long)((Stopwatch.GetTimestamp() - searchStartTick) * 1000.0 / Stopwatch.Frequency);
+			AppLog.Write($"AirPlay mirror decryptor auto-selected '{decryptor.Name}' for type={payloadType}, streamConnectionID={streamConnectionId.Value}, format={selectedPayloadFormat}, tested={tested}, payloadBytes={encryptedPayload.Length}, search={searchMs}ms.");
+			return true;
 		}
 
 		lock (_mirrorKeyGate)
@@ -848,6 +917,89 @@ public sealed class AirPlayProbeService : IDisposable
 
 		TryWriteMirrorDiagnosticSnapshot(payloadType, packetHeader, encryptedPayload, encryptedKey, aesKey, sharedSecret, eiv, streamConnectionId.Value, rtspTargetSessionId, tested, baseCandidates.Count, report);
 		return false;
+	}
+
+	// Finds the first candidate, in BuildCandidates order with each base expanded over payload offsets,
+	// whose decryption of encryptedPayload normalizes to clear H.264, and returns a decryptor that has
+	// consumed encryptedPayload. A Mac sender's 'standard' key comes after ~2,400 candidates, and
+	// decrypting the whole first IDR for each of them took seconds on the data-receive thread, so each
+	// candidate is screened on a short decrypted prefix and only survivors decrypt the full payload.
+	internal static bool TryFindMirrorDecryptor(
+		IReadOnlyList<AirPlayMirrorDecryptorCandidate> baseCandidates,
+		byte[] encryptedPayload,
+		List<string> report,
+		[NotNullWhen(true)] out AirPlayMirrorDecryptor? decryptor,
+		out byte[] annexB,
+		out string format,
+		out int tested)
+	{
+		decryptor = null;
+		annexB = Array.Empty<byte>();
+		format = string.Empty;
+		tested = 0;
+		foreach (AirPlayMirrorDecryptorCandidate baseCandidate in baseCandidates)
+		{
+			foreach (AirPlayMirrorDecryptorCandidate candidate in ExpandPayloadOffsetCandidates(baseCandidate, encryptedPayload.Length))
+			{
+				tested++;
+				byte[] preview = AirPlayMirrorDecryptor.DecryptPrefixOnce(candidate, encryptedPayload, ClearH264ProbeBytes);
+				int decryptedLength = encryptedPayload.Length - Math.Max(0, candidate.PayloadOffset);
+				if (MayBeClearH264Payload(preview, decryptedLength))
+				{
+					AirPlayMirrorDecryptor candidateDecryptor = AirPlayMirrorDecryptor.Create(candidate);
+					if (TryNormalizeClearH264Payload(candidateDecryptor.Decrypt(encryptedPayload), out byte[] candidateAnnexB, out string candidateFormat))
+					{
+						decryptor = candidateDecryptor;
+						annexB = candidateAnnexB;
+						format = candidateFormat;
+						return true;
+					}
+
+					candidateDecryptor.Dispose();
+				}
+
+				if (report.Count < 32)
+				{
+					report.Add(candidate.Name + "/" + DescribeH264Probe(preview));
+				}
+			}
+		}
+
+		return false;
+	}
+
+	// TryNormalizeClearH264Payload settles on a first NAL unit using only this many leading bytes (an
+	// AVCC length + NAL header at each probed offset, or a leading Annex B start code), and
+	// DescribeH264Probe reads no further either.
+	internal const int ClearH264ProbeBytes = MaxH264PrefixProbeBytes + 5;
+
+	// Necessary condition for TryNormalizeClearH264Payload on a payload of payloadLength bytes, given
+	// at least its first min(ClearH264ProbeBytes, payloadLength) bytes: the first NAL unit must pass
+	// the same length and header checks at some probed AVCC offset, or follow an Annex B start code.
+	// Bytes decrypted with a wrong key almost never pass it.
+	internal static bool MayBeClearH264Payload(byte[] prefix, int payloadLength)
+	{
+		if (payloadLength < 5)
+		{
+			return false;
+		}
+
+		int maxOffset = Math.Min(MaxH264PrefixProbeBytes, Math.Max(0, payloadLength - 5));
+		for (int offset = 0; offset <= maxOffset; offset++)
+		{
+			int nalSize = BinaryPrimitives.ReadInt32BigEndian(prefix.AsSpan(offset, 4));
+			int nalOffset = offset + 4;
+			if (nalSize > 0 &&
+				nalSize <= MaxH264NalUnitLength &&
+				nalSize <= payloadLength - nalOffset &&
+				IsPlausibleH264NalHeader(prefix[nalOffset]))
+			{
+				return true;
+			}
+		}
+
+		int startCodeLength = StartCodeLengthAt(prefix, 0);
+		return startCodeLength > 0 && startCodeLength < payloadLength && IsPlausibleH264NalHeader(prefix[startCodeLength]);
 	}
 
 	private void TryWriteMirrorDiagnosticSnapshot(
@@ -926,7 +1078,7 @@ public sealed class AirPlayProbeService : IDisposable
 		return bytes == null ? null : Convert.ToHexString(SHA256.HashData(bytes));
 	}
 
-	private static IEnumerable<AirPlayMirrorDecryptorCandidate> ExpandPayloadOffsetCandidates(AirPlayMirrorDecryptorCandidate candidate, int payloadLength)
+	internal static IEnumerable<AirPlayMirrorDecryptorCandidate> ExpandPayloadOffsetCandidates(AirPlayMirrorDecryptorCandidate candidate, int payloadLength)
 	{
 		yield return candidate;
 		if (candidate.InitialSkipBytes != 0 || candidate.PayloadOffset != 0)
@@ -1028,7 +1180,7 @@ public sealed class AirPlayProbeService : IDisposable
 		return Math.Clamp((int)Math.Round(value), 2, 8192);
 	}
 
-	private static bool TryNormalizeClearH264Payload(byte[] payload, out byte[] annexB, out string format)
+	internal static bool TryNormalizeClearH264Payload(byte[] payload, out byte[] annexB, out string format)
 	{
 		annexB = Array.Empty<byte>();
 		format = string.Empty;
@@ -1270,7 +1422,7 @@ public sealed class AirPlayProbeService : IDisposable
 		}
 	}
 
-	private static string DescribeH264Probe(byte[] payload)
+	internal static string DescribeH264Probe(byte[] payload)
 	{
 		if (payload.Length < 5)
 		{
@@ -1346,103 +1498,50 @@ public sealed class AirPlayProbeService : IDisposable
 		return -1;
 	}
 
-	private int EmitAnnexBPayloads(List<byte> pending)
+
+
+
+
+	/// <summary>
+	/// Reads one RTSP/HTTP request. Waiting for the first byte of a request is unbounded (the
+	/// control connection idles between the sender's periodic feedback posts), but once a request
+	/// has started the rest of it must arrive within <paramref name="requestTimeout"/>, the header
+	/// block is capped at <see cref="MaxRequestHeaderBytes"/>, and a declared body larger than
+	/// <see cref="MaxRequestBodyBytes"/> is rejected before anything is allocated for it.
+	/// Returns null when the connection should be closed.
+	/// </summary>
+	internal static async Task<AirPlayRequest?> ReadRequestAsync(Stream stream, CancellationToken token, TimeSpan? requestTimeout = null)
 	{
-		int emitted = 0;
-		while (true)
+		TimeSpan timeout = requestTimeout ?? DefaultRequestReadTimeout;
+		using CancellationTokenSource requestCts = CancellationTokenSource.CreateLinkedTokenSource(token);
+		try
 		{
-			int first = FindStartCode(pending, 0);
-			if (first < 0)
-			{
-				if (pending.Count > 4)
-				{
-					pending.RemoveRange(0, pending.Count - 4);
-				}
-				return emitted;
-			}
-			if (first > 0)
-			{
-				pending.RemoveRange(0, first);
-			}
-
-			int next = FindStartCode(pending, 4);
-			if (next < 0)
-			{
-				return emitted;
-			}
-
-			byte[] payload = pending.Take(next).ToArray();
-			pending.RemoveRange(0, next);
-			VideoPayloadReceived?.Invoke(payload, 0, Stopwatch.GetTimestamp());
-			emitted++;
+			return await ReadRequestCoreAsync(stream, requestCts, timeout);
+		}
+		catch (OperationCanceledException) when (!token.IsCancellationRequested)
+		{
+			AppLog.Write($"AirPlay request did not complete within {timeout.TotalSeconds:N0}s; closing connection.");
+			return null;
 		}
 	}
 
-	private int EmitAvccPayloads(List<byte> pending)
-	{
-		int emitted = 0;
-		while (pending.Count >= 5)
-		{
-			int length = BinaryPrimitives.ReadInt32BigEndian(CollectionsMarshalAsSpan(pending).Slice(0, 4));
-			if (length <= 0 || length > 1024 * 1024)
-			{
-				return emitted;
-			}
-			if (pending.Count < 4 + length)
-			{
-				return emitted;
-			}
-
-			byte nalHeader = pending[4];
-			if ((nalHeader & 0x1F) == 0 || (nalHeader & 0x1F) > 23)
-			{
-				return emitted;
-			}
-
-			byte[] payload = new byte[4 + length];
-			payload[0] = 0;
-			payload[1] = 0;
-			payload[2] = 0;
-			payload[3] = 1;
-			pending.CopyTo(4, payload, 4, length);
-			pending.RemoveRange(0, 4 + length);
-			VideoPayloadReceived?.Invoke(payload, 0, Stopwatch.GetTimestamp());
-			emitted++;
-		}
-		return emitted;
-	}
-
-	private static ReadOnlySpan<byte> CollectionsMarshalAsSpan(List<byte> values)
-	{
-		return values.ToArray();
-	}
-
-	private static int FindStartCode(List<byte> bytes, int start)
-	{
-		for (int i = start; i + 3 < bytes.Count; i++)
-		{
-			if (bytes[i] == 0 && bytes[i + 1] == 0 && bytes[i + 2] == 1)
-			{
-				return i;
-			}
-			if (i + 4 < bytes.Count && bytes[i] == 0 && bytes[i + 1] == 0 && bytes[i + 2] == 0 && bytes[i + 3] == 1)
-			{
-				return i;
-			}
-		}
-		return -1;
-	}
-
-	private static async Task<AirPlayRequest?> ReadRequestAsync(NetworkStream stream, CancellationToken token)
+	private static async Task<AirPlayRequest?> ReadRequestCoreAsync(Stream stream, CancellationTokenSource requestCts, TimeSpan timeout)
 	{
 		List<byte> headerBytes = new List<byte>();
 		byte[] single = new byte[1];
-		while (headerBytes.Count < 64 * 1024)
+		CancellationToken requestToken = requestCts.Token;
+		bool headerComplete = false;
+		while (headerBytes.Count < MaxRequestHeaderBytes)
 		{
-			int count = await stream.ReadAsync(single, token);
+			int count = await stream.ReadAsync(single, requestToken);
 			if (count == 0)
 			{
 				return null;
+			}
+			if (headerBytes.Count == 0)
+			{
+				// First byte of a request: from here on the sender must finish it promptly.
+				requestCts.CancelAfter(timeout);
 			}
 			headerBytes.Add(single[0]);
 			int n = headerBytes.Count;
@@ -1452,8 +1551,15 @@ public sealed class AirPlayProbeService : IDisposable
 				headerBytes[n - 2] == '\r' &&
 				headerBytes[n - 1] == '\n')
 			{
+				headerComplete = true;
 				break;
 			}
+		}
+
+		if (!headerComplete)
+		{
+			AppLog.Write($"AirPlay request header exceeded {MaxRequestHeaderBytes:N0} bytes; closing connection.");
+			return null;
 		}
 
 		string headerText = Encoding.ASCII.GetString(headerBytes.ToArray());
@@ -1476,17 +1582,23 @@ public sealed class AirPlayProbeService : IDisposable
 			headers[line.Substring(0, colon).Trim()] = line.Substring(colon + 1).Trim();
 		}
 
-		int contentLength = 0;
-		if (headers.TryGetValue("Content-Length", out string? contentLengthValue))
+		long contentLength = 0;
+		if (headers.TryGetValue("Content-Length", out string? contentLengthValue) &&
+			!long.TryParse(contentLengthValue, NumberStyles.None, CultureInfo.InvariantCulture, out contentLength))
 		{
-			int.TryParse(contentLengthValue, out contentLength);
+			contentLength = 0;
+		}
+		if (contentLength > MaxRequestBodyBytes)
+		{
+			AppLog.Write($"AirPlay request declared Content-Length {contentLength:N0} exceeds {MaxRequestBodyBytes:N0} bytes; closing connection.");
+			return null;
 		}
 
-		byte[] body = new byte[Math.Max(0, contentLength)];
+		byte[] body = new byte[(int)Math.Max(0, contentLength)];
 		int offset = 0;
 		while (offset < body.Length)
 		{
-			int count = await stream.ReadAsync(body.AsMemory(offset, body.Length - offset), token);
+			int count = await stream.ReadAsync(body.AsMemory(offset, body.Length - offset), requestToken);
 			if (count == 0)
 			{
 				break;
@@ -1542,6 +1654,7 @@ public sealed class AirPlayProbeService : IDisposable
 				_loggedWaitingForMirrorDecryptor = false;
 				_loggedDecryptPayloadFailureTypes.Clear();
 				_loggedDecryptCandidateReportTypes.Clear();
+				_decryptorSweepAttempts = 0;
 				_loggedSkippedPacketTypes.Clear();
 				_loggedDecryptorInUse = false;
 				_mirrorDiagnosticWritten = false;
@@ -1575,6 +1688,7 @@ public sealed class AirPlayProbeService : IDisposable
 					_loggedWaitingForMirrorDecryptor = false;
 					_loggedDecryptPayloadFailureTypes.Clear();
 					_loggedDecryptCandidateReportTypes.Clear();
+					_decryptorSweepAttempts = 0;
 					_loggedSkippedPacketTypes.Clear();
 					_loggedDecryptorInUse = false;
 					_mirrorDiagnosticWritten = false;
@@ -1683,6 +1797,7 @@ public sealed class AirPlayProbeService : IDisposable
 			_announcedMirrorRtspTargetSessionId = null;
 			_announcedMirrorStreamConnectionId = null;
 			_announcedIdentitylessMirrorSession = false;
+			_mirrorSetupAddress = null;
 		}
 
 		try
@@ -1755,6 +1870,7 @@ public sealed class AirPlayProbeService : IDisposable
 			_loggedWaitingForMirrorDecryptor = false;
 			_loggedDecryptPayloadFailureTypes.Clear();
 			_loggedDecryptCandidateReportTypes.Clear();
+			_decryptorSweepAttempts = 0;
 			_loggedSkippedPacketTypes.Clear();
 			_loggedDecryptorInUse = false;
 			_mirrorDiagnosticWritten = false;
@@ -1950,6 +2066,10 @@ public sealed class AirPlayProbeService : IDisposable
 				LogPairBody("setup", request.Body);
 				ObserveSetupRequest(request.Body, request.Target);
 				IPAddress? remoteAddress = (remoteEndPoint as IPEndPoint)?.Address;
+				lock (_mirrorKeyGate)
+				{
+					_mirrorSetupAddress = remoteAddress;
+				}
 				byte[] body = _setup.BuildSetupResponse(request.Body, remoteAddress);
 				return BuildRtspResponse(request, 200, "OK", body, "application/x-apple-binary-plist", new Dictionary<string, string>
 				{
@@ -2032,31 +2152,6 @@ public sealed class AirPlayProbeService : IDisposable
 		return response;
 	}
 
-	private string BuildInfoPlist()
-	{
-		return "<?xml version=\"1.0\" encoding=\"UTF-8\"?>" +
-			"<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">" +
-			"<plist version=\"1.0\"><dict>" +
-			PlistString("deviceid", _deviceId) +
-			PlistString("features", "0x5A7FFFF7,0x1E") +
-			PlistInteger("flags", 68) +
-				PlistString("model", "AppleTV3,2") +
-				PlistString("name", _displayName) +
-				PlistString("pi", _pairingId) +
-				PlistString("pk", _pairing.PublicKeyHex) +
-				PlistString("protovers", "1.1") +
-			PlistString("srcvers", "220.68") +
-			PlistInteger("statusFlags", 4) +
-			PlistInteger("vv", 2) +
-			"<key>displays</key><array><dict>" +
-			PlistInteger("width", 1920) +
-			PlistInteger("height", 1080) +
-			PlistInteger("widthPhysical", 1920) +
-			PlistInteger("heightPhysical", 1080) +
-			PlistInteger("refreshRate", 60) +
-			"</dict></array>" +
-				"</dict></plist>";
-	}
 
 	private byte[] BuildInfoBinaryPlist()
 	{
@@ -2155,31 +2250,7 @@ public sealed class AirPlayProbeService : IDisposable
 		return AirPlayBinaryPlist.Write(info);
 	}
 
-	private static string BuildSetupPlist()
-	{
-		return "<?xml version=\"1.0\" encoding=\"UTF-8\"?>" +
-			"<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">" +
-			"<plist version=\"1.0\"><dict>" +
-			PlistInteger("eventPort", EventPort) +
-			PlistInteger("timingPort", TimingPort) +
-			PlistInteger("dataPort", DataPort) +
-			PlistString("sessionUUID", Guid.NewGuid().ToString("D")) +
-			"</dict></plist>";
-	}
 
-	private static string PlistString(string key, string value) => "<key>" + EscapeXml(key) + "</key><string>" + EscapeXml(value) + "</string>";
-
-	private static string PlistInteger(string key, int value) => "<key>" + EscapeXml(key) + "</key><integer>" + value.ToString(System.Globalization.CultureInfo.InvariantCulture) + "</integer>";
-
-	private static string EscapeXml(string value)
-	{
-		return value
-			.Replace("&", "&amp;", StringComparison.Ordinal)
-			.Replace("<", "&lt;", StringComparison.Ordinal)
-			.Replace(">", "&gt;", StringComparison.Ordinal)
-			.Replace("\"", "&quot;", StringComparison.Ordinal)
-			.Replace("'", "&apos;", StringComparison.Ordinal);
-	}
 
 	private static void LogPairBody(string label, byte[] body)
 	{
@@ -2252,9 +2323,9 @@ public sealed class AirPlayProbeService : IDisposable
 		{
 			DnsRecord.Ptr(AirPlayServiceType, _airPlayInstanceName, ttlSeconds),
 			DnsRecord.Ptr(RaopServiceType, _raopInstanceName, ttlSeconds),
-			DnsRecord.Srv(_airPlayInstanceName, AirPlayPort, _hostName, ttlSeconds),
+			DnsRecord.Srv(_airPlayInstanceName, AirPlayListenerPort, _hostName, ttlSeconds),
 			DnsRecord.Txt(_airPlayInstanceName, BuildAirPlayTxt(), ttlSeconds),
-			DnsRecord.Srv(_raopInstanceName, RaopPort, _hostName, ttlSeconds),
+			DnsRecord.Srv(_raopInstanceName, RaopListenerPort, _hostName, ttlSeconds),
 			DnsRecord.Txt(_raopInstanceName, BuildRaopTxt(), ttlSeconds)
 		};
 
@@ -2575,7 +2646,7 @@ public sealed class AirPlayProbeService : IDisposable
 		_cts.Dispose();
 	}
 
-	private sealed record AirPlayRequest(
+	internal sealed record AirPlayRequest(
 		string Method,
 		string Target,
 		string Protocol,

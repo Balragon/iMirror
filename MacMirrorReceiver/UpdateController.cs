@@ -41,6 +41,8 @@ internal sealed class UpdateController
 
 	private readonly Action<string> _launchInstaller;
 
+	private readonly Action _releaseSingleInstance;
+
 	private readonly IUpdateNoticeView _view;
 
 	private readonly Func<Task> _shutdownApplicationAsync;
@@ -67,6 +69,8 @@ internal sealed class UpdateController
 
 	private bool _startupUpdateCheckStarted;
 
+	private bool _installInProgress;
+
 	public UpdateController(
 		UpdateService updateService,
 		IUpdateNoticeView view,
@@ -76,6 +80,7 @@ internal sealed class UpdateController
 			cancellationToken => updateService.CheckAsync(includePrerelease: false, cancellationToken),
 			updateService.DownloadSetupAsync,
 			UpdateLauncher.Launch,
+			App.ReleaseSingleInstanceMutex,
 			view,
 			shutdownApplicationAsync,
 			isShutdownStarted,
@@ -92,6 +97,7 @@ internal sealed class UpdateController
 		Func<CancellationToken, Task<UpdateInfo?>> checkForUpdateAsync,
 		Func<UpdateInfo, IProgress<double>?, CancellationToken, Task<string>> downloadSetupAsync,
 		Action<string> launchInstaller,
+		Action releaseSingleInstance,
 		IUpdateNoticeView view,
 		Func<Task> shutdownApplicationAsync,
 		Func<bool> isShutdownStarted,
@@ -105,6 +111,7 @@ internal sealed class UpdateController
 		_checkForUpdateAsync = checkForUpdateAsync ?? throw new ArgumentNullException(nameof(checkForUpdateAsync));
 		_downloadSetupAsync = downloadSetupAsync ?? throw new ArgumentNullException(nameof(downloadSetupAsync));
 		_launchInstaller = launchInstaller ?? throw new ArgumentNullException(nameof(launchInstaller));
+		_releaseSingleInstance = releaseSingleInstance ?? throw new ArgumentNullException(nameof(releaseSingleInstance));
 		_view = view ?? throw new ArgumentNullException(nameof(view));
 		_shutdownApplicationAsync = shutdownApplicationAsync ?? throw new ArgumentNullException(nameof(shutdownApplicationAsync));
 		_isShutdownStarted = isShutdownStarted ?? throw new ArgumentNullException(nameof(isShutdownStarted));
@@ -201,6 +208,16 @@ internal sealed class UpdateController
 
 	public async Task<bool> InstallUpdateAsync(UpdateInfo updateInfo, IProgress<double>? progress)
 	{
+		if (_installInProgress)
+		{
+			// The main window and the settings window both offer Update; a second click while
+			// the first download runs used to hit the exclusive .download file, throw, and flip
+			// the notice to "Retry" while the first download went on to launch the installer.
+			AppLog.Write("Update install already in progress; ignoring a second request.");
+			return false;
+		}
+
+		_installInProgress = true;
 		try
 		{
 			_pendingUpdate = updateInfo;
@@ -210,6 +227,9 @@ internal sealed class UpdateController
 			string setupPath = await _downloadSetupAsync(updateInfo, progress, _shutdownCts.Token);
 			_view.ShowInstallerStarting();
 			_view.SetStatus("Starting update installer...");
+			// The installer checks the single-instance mutex as soon as it starts, before this
+			// process has shut down, so the mutex must be gone before the installer is launched.
+			_releaseSingleInstance();
 			_launchInstaller(setupPath);
 			_view.ShowInstallerHandoff();
 			_view.SetStatus("Update installer started. Closing iMirror so setup can finish and restart it.");
@@ -229,6 +249,10 @@ internal sealed class UpdateController
 			_view.SetStatus("Update could not be installed: " + ex.Message);
 			_view.ShowInstallFailed();
 			return false;
+		}
+		finally
+		{
+			_installInProgress = false;
 		}
 	}
 

@@ -51,8 +51,8 @@ public sealed class MirrorClient : IAsyncDisposable
 		{
 			Pin = pin
 		});
-		byte[] array2 = MirrorProtocol.BuildFrame(MirrorMessageType.Auth, array);
-		await _stream.WriteAsync(array2, _cts.Token);
+		byte[] authFrame = MirrorProtocol.BuildFrame(MirrorMessageType.Auth, array);
+		await _stream.WriteAsync(authFrame, _cts.Token);
 		await _stream.FlushAsync(_cts.Token);
 		this.StatusChanged?.Invoke("PIN sent. Waiting for sender stream.");
 		_receiveTask = Task.Run(ReceiveLoopAsync);
@@ -60,7 +60,6 @@ public sealed class MirrorClient : IAsyncDisposable
 
 	private async Task ReceiveLoopAsync()
 	{
-		_ = 1;
 		try
 		{
 			if (_stream == null)

@@ -1,3 +1,5 @@
+<p align="center"><img src="Assets/iMirror.png" alt="iMirror" width="128"></p>
+
 # iMirror
 
 iMirror is a Windows AirPlay mirroring receiver for local development and real-device validation.
@@ -24,7 +26,7 @@ The only other project is `MacMirrorReceiver.Tests`.
 - `MacMirrorReceiver.Video/` - H.264 stream gate, FFmpeg fallback decoder, Media Foundation/D3D11 decoder, GPU presenters, and latency windows.
 - `MacMirrorReceiver.Audio/` - WASAPI PCM output.
 - `MacMirrorReceiver.Protocol/` - Shared protocol models for mirror/auth/status/config messages.
-- `ThirdParty/playfair/` - FairPlay reference sources used for validation.
+- `ThirdParty/playfair/` - FairPlay SAP sources (GPLv3) read at runtime for the FairPlay tables; required for real-device mirroring.
 - `tools/` - Focused diagnostics and acceptance helpers.
 - `docs/` - Product architecture and validation notes.
 
@@ -109,6 +111,16 @@ Legacy validation override:
 $env:IMIRROR_EXPERIMENTAL_QUALITY = "1"  # force the GPU path for local validation
 ```
 
+Other environment overrides (all optional; Settings is the normal way to change these):
+
+| Variable | Effect |
+|---|---|
+| `IMIRROR_FORCE_SOFTWARE` / `IMIRROR_PREFER_HARDWARE` | FFmpeg decoder candidate order (software first / hardware first). |
+| `IMIRROR_AUDIO_ENABLED` | `0` disables the audio pipeline for the session. |
+| `IMIRROR_AUDIO_SYNC_OFFSET_MS` | Audio target latency relative to measured video latency, 60-220 ms (default 120). |
+| `IMIRROR_D3D_COLOR_SPACE` | Overrides the D3D11 video-processor input/output colour space pair. |
+| `IMIRROR_HR_V2_PROBE` | Runs the Media Foundation/D3D11 capability probe at startup and logs the result. |
+
 ## Diagnostics
 
 Logs are written under `%LOCALAPPDATA%\iMirror\Logs\iMirror.log`.
@@ -117,12 +129,12 @@ Private diagnostic capture is opt-in:
 
 ```powershell
 $env:IMIRROR_WRITE_DIAGNOSTICS = "1"
-$env:IMIRROR_DUMP_H264 = "1"
-$env:IMIRROR_DUMP_AUDIO = "1"
+$env:IMIRROR_DUMP_H264 = "1"        # or a file path for the dump
+$env:IMIRROR_DUMP_AUDIO = "1"       # or a directory for the dump
 $env:IMIRROR_AUDIO_DISCOVERY = "1"  # verbose data-stream logging only
 ```
 
-Generated logs, H.264 dumps, audio dumps, and diagnostic snapshots can contain private screen content or key material. They are ignored by git and should stay local.
+Generated logs, H.264 dumps, audio dumps, and diagnostic snapshots can contain private screen content or key material. They should stay local. The default locations under `%LOCALAPPDATA%\iMirror` are outside the repository, and the dump file extensions are git-ignored, but `IMIRROR_DUMP_AUDIO` / `IMIRROR_DUMP_H264` accept arbitrary paths, so do not point them inside a checkout.
 
 ## Validation Tools
 

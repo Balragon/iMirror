@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Threading;
 using MacMirrorReceiver.Audio;
 using MacMirrorReceiver.Video;
 using NAudio.Wave;
@@ -53,6 +54,103 @@ public sealed class WasapiAudioOutputTests
 		Assert.Equal(2, output.SubmittedFrames);
 	}
 
+	[Fact]
+	public void Submit_DoesNotDeadlock_WhenPlaybackThreadFaultsWhileRestartStopsOutput()
+	{
+		var factory = new FakeWasapiOutputDeviceFactory();
+		var notifier = new ManualAudioEndpointRestartNotifier();
+
+		using var output = new WasapiAudioOutput(48000, 2, factory, notifier);
+
+		output.Submit(CreateFrame());
+		notifier.RaiseRestartRequested("render endpoint removed");
+		factory.Devices[0].ArmPlaybackThreadFaultOnStop(new InvalidOperationException("device invalidated"));
+		output.Submit(CreateFrame());
+		factory.Devices[0].WaitForPlaybackThread();
+		output.Submit(CreateFrame());
+
+		Assert.False(factory.Devices[0].StopJoinTimedOut, "Stop() waited on a playback thread that was blocked on the output lock.");
+		Assert.Equal(2, factory.Devices.Count);
+		Assert.Equal(1, factory.Devices[0].StopCalls);
+		Assert.Equal(1, factory.Devices[0].DisposeCalls);
+		Assert.Equal(1, output.OutputRestarts);
+		Assert.Equal(3, output.SubmittedFrames);
+	}
+
+	[Fact]
+	public void Dispose_DoesNotDeadlock_WhenPlaybackThreadFaultsWhileStoppingOutput()
+	{
+		var factory = new FakeWasapiOutputDeviceFactory();
+		var notifier = new ManualAudioEndpointRestartNotifier();
+		var output = new WasapiAudioOutput(48000, 2, factory, notifier);
+
+		output.Submit(CreateFrame());
+		factory.Devices[0].ArmPlaybackThreadFaultOnStop(new InvalidOperationException("device invalidated"));
+		output.Dispose();
+		factory.Devices[0].WaitForPlaybackThread();
+
+		Assert.False(factory.Devices[0].StopJoinTimedOut, "Stop() waited on a playback thread that was blocked on the output lock.");
+		Assert.Single(factory.Devices);
+		Assert.Equal(1, factory.Devices[0].StopCalls);
+		Assert.Equal(1, factory.Devices[0].DisposeCalls);
+	}
+
+	[Fact]
+	public void Submit_SkipsRestart_WhenDefaultChangesToEndpointAlreadyInUse()
+	{
+		var factory = new FakeWasapiOutputDeviceFactory { NextEndpointId = "airpods" };
+		var notifier = new ManualAudioEndpointRestartNotifier();
+
+		using var output = new WasapiAudioOutput(48000, 2, factory, notifier);
+
+		output.Submit(CreateFrame());
+		factory.NextEndpointId = "speaker";
+		notifier.RaiseRestartRequested("render endpoint state changed to Unplugged");
+		output.Submit(CreateFrame());
+		notifier.RaiseRestartRequested("default render endpoint changed (Console)", "speaker");
+		output.Submit(CreateFrame());
+
+		Assert.Equal(2, factory.Devices.Count);
+		Assert.Equal("speaker", factory.Devices[1].EndpointId);
+		Assert.Equal(0, factory.Devices[1].StopCalls);
+		Assert.Equal(1, output.OutputRestarts);
+		Assert.Equal(3, output.SubmittedFrames);
+	}
+
+	[Fact]
+	public void Submit_Restarts_WhenDefaultChangesToDifferentEndpoint()
+	{
+		var factory = new FakeWasapiOutputDeviceFactory { NextEndpointId = "speaker" };
+		var notifier = new ManualAudioEndpointRestartNotifier();
+
+		using var output = new WasapiAudioOutput(48000, 2, factory, notifier);
+
+		output.Submit(CreateFrame());
+		factory.NextEndpointId = "airpods";
+		notifier.RaiseRestartRequested("default render endpoint changed (Console)", "airpods");
+		output.Submit(CreateFrame());
+
+		Assert.Equal(2, factory.Devices.Count);
+		Assert.Equal(1, output.OutputRestarts);
+	}
+
+	[Fact]
+	public void Submit_StillRestarts_WhenUnconditionalRequestIsPendingWithSameDefault()
+	{
+		var factory = new FakeWasapiOutputDeviceFactory { NextEndpointId = "speaker" };
+		var notifier = new ManualAudioEndpointRestartNotifier();
+
+		using var output = new WasapiAudioOutput(48000, 2, factory, notifier);
+
+		output.Submit(CreateFrame());
+		factory.Devices[0].RaisePlaybackStopped(new InvalidOperationException("device invalidated"));
+		notifier.RaiseRestartRequested("default render endpoint changed (Console)", "speaker");
+		output.Submit(CreateFrame());
+
+		Assert.Equal(2, factory.Devices.Count);
+		Assert.Equal(1, output.OutputRestarts);
+	}
+
 	private static AudioPcmFrame CreateFrame()
 	{
 		const int sampleRate = 48000;
@@ -74,9 +172,11 @@ public sealed class WasapiAudioOutputTests
 	{
 		public List<FakeWasapiOutputDevice> Devices { get; } = new List<FakeWasapiOutputDevice>();
 
+		public string? NextEndpointId { get; set; }
+
 		public IWasapiOutputDevice Create()
 		{
-			var device = new FakeWasapiOutputDevice();
+			var device = new FakeWasapiOutputDevice { EndpointId = NextEndpointId };
 			Devices.Add(device);
 			return device;
 		}
@@ -84,6 +184,15 @@ public sealed class WasapiAudioOutputTests
 
 	private sealed class FakeWasapiOutputDevice : IWasapiOutputDevice
 	{
+		private static readonly TimeSpan StopJoinTimeout = TimeSpan.FromSeconds(2);
+		private EventHandler<StoppedEventArgs>? _faultHandler;
+		private Exception? _fault;
+		private Thread? _playbackThread;
+
+		public bool StopJoinTimedOut { get; private set; }
+
+		public string? EndpointId { get; init; }
+
 		public int InitCalls { get; private set; }
 
 		public int PlayCalls { get; private set; }
@@ -107,6 +216,22 @@ public sealed class WasapiAudioOutputTests
 		public void Stop()
 		{
 			StopCalls++;
+			EventHandler<StoppedEventArgs>? handler = _faultHandler;
+			Exception? fault = _fault;
+			_faultHandler = null;
+			if (handler == null || fault == null)
+			{
+				return;
+			}
+
+			// Like NAudio's WasapiOut.Stop(): the playback thread raises PlaybackStopped
+			// on its way out and Stop() joins it.
+			_playbackThread = new Thread(() => handler(this, new StoppedEventArgs(fault))) { IsBackground = true };
+			_playbackThread.Start();
+			if (!_playbackThread.Join(StopJoinTimeout))
+			{
+				StopJoinTimedOut = true;
+			}
 		}
 
 		public void Dispose()
@@ -118,15 +243,28 @@ public sealed class WasapiAudioOutputTests
 		{
 			PlaybackStopped?.Invoke(this, new StoppedEventArgs(exception));
 		}
+
+		// Models a device fault whose PlaybackStopped raise is already in flight on the
+		// playback thread (handler captured now) when the receiver calls Stop().
+		public void ArmPlaybackThreadFaultOnStop(Exception exception)
+		{
+			_faultHandler = PlaybackStopped;
+			_fault = exception;
+		}
+
+		public void WaitForPlaybackThread()
+		{
+			_playbackThread?.Join();
+		}
 	}
 
 	private sealed class ManualAudioEndpointRestartNotifier : IAudioEndpointRestartNotifier
 	{
-		public event Action<string>? RestartRequested;
+		public event Action<string, string?>? RestartRequested;
 
-		public void RaiseRestartRequested(string reason)
+		public void RaiseRestartRequested(string reason, string? targetEndpointId = null)
 		{
-			RestartRequested?.Invoke(reason);
+			RestartRequested?.Invoke(reason, targetEndpointId);
 		}
 
 		public void Dispose()

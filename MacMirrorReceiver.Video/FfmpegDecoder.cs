@@ -11,15 +11,20 @@ namespace MacMirrorReceiver.Video;
 
 public sealed class FfmpegDecoder : IDisposable
 {
-	private const int MaxQueuedInputPackets = 1024;
+	internal const int MaxQueuedInputPackets = 1024;
 
-	private const long MaxQueuedInputBytes = 64L * 1024L * 1024L;
+	internal const long MaxQueuedInputBytes = 64L * 1024L * 1024L;
 
 	private const long WriteStallThresholdMs = 35;
 
 	private const int OutputBytesPerPixel = 4;
 
 	private const string OutputPixelFormat = "bgra";
+
+	// Written after every packet. FFmpeg's raw H.264 parser only closes an access unit when it
+	// sees the start of the next one, so without this each frame waits for the following packet
+	// (one frame at 60fps, seconds for sparse updates). An AUD marks the boundary immediately.
+	private static readonly byte[] AccessUnitDelimiter = { 0x00, 0x00, 0x00, 0x01, 0x09, 0xF0 };
 
 	private readonly int _inputWidth;
 
@@ -46,6 +51,10 @@ public sealed class FfmpegDecoder : IDisposable
 	private readonly Queue<H264InputPacket> _inputQueue = new Queue<H264InputPacket>();
 
 	private long _queuedInputBytes;
+
+	private long _overflowDropsSinceStatus;
+
+	private long _lastOverflowStatusTick;
 
 	private long _latestInputReceivedTick;
 
@@ -191,11 +200,6 @@ public sealed class FfmpegDecoder : IDisposable
 	// fallback d3d11va -> dxva2 -> software). The new process has no H.264 extradata, so
 	// the upstream Annex B gate must re-establish SPS/PPS and wait for the next keyframe.
 	public event Action? DecoderRestarted;
-
-	// Raised when the input queue overflowed and was flushed without an IDR to resume from.
-	// The upstream gate should call H264AnnexBStreamGate.RequireKeyframe() so feeding resumes
-	// cleanly at the next keyframe instead of with mid-GOP P-frames.
-	public event Action? InputQueueOverflowed;
 
 	public bool DumpH264Enabled { get; set; }
 
@@ -401,12 +405,20 @@ public sealed class FfmpegDecoder : IDisposable
 		// streams. Smaller portrait/phone streams do not need that much parallelism; using fewer
 		// frame threads keeps the software fallback below its latency tier without reintroducing
 		// the old 1080p backlog.
+		// NOTE (measured 2026-10-27, FFmpeg 8.1.1): libavcodec disables frame threading whenever
+		// AV_CODEC_FLAG_LOW_DELAY is set, so with "-flags low_delay" the decoder actually runs on
+		// one thread (cpu/real 1.0, same fps as -threads 1). It still decodes 1080p desktop
+		// content at ~400 fps, so the flag stays; the thread settings below are effectively inert.
+		// Output "-threads 1": the rawvideo encoder otherwise runs frame-threaded and holds three
+		// frames before emitting the first, which is ~50ms at 60fps and seconds when the Mac sends
+		// sparse updates (typing, cursor blink) — long enough for every such frame to be dropped as
+		// stale before presentation.
 		int decoderThreads = ResolveDecoderThreadCount(_outputWidth, _outputHeight, _targetOutputFps);
 		return "-hide_banner -loglevel error -flags low_delay -probesize 1M -analyzeduration 200000 -avioflags direct -max_delay 0 "
 			+ GetDecoderInputArgument()
 			+ $"-threads {decoderThreads} -thread_type frame -f h264 -i pipe:0 "
 			+ videoFilter
-			+ $"-fps_mode passthrough -f rawvideo -pix_fmt {OutputPixelFormat} pipe:1";
+			+ $"-fps_mode passthrough -threads 1 -f rawvideo -pix_fmt {OutputPixelFormat} pipe:1";
 	}
 
 	internal static int ResolveDecoderThreadCount(int outputWidth, int outputHeight, int targetOutputFps)
@@ -454,7 +466,8 @@ public sealed class FfmpegDecoder : IDisposable
 				string? text = await process.StandardError.ReadLineAsync();
 				if (text != null)
 				{
-					if (!string.IsNullOrWhiteSpace(text))
+					// The trailing AccessUnitDelimiter has no picture after it when stdin closes.
+					if (!string.IsNullOrWhiteSpace(text) && !text.Contains("missing picture in access unit with size 6", StringComparison.Ordinal))
 					{
 						this.StatusChanged?.Invoke(text.Trim());
 					}
@@ -478,27 +491,41 @@ public sealed class FfmpegDecoder : IDisposable
 		{
 			this.StatusChanged?.Invoke($"H264 submitted dump reached {MaxDumpBytes / (1024 * 1024)}MB cap; further packets are not captured.");
 		}
+		EnqueueInput(payload, sourceTimestampNanos, receivedTick);
+		// A backpressure drop is counted in DroppedInputPackets, not reported as unavailable input:
+		// false makes MainWindow log "input unavailable" once per dropped packet.
+		return true;
+	}
+
+	// The overflow policy, split from QueueH264 so tests can drive it without an FFmpeg process.
+	internal void EnqueueInput(byte[] payload, ulong sourceTimestampNanos, long receivedTick)
+	{
 		bool shouldSignal = false;
 		int flushed = 0;
 		bool droppedIncoming = false;
+		long overflowDropsToReport = 0;
+		int queuedAfter;
 		lock (_inputGate)
 		{
 			if (_inputQueue.Count >= MaxQueuedInputPackets || _queuedInputBytes + payload.Length > MaxQueuedInputBytes)
 			{
-				// Dropping individual H.264 packets corrupts the GOP until the next IDR (every
-				// later P-frame references the dropped one), which shows up as decoder
-				// "Invalid data" bursts. Recover in GOP units instead: flush the whole queue,
-				// then either resume from the incoming payload if it is itself an IDR sync
-				// point, or drop it too and let the upstream gate hold input until the next
-				// keyframe (InputQueueOverflowed -> H264AnnexBStreamGate.RequireKeyframe).
-				flushed = _inputQueue.Count;
-				_inputQueue.Clear();
-				_queuedInputBytes = 0L;
-				DroppedInputPackets += flushed;
-				if (!ContainsIdrNal(payload))
+				// Keep the queued GOP and drop only the incoming non-IDR packet. FFmpeg conceals the
+				// missing frame by repeating the previous reference, so the damage stays in the screen
+				// regions that frame changed and heals as they change again. Flushing the queue and
+				// waiting for the next keyframe instead loses video until reconnect: Mac senders send
+				// one IDR per connection and none on demand.
+				if (ContainsIdrNal(payload))
+				{
+					flushed = _inputQueue.Count;
+					_inputQueue.Clear();
+					_queuedInputBytes = 0L;
+					DroppedInputPackets += flushed;
+				}
+				else
 				{
 					droppedIncoming = true;
 					DroppedInputPackets++;
+					_overflowDropsSinceStatus++;
 				}
 			}
 
@@ -509,22 +536,32 @@ public sealed class FfmpegDecoder : IDisposable
 				_queuedInputBytes += payload.Length;
 				Interlocked.Increment(ref _acceptedInputPackets);
 			}
+
+			// One status line per second at most; the first drop of an overflow reports immediately.
+			if (_overflowDropsSinceStatus > 0)
+			{
+				long now = Environment.TickCount64;
+				if (now - _lastOverflowStatusTick >= 1000)
+				{
+					overflowDropsToReport = _overflowDropsSinceStatus;
+					_overflowDropsSinceStatus = 0;
+					_lastOverflowStatusTick = now;
+				}
+			}
+			queuedAfter = _inputQueue.Count;
 		}
 		if (flushed > 0)
 		{
-			this.StatusChanged?.Invoke(droppedIncoming
-				? $"Decoder input overflow: flushed {flushed} queued packet(s); waiting for next keyframe."
-				: $"Decoder input overflow: flushed {flushed} queued packet(s); resuming from incoming keyframe.");
-			if (droppedIncoming)
-			{
-				this.InputQueueOverflowed?.Invoke();
-			}
+			this.StatusChanged?.Invoke($"Decoder input overflow: flushed {flushed} queued packet(s); resuming from incoming keyframe.");
+		}
+		if (overflowDropsToReport > 0)
+		{
+			this.StatusChanged?.Invoke($"Decoder input overflow: dropped {overflowDropsToReport:N0} incoming non-keyframe(s) since last report and preserved queued GOP (queued={queuedAfter}).");
 		}
 		if (shouldSignal)
 		{
 			_inputSignal.Release();
 		}
-		return true;
 	}
 
 	private static bool ContainsIdrNal(byte[] payload)
@@ -608,6 +645,7 @@ public sealed class FfmpegDecoder : IDisposable
 							Interlocked.Exchange(ref _latestInputSourceTimestampNanos, unchecked((long)packet.SourceTimestampNanos));
 							long startTick = Stopwatch.GetTimestamp();
 							await process.StandardInput.BaseStream.WriteAsync(packet.Payload, _cts.Token);
+							await process.StandardInput.BaseStream.WriteAsync(AccessUnitDelimiter, _cts.Token);
 							long endTick = Stopwatch.GetTimestamp();
 							lock (_fifoGate)
 							{
@@ -798,6 +836,12 @@ public sealed class FfmpegDecoder : IDisposable
 	{
 		lock (_processGate)
 		{
+			if (_cts.IsCancellationRequested)
+			{
+				// Dispose() killed the process; the resulting EndOfStream is not a decoder
+				// failure, and starting a replacement ffmpeg.exe here would leak it.
+				return false;
+			}
 			if (!ReferenceEquals(_process, failedProcess))
 			{
 				return true;
@@ -859,8 +903,10 @@ public sealed class FfmpegDecoder : IDisposable
 		{
 			return text;
 		}
-		string? localToolsFfmpeg = FindFfmpegInAncestorTools(AppContext.BaseDirectory) ??
-			FindFfmpegInAncestorTools(Environment.CurrentDirectory);
+		// Only the install/build tree is probed. The working directory is whatever the launcher
+		// set (a shortcut's "Start in", a network share), so an ffmpeg.exe planted under its
+		// ancestors would otherwise be executed with the receiver's privileges.
+		string? localToolsFfmpeg = FindFfmpegInAncestorTools(AppContext.BaseDirectory);
 		if (localToolsFfmpeg != null)
 		{
 			return localToolsFfmpeg;
@@ -978,7 +1024,18 @@ public sealed class FfmpegDecoder : IDisposable
 		catch
 		{
 		}
-		_process?.Dispose();
+		// Kill whatever process is current now: a hwaccel fallback racing this Dispose could
+		// have replaced _process after the Kill above, and a bare Dispose() leaves it running.
+		Process? remaining;
+		lock (_processGate)
+		{
+			remaining = _process;
+			_process = null;
+		}
+		if (remaining != null)
+		{
+			StopProcess(remaining);
+		}
 		_submittedDump?.Dispose();
 		_writtenDump?.Dispose();
 		_inputSignal.Dispose();
