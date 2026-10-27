@@ -29,8 +29,6 @@ public sealed class AirPlayProbeService : IDisposable
 	private const int DataPort = 7100;
 	private const int EventPort = 7101;
 	private const int TimingPort = 7102;
-	private const int MaxH264PrefixProbeBytes = 64;
-	private const int MaxH264NalUnitLength = 8 * 1024 * 1024;
 	// Largest mirror packet payload the framer accepts (a 4K IDR at a high bitrate is a few MiB).
 	private const int MirrorPacketHeaderBytes = 128;
 	private const int MaxMirrorPayloadBytes = 8 * 1024 * 1024;
@@ -234,8 +232,8 @@ public sealed class AirPlayProbeService : IDisposable
 		ulong? rtspTargetSessionId;
 		lock (_mirrorKeyGate)
 		{
-			encryptedKey = _encryptedMirrorAesKey == null ? null : CopyOf(_encryptedMirrorAesKey);
-			eiv = _mirrorEiv == null ? null : CopyOf(_mirrorEiv);
+			encryptedKey = _encryptedMirrorAesKey == null ? null : MirrorH264Payloads.CopyOf(_encryptedMirrorAesKey);
+			eiv = _mirrorEiv == null ? null : MirrorH264Payloads.CopyOf(_mirrorEiv);
 			rtspTargetSessionId = _rtspTargetSessionId;
 		}
 
@@ -446,7 +444,7 @@ public sealed class AirPlayProbeService : IDisposable
 					// The Mac also tears down just the audio stream mid-session (and SETUPs it again
 					// later on the same connection), so only a TEARDOWN that covers the video stream
 					// ends the session. The connection stays open: the sender closes it.
-					if (request.Method == "TEARDOWN" && IsMirrorTeardown(request.Body))
+					if (request.Method == "TEARDOWN" && AirPlaySetupPlist.IsMirrorTeardown(request.Body))
 					{
 						EndMirrorSessionIfOwnedBy(connectionId, $"{label} TEARDOWN");
 					}
@@ -539,27 +537,6 @@ public sealed class AirPlayProbeService : IDisposable
 		{
 			return null;
 		}
-	}
-
-	/// <summary>
-	/// True when a TEARDOWN ends the mirror stream: no body (the whole session), or a <c>streams</c>
-	/// list that includes the type-110 video stream. A TEARDOWN listing only audio (type 96) is not.
-	/// </summary>
-	internal static bool IsMirrorTeardown(byte[] body)
-	{
-		if (body.Length == 0 ||
-			AirPlayBinaryPlist.Read(body) is not Dictionary<string, object?> request ||
-			!request.ContainsKey("streams"))
-		{
-			return true;
-		}
-
-		bool mirror = ContainsMirrorVideoStream(request);
-		if (!mirror)
-		{
-			AppLog.Write("AirPlay TEARDOWN covers only non-video streams; mirror session kept.");
-		}
-		return mirror;
 	}
 
 	private async Task HandleDataClientAsync(TcpClient client)
@@ -716,7 +693,7 @@ public sealed class AirPlayProbeService : IDisposable
 					AppLog.Write("AirPlay mirror video payload is encrypted; waiting for FairPlay stream decryptor.");
 				}
 
-					if (TryNormalizeClearH264Payload(videoPayload, out byte[] annexB, out string clearFormat))
+					if (MirrorH264Payloads.TryNormalizeClearH264Payload(videoPayload, out byte[] annexB, out string clearFormat))
 					{
 						RecordVideoPayloadShape(annexB);
 						VideoPayloadReceived?.Invoke(annexB, 0, Stopwatch.GetTimestamp());
@@ -746,7 +723,7 @@ public sealed class AirPlayProbeService : IDisposable
 						}
 						if (ShouldLogDecryptPayloadFailure(payloadType))
 						{
-							AppLog.Write($"AirPlay mirror video type={payloadType} payload could not be converted after decrypt attempt: size={payloadSize}, probe={DescribeH264Probe(videoPayload)}.");
+							AppLog.Write($"AirPlay mirror video type={payloadType} payload could not be converted after decrypt attempt: size={payloadSize}, probe={MirrorH264Payloads.DescribeH264Probe(videoPayload)}.");
 						}
 					}
 				continue;
@@ -760,7 +737,7 @@ public sealed class AirPlayProbeService : IDisposable
 				// structure) and then periodically, to identify the audio stream on the TCP data path.
 				if (discoveryCount <= 5 || discoveryCount % 250 == 0)
 				{
-					AppLog.Write($"AUDIO-DISCOVERY data-stream packet: type={payloadType}, option={payloadOption}, size={payloadSize}, count={discoveryCount}, head={DescribeHeadBytes(payload, 24)}");
+					AppLog.Write($"AUDIO-DISCOVERY data-stream packet: type={payloadType}, option={payloadOption}, size={payloadSize}, count={discoveryCount}, head={MirrorH264Payloads.DescribeHeadBytes(payload, 24)}");
 				}
 				continue;
 			}
@@ -772,39 +749,6 @@ public sealed class AirPlayProbeService : IDisposable
 		}
 
 		return emitted;
-	}
-
-	private static string DescribeHeadBytes(byte[] payload, int count)
-	{
-		if (payload == null || payload.Length == 0)
-		{
-			return "(empty)";
-		}
-		int n = Math.Min(count, payload.Length);
-		return BitConverter.ToString(payload, 0, n);
-	}
-
-	// Compact recursive description of a parsed plist (for audio-discovery logging). Byte arrays are
-	// shown as length + a short hex prefix so keys like ekey/eiv are visible without huge dumps.
-	private static string DescribePlistObject(object? value, int depth)
-	{
-		if (depth > 6)
-		{
-			return "...";
-		}
-		switch (value)
-		{
-			case null:
-				return "null";
-			case byte[] bytes:
-				return $"bytes[{bytes.Length}]{(bytes.Length > 0 ? " " + BitConverter.ToString(bytes, 0, Math.Min(16, bytes.Length)) : string.Empty)}";
-			case Dictionary<string, object?> dict:
-				return "{" + string.Join(", ", dict.Select(kv => kv.Key + "=" + DescribePlistObject(kv.Value, depth + 1))) + "}";
-			case System.Collections.IEnumerable enumerable when value is not string:
-				return "[" + string.Join(", ", enumerable.Cast<object?>().Select(item => DescribePlistObject(item, depth + 1))) + "]";
-			default:
-				return value.ToString() ?? "?";
-		}
 	}
 
 	private bool TryDecryptMirrorPayload(byte[] payload, out byte[] decryptedPayload)
@@ -864,7 +808,7 @@ public sealed class AirPlayProbeService : IDisposable
 			{
 				tested++;
 				byte[] preview = decryptor.Decrypt(encryptedPayload);
-				if (TryNormalizeClearH264Payload(preview, out byte[] candidateAnnexB, out string candidateFormat))
+				if (MirrorH264Payloads.TryNormalizeClearH264Payload(preview, out byte[] candidateAnnexB, out string candidateFormat))
 				{
 					annexB = candidateAnnexB;
 					selectedName = decryptor.Name;
@@ -890,7 +834,7 @@ public sealed class AirPlayProbeService : IDisposable
 
 				if (report.Count < 32)
 				{
-					report.Add(decryptor.Name + "/" + DescribeH264Probe(preview));
+					report.Add(decryptor.Name + "/" + MirrorH264Payloads.DescribeH264Probe(preview));
 				}
 			}
 
@@ -900,10 +844,10 @@ public sealed class AirPlayProbeService : IDisposable
 				shouldWriteDiagnostic = true;
 			}
 
-			encryptedKey = _encryptedMirrorAesKey == null ? null : CopyOf(_encryptedMirrorAesKey);
-			aesKey = _mirrorFairPlayAesKey == null ? null : CopyOf(_mirrorFairPlayAesKey);
-			sharedSecret = _mirrorSharedSecret == null ? null : CopyOf(_mirrorSharedSecret);
-			eiv = _mirrorEiv == null ? null : CopyOf(_mirrorEiv);
+			encryptedKey = _encryptedMirrorAesKey == null ? null : MirrorH264Payloads.CopyOf(_encryptedMirrorAesKey);
+			aesKey = _mirrorFairPlayAesKey == null ? null : MirrorH264Payloads.CopyOf(_mirrorFairPlayAesKey);
+			sharedSecret = _mirrorSharedSecret == null ? null : MirrorH264Payloads.CopyOf(_mirrorSharedSecret);
+			eiv = _mirrorEiv == null ? null : MirrorH264Payloads.CopyOf(_mirrorEiv);
 			streamConnectionId = _streamConnectionId;
 			rtspTargetSessionId = _rtspTargetSessionId;
 		}
@@ -925,10 +869,10 @@ public sealed class AirPlayProbeService : IDisposable
 		ulong? streamConnectionId;
 		lock (_mirrorKeyGate)
 		{
-			aesKey = _mirrorFairPlayAesKey == null ? null : CopyOf(_mirrorFairPlayAesKey);
-			sharedSecret = _mirrorSharedSecret == null ? null : CopyOf(_mirrorSharedSecret);
-			eiv = _mirrorEiv == null ? null : CopyOf(_mirrorEiv);
-			encryptedKey = _encryptedMirrorAesKey == null ? null : CopyOf(_encryptedMirrorAesKey);
+			aesKey = _mirrorFairPlayAesKey == null ? null : MirrorH264Payloads.CopyOf(_mirrorFairPlayAesKey);
+			sharedSecret = _mirrorSharedSecret == null ? null : MirrorH264Payloads.CopyOf(_mirrorSharedSecret);
+			eiv = _mirrorEiv == null ? null : MirrorH264Payloads.CopyOf(_mirrorEiv);
+			encryptedKey = _encryptedMirrorAesKey == null ? null : MirrorH264Payloads.CopyOf(_encryptedMirrorAesKey);
 			streamConnectionId = _streamConnectionId;
 		}
 
@@ -1019,10 +963,10 @@ public sealed class AirPlayProbeService : IDisposable
 				tested++;
 				byte[] preview = AirPlayMirrorDecryptor.DecryptPrefixOnce(candidate, encryptedPayload, ClearH264ProbeBytes);
 				int decryptedLength = encryptedPayload.Length - Math.Max(0, candidate.PayloadOffset);
-				if (MayBeClearH264Payload(preview, decryptedLength))
+				if (MirrorH264Payloads.MayBeClearH264Payload(preview, decryptedLength))
 				{
 					AirPlayMirrorDecryptor candidateDecryptor = AirPlayMirrorDecryptor.Create(candidate);
-					if (TryNormalizeClearH264Payload(candidateDecryptor.Decrypt(encryptedPayload), out byte[] candidateAnnexB, out string candidateFormat))
+					if (MirrorH264Payloads.TryNormalizeClearH264Payload(candidateDecryptor.Decrypt(encryptedPayload), out byte[] candidateAnnexB, out string candidateFormat))
 					{
 						decryptor = candidateDecryptor;
 						annexB = candidateAnnexB;
@@ -1035,7 +979,7 @@ public sealed class AirPlayProbeService : IDisposable
 
 				if (report.Count < 32)
 				{
-					report.Add(candidate.Name + "/" + DescribeH264Probe(preview));
+					report.Add(candidate.Name + "/" + MirrorH264Payloads.DescribeH264Probe(preview));
 				}
 			}
 		}
@@ -1046,36 +990,7 @@ public sealed class AirPlayProbeService : IDisposable
 	// TryNormalizeClearH264Payload settles on a first NAL unit using only this many leading bytes (an
 	// AVCC length + NAL header at each probed offset, or a leading Annex B start code), and
 	// DescribeH264Probe reads no further either.
-	internal const int ClearH264ProbeBytes = MaxH264PrefixProbeBytes + 5;
-
-	// Necessary condition for TryNormalizeClearH264Payload on a payload of payloadLength bytes, given
-	// at least its first min(ClearH264ProbeBytes, payloadLength) bytes: the first NAL unit must pass
-	// the same length and header checks at some probed AVCC offset, or follow an Annex B start code.
-	// Bytes decrypted with a wrong key almost never pass it.
-	internal static bool MayBeClearH264Payload(byte[] prefix, int payloadLength)
-	{
-		if (payloadLength < 5)
-		{
-			return false;
-		}
-
-		int maxOffset = Math.Min(MaxH264PrefixProbeBytes, Math.Max(0, payloadLength - 5));
-		for (int offset = 0; offset <= maxOffset; offset++)
-		{
-			int nalSize = BinaryPrimitives.ReadInt32BigEndian(prefix.AsSpan(offset, 4));
-			int nalOffset = offset + 4;
-			if (nalSize > 0 &&
-				nalSize <= MaxH264NalUnitLength &&
-				nalSize <= payloadLength - nalOffset &&
-				IsPlausibleH264NalHeader(prefix[nalOffset]))
-			{
-				return true;
-			}
-		}
-
-		int startCodeLength = StartCodeLengthAt(prefix, 0);
-		return startCodeLength > 0 && startCodeLength < payloadLength && IsPlausibleH264NalHeader(prefix[startCodeLength]);
-	}
+	internal const int ClearH264ProbeBytes = MirrorH264Payloads.MaxH264PrefixProbeBytes + 5;
 
 	private void TryWriteMirrorDiagnosticSnapshot(
 		int payloadType,
@@ -1161,7 +1076,7 @@ public sealed class AirPlayProbeService : IDisposable
 			yield break;
 		}
 
-		int maxOffset = Math.Min(MaxH264PrefixProbeBytes, Math.Max(0, payloadLength - 5));
+		int maxOffset = Math.Min(MirrorH264Payloads.MaxH264PrefixProbeBytes, Math.Max(0, payloadLength - 5));
 		for (int offset = 1; offset <= maxOffset; offset++)
 		{
 			yield return candidate with
@@ -1255,109 +1170,6 @@ public sealed class AirPlayProbeService : IDisposable
 		return Math.Clamp((int)Math.Round(value), 2, 8192);
 	}
 
-	internal static bool TryNormalizeClearH264Payload(byte[] payload, out byte[] annexB, out string format)
-	{
-		annexB = Array.Empty<byte>();
-		format = string.Empty;
-		if (payload.Length < 5)
-		{
-			return false;
-		}
-
-		// Try AVCC (length-prefixed) FIRST. Mac mirror video is AVCC, and probing Annex B
-		// first mis-fires when an AVCC big-endian length prefix coincides with a start code
-		// (NAL size 1 -> 00 00 00 01, size 256..511 -> 00 00 01 xx). That made
-		// TryUseAnnexBPayloadAtOffset copy the raw AVCC bytes verbatim, leaving the 4-byte
-		// length prefix in the stream and shifting every NAL by a byte, which corrupts slice
-		// headers ("non-intra slice in an IDR NAL unit", first_mb_in_slice != 0). AVCC parsing
-		// requires the whole payload to resolve exactly (cursor == length), so it is the
-		// stricter, safer check and must run before the lenient Annex B probe.
-		int maxOffset = Math.Min(MaxH264PrefixProbeBytes, Math.Max(0, payload.Length - 5));
-		for (int offset = 0; offset <= maxOffset; offset++)
-		{
-			if (TryConvertAvccPayloadAtOffset(payload, offset, littleEndianLength: false, out annexB, out int nalCount))
-			{
-				format = (offset == 0 ? "avcc-be" : "avcc-be@" + offset.ToString(CultureInfo.InvariantCulture)) + "/nal=" + nalCount.ToString(CultureInfo.InvariantCulture);
-				return true;
-			}
-		}
-
-		// Fallback: a genuine Annex B payload (no AVCC length framing resolved above).
-		if (TryUseAnnexBPayloadAtOffset(payload, 0, out annexB))
-		{
-			format = "annexb";
-			return true;
-		}
-
-		return false;
-	}
-
-	private static bool TryConvertAvccPayloadAtOffset(byte[] payload, int offset, bool littleEndianLength, out byte[] annexB, out int nalCount)
-	{
-		annexB = Array.Empty<byte>();
-		nalCount = 0;
-		if (offset < 0 || offset + 5 > payload.Length)
-		{
-			return false;
-		}
-
-		List<byte> output = new List<byte>();
-		int cursor = offset;
-		while (cursor + 4 <= payload.Length)
-		{
-			int nalSize = littleEndianLength
-				? BinaryPrimitives.ReadInt32LittleEndian(payload.AsSpan(cursor, 4))
-				: BinaryPrimitives.ReadInt32BigEndian(payload.AsSpan(cursor, 4));
-			int nalOffset = cursor + 4;
-			if (nalSize <= 0 || nalSize > MaxH264NalUnitLength || nalSize > payload.Length - nalOffset)
-			{
-				return false;
-			}
-			if (!IsPlausibleH264NalHeader(payload[nalOffset]))
-			{
-				return false;
-			}
-
-			output.Add(0);
-			output.Add(0);
-			output.Add(0);
-			output.Add(1);
-			for (int i = 0; i < nalSize; i++)
-			{
-				output.Add(payload[nalOffset + i]);
-			}
-			cursor = nalOffset + nalSize;
-			nalCount++;
-		}
-
-		if (nalCount == 0 || cursor != payload.Length)
-		{
-			return false;
-		}
-
-		annexB = output.ToArray();
-		return true;
-	}
-
-	private static bool TryUseAnnexBPayloadAtOffset(byte[] payload, int offset, out byte[] annexB)
-	{
-		annexB = Array.Empty<byte>();
-		if (!IsStartCodeAt(payload, offset))
-		{
-			return false;
-		}
-
-		int nalOffset = offset + StartCodeLengthAt(payload, offset);
-		if (nalOffset >= payload.Length || !IsPlausibleH264NalHeader(payload[nalOffset]))
-		{
-			return false;
-		}
-
-		annexB = new byte[payload.Length - offset];
-		Buffer.BlockCopy(payload, offset, annexB, 0, annexB.Length);
-		return true;
-	}
-
 	// Lightweight access-unit shape telemetry for the type=0 video path. Logs one summary
 	// line every ~10s with NAL composition counts only (no payload bytes, no key material,
 	// no screen content). Used to compare sender behaviour (e.g. Mac vs iPhone): whether a
@@ -1393,12 +1205,12 @@ public sealed class AirPlayProbeService : IDisposable
 		int offset = 0;
 		while (true)
 		{
-			int start = FindStartCode(annexB, offset, annexB.Length - 3);
+			int start = MirrorH264Payloads.FindStartCode(annexB, offset, annexB.Length - 3);
 			if (start < 0)
 			{
 				break;
 			}
-			int nalOffset = start + StartCodeLengthAt(annexB, start);
+			int nalOffset = start + MirrorH264Payloads.StartCodeLengthAt(annexB, start);
 			if (nalOffset >= annexB.Length)
 			{
 				break;
@@ -1495,82 +1307,6 @@ public sealed class AirPlayProbeService : IDisposable
 		{
 			AppLog.Write(summary);
 		}
-	}
-
-	internal static string DescribeH264Probe(byte[] payload)
-	{
-		if (payload.Length < 5)
-		{
-			return "short";
-		}
-
-		int beLength = BinaryPrimitives.ReadInt32BigEndian(payload.AsSpan(0, 4));
-		int leLength = BinaryPrimitives.ReadInt32LittleEndian(payload.AsSpan(0, 4));
-		int nalTypeAt4 = payload[4] & 0x1F;
-		int startCodeOffset = FindStartCode(payload, 0, Math.Min(MaxH264PrefixProbeBytes, payload.Length - 4));
-		string startCode = startCodeOffset >= 0 ? startCodeOffset.ToString(CultureInfo.InvariantCulture) : "none";
-		return "beLen=" + beLength.ToString(CultureInfo.InvariantCulture) +
-			",leLen=" + leLength.ToString(CultureInfo.InvariantCulture) +
-			",nal4=" + nalTypeAt4.ToString(CultureInfo.InvariantCulture) +
-			",start=" + startCode;
-	}
-
-	private static bool IsPlausibleH264NalHeader(byte header)
-	{
-		if ((header & 0x80) != 0)
-		{
-			return false;
-		}
-
-		int nalType = header & 0x1F;
-		return nalType == 1 ||
-			nalType == 5 ||
-			nalType == 6 ||
-			nalType == 7 ||
-			nalType == 8 ||
-			nalType == 9 ||
-			nalType == 14;
-	}
-
-	private static bool IsStartCodeAt(byte[] payload, int offset)
-	{
-		return StartCodeLengthAt(payload, offset) > 0;
-	}
-
-	private static int StartCodeLengthAt(byte[] payload, int offset)
-	{
-		if (offset + 3 <= payload.Length &&
-			payload[offset] == 0 &&
-			payload[offset + 1] == 0 &&
-			payload[offset + 2] == 1)
-		{
-			return 3;
-		}
-
-		if (offset + 4 <= payload.Length &&
-			payload[offset] == 0 &&
-			payload[offset + 1] == 0 &&
-			payload[offset + 2] == 0 &&
-			payload[offset + 3] == 1)
-		{
-			return 4;
-		}
-
-		return 0;
-	}
-
-	private static int FindStartCode(byte[] payload, int start, int endInclusive)
-	{
-		int end = Math.Min(endInclusive, payload.Length - 3);
-		for (int i = Math.Max(0, start); i <= end; i++)
-		{
-			if (IsStartCodeAt(payload, i))
-			{
-				return i;
-			}
-		}
-
-		return -1;
 	}
 
 
@@ -1696,14 +1432,14 @@ public sealed class AirPlayProbeService : IDisposable
 		{
 			// Dump the full SETUP plist so we can read the audio stream descriptor (type, codec/ct,
 			// audioFormat, sample rate, channels, requested UDP ports) and the encryption fields.
-			AppLog.Write("AUDIO-DISCOVERY SETUP plist: " + DescribePlistObject(request, 0));
+			AppLog.Write("AUDIO-DISCOVERY SETUP plist: " + AirPlaySetupPlist.DescribePlistObject(request, 0));
 		}
 
 		bool changed = false;
 		ulong? observedRtspTargetSessionId = null;
 		ulong? observedStreamConnectionId = null;
-		bool mirrorSetup = ContainsMirrorVideoStream(request);
-		if (TryReadRtspTargetSessionId(target, out ulong rtspTargetSessionId))
+		bool mirrorSetup = AirPlaySetupPlist.ContainsMirrorVideoStream(request);
+		if (AirPlaySetupPlist.TryReadRtspTargetSessionId(target, out ulong rtspTargetSessionId))
 		{
 			observedRtspTargetSessionId = rtspTargetSessionId;
 			lock (_mirrorKeyGate)
@@ -1713,7 +1449,7 @@ public sealed class AirPlayProbeService : IDisposable
 			AppLog.Write($"AirPlay SETUP RTSP target session id received: {rtspTargetSessionId}.");
 		}
 
-		if (TryReadData(request, "ekey", out byte[] encryptedKey))
+		if (AirPlaySetupPlist.TryReadData(request, "ekey", out byte[] encryptedKey))
 		{
 			mirrorSetup = true;
 			lock (_mirrorKeyGate)
@@ -1723,7 +1459,7 @@ public sealed class AirPlayProbeService : IDisposable
 				DisposeMirrorProbePoolLocked();
 				_streamConnectionId = null;
 				_decryptorStreamConnectionId = null;
-				_encryptedMirrorAesKey = CopyOf(encryptedKey);
+				_encryptedMirrorAesKey = MirrorH264Payloads.CopyOf(encryptedKey);
 				_mirrorFairPlayAesKey = null;
 				_mirrorSharedSecret = null;
 				_loggedWaitingForMirrorDecryptor = false;
@@ -1738,18 +1474,18 @@ public sealed class AirPlayProbeService : IDisposable
 			changed = true;
 		}
 
-		if (TryReadData(request, "eiv", out byte[] mirrorEiv))
+		if (AirPlaySetupPlist.TryReadData(request, "eiv", out byte[] mirrorEiv))
 		{
 			mirrorSetup = true;
 			lock (_mirrorKeyGate)
 			{
-				_mirrorEiv = CopyOf(mirrorEiv);
+				_mirrorEiv = MirrorH264Payloads.CopyOf(mirrorEiv);
 			}
 			AppLog.Write($"AirPlay SETUP mirror eiv received: {mirrorEiv.Length} bytes.");
 			changed = true;
 		}
 
-		if (TryReadStreamConnectionId(request, out ulong streamConnectionId))
+		if (AirPlaySetupPlist.TryReadStreamConnectionId(request, out ulong streamConnectionId))
 		{
 			observedStreamConnectionId = streamConnectionId;
 			lock (_mirrorKeyGate)
@@ -1922,9 +1658,9 @@ public sealed class AirPlayProbeService : IDisposable
 						return;
 					}
 
-				encryptedKey = _encryptedMirrorAesKey == null ? null : CopyOf(_encryptedMirrorAesKey);
+				encryptedKey = _encryptedMirrorAesKey == null ? null : MirrorH264Payloads.CopyOf(_encryptedMirrorAesKey);
 				streamConnectionId = _streamConnectionId;
-				eiv = _mirrorEiv == null ? null : CopyOf(_mirrorEiv);
+				eiv = _mirrorEiv == null ? null : MirrorH264Payloads.CopyOf(_mirrorEiv);
 				rtspTargetSessionId = _rtspTargetSessionId;
 			}
 
@@ -1960,8 +1696,8 @@ public sealed class AirPlayProbeService : IDisposable
 		lock (_mirrorKeyGate)
 		{
 			DisposeMirrorProbePoolLocked();
-			_mirrorFairPlayAesKey = CopyOf(aesKey);
-			_mirrorSharedSecret = CopyOf(sharedSecret);
+			_mirrorFairPlayAesKey = MirrorH264Payloads.CopyOf(aesKey);
+			_mirrorSharedSecret = MirrorH264Payloads.CopyOf(sharedSecret);
 			_mirrorDecryptorProbePool = probePool;
 			_decryptorStreamConnectionId = streamConnectionId.Value;
 			_loggedWaitingForMirrorDecryptor = false;
@@ -1994,137 +1730,6 @@ public sealed class AirPlayProbeService : IDisposable
 			decryptor.Dispose();
 		}
 		_mirrorDecryptorProbePool = null;
-	}
-
-	private static bool TryReadData(Dictionary<string, object?> dictionary, string key, out byte[] data)
-	{
-		if (dictionary.TryGetValue(key, out object? value) && value is byte[] bytes)
-		{
-			data = bytes;
-			return true;
-		}
-
-		data = Array.Empty<byte>();
-		return false;
-	}
-
-	private static bool TryReadStreamConnectionId(Dictionary<string, object?> request, out ulong streamConnectionId)
-	{
-		streamConnectionId = 0;
-		if (!request.TryGetValue("streams", out object? streamsObject) || streamsObject is not List<object?> streams)
-		{
-			return false;
-		}
-
-		foreach (Dictionary<string, object?> stream in streams.OfType<Dictionary<string, object?>>())
-		{
-			if (TryReadUInt64(stream, "streamConnectionID", out streamConnectionId))
-			{
-				return true;
-			}
-		}
-
-		return false;
-	}
-
-	private static bool ContainsMirrorVideoStream(Dictionary<string, object?> request)
-	{
-		if (!request.TryGetValue("streams", out object? streamsObject) || streamsObject is not List<object?> streams)
-		{
-			return false;
-		}
-
-		foreach (Dictionary<string, object?> stream in streams.OfType<Dictionary<string, object?>>())
-		{
-			if (TryReadInt32(stream, "type", out int streamType) && streamType == 110)
-			{
-				return true;
-			}
-		}
-
-		return false;
-	}
-
-	private static bool TryReadRtspTargetSessionId(string target, out ulong sessionId)
-	{
-		sessionId = 0;
-		int slash = target.LastIndexOf('/');
-		if (slash < 0 || slash + 1 >= target.Length)
-		{
-			return false;
-		}
-
-		return ulong.TryParse(target.AsSpan(slash + 1), out sessionId);
-	}
-
-	private static bool TryReadInt32(Dictionary<string, object?> dictionary, string key, out int value)
-	{
-		value = 0;
-		if (!dictionary.TryGetValue(key, out object? rawValue))
-		{
-			return false;
-		}
-
-		switch (rawValue)
-		{
-			case byte number:
-				value = number;
-				return true;
-			case short number:
-				value = number;
-				return true;
-			case int number:
-				value = number;
-				return true;
-			case long number when number >= int.MinValue && number <= int.MaxValue:
-				value = (int)number;
-				return true;
-			case ulong number when number <= int.MaxValue:
-				value = (int)number;
-				return true;
-			default:
-				return false;
-		}
-	}
-
-	private static bool TryReadUInt64(Dictionary<string, object?> dictionary, string key, out ulong value)
-	{
-		value = 0;
-		if (!dictionary.TryGetValue(key, out object? rawValue))
-		{
-			return false;
-		}
-
-		switch (rawValue)
-		{
-			case byte number:
-				value = number;
-				return true;
-			case short number when number >= 0:
-				value = (ulong)number;
-				return true;
-			case int number when number >= 0:
-				value = (ulong)number;
-				return true;
-			case long number when number >= 0:
-				value = (ulong)number;
-				return true;
-			case long number:
-				value = unchecked((ulong)number);
-				return true;
-			case ulong number:
-				value = number;
-				return true;
-			default:
-				return false;
-		}
-	}
-
-	private static byte[] CopyOf(byte[] source)
-	{
-		byte[] copy = new byte[source.Length];
-		Buffer.BlockCopy(source, 0, copy, 0, source.Length);
-		return copy;
 	}
 
 	private byte[] BuildResponse(AirPlayRequest request, EndPoint? remoteEndPoint, long connectionId)
