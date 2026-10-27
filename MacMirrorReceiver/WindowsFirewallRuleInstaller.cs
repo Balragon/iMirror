@@ -75,25 +75,18 @@ internal static class WindowsFirewallRuleInstaller
 				"Could not find the iMirror executable at " + fullPath);
 		}
 
-		string scriptPath;
 		try
 		{
-			scriptPath = Path.Combine(Path.GetTempPath(), $"iMirror-firewall-{Guid.NewGuid():N}.ps1");
-			File.WriteAllText(scriptPath, BuildFirewallRuleScript(fullPath), new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
-		}
-		catch (Exception ex)
-		{
-			return new FirewallRuleInstallResult(
-				FirewallRuleInstallStatus.Failed,
-				"Could not prepare the firewall rule installer: " + ex.Message);
-		}
-
-		try
-		{
+			// The script is passed inline (-EncodedCommand) rather than through a file in %TEMP%:
+			// an elevated PowerShell only reads a -File script after the user accepts the UAC
+			// prompt, which gave any unelevated process running as the same user a window to
+			// replace the file and have its contents run as administrator. PowerShell itself is
+			// resolved by absolute path so ShellExecute cannot pick up a planted powershell.exe
+			// from the working directory.
 			using Process? process = Process.Start(new ProcessStartInfo
 			{
-				FileName = "powershell.exe",
-				Arguments = "-NoProfile -ExecutionPolicy Bypass -File " + QuoteCommandLineArgument(scriptPath),
+				FileName = PowerShellPath,
+				Arguments = BuildEncodedCommandArguments(BuildFirewallRuleScript(fullPath)),
 				UseShellExecute = true,
 				Verb = "runas",
 				WindowStyle = ProcessWindowStyle.Hidden
@@ -146,10 +139,21 @@ internal static class WindowsFirewallRuleInstaller
 				FirewallRuleInstallStatus.Failed,
 				"Could not update Windows Firewall: " + ex.Message);
 		}
-		finally
-		{
-			TryDeleteFile(scriptPath);
-		}
+	}
+
+	/// <summary>Absolute path of Windows PowerShell; never resolved through PATH or the CWD.</summary>
+	internal static string PowerShellPath { get; } =
+		Path.Combine(Environment.SystemDirectory, "WindowsPowerShell", "v1.0", "powershell.exe");
+
+	/// <summary>
+	/// Builds the PowerShell command line that runs <paramref name="script"/> inline. The script
+	/// is base64 of its UTF-16LE bytes, which is what -EncodedCommand expects, so no quoting or
+	/// escaping of the script text is involved.
+	/// </summary>
+	internal static string BuildEncodedCommandArguments(string script)
+	{
+		string encoded = Convert.ToBase64String(Encoding.Unicode.GetBytes(script));
+		return "-NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand " + encoded;
 	}
 
 	internal static string BuildFirewallRuleScript(string executablePath)
@@ -200,23 +204,12 @@ if ($matchingRules.Count -gt 0) {
 			return false;
 		}
 
-		string scriptPath;
-		try
-		{
-			scriptPath = Path.Combine(Path.GetTempPath(), $"iMirror-firewall-check-{Guid.NewGuid():N}.ps1");
-			File.WriteAllText(scriptPath, BuildFirewallRuleCheckScript(fullPath), new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
-		}
-		catch
-		{
-			return false;
-		}
-
 		try
 		{
 			using Process? process = Process.Start(new ProcessStartInfo
 			{
-				FileName = "powershell.exe",
-				Arguments = "-NoProfile -ExecutionPolicy Bypass -File " + QuoteCommandLineArgument(scriptPath),
+				FileName = PowerShellPath,
+				Arguments = BuildEncodedCommandArguments(BuildFirewallRuleCheckScript(fullPath)),
 				UseShellExecute = false,
 				CreateNoWindow = true,
 				WindowStyle = ProcessWindowStyle.Hidden
@@ -242,10 +235,6 @@ if ($matchingRules.Count -gt 0) {
 		catch
 		{
 			return false;
-		}
-		finally
-		{
-			TryDeleteFile(scriptPath);
 		}
 	}
 
@@ -282,22 +271,6 @@ exit 1
 	private static string QuotePowerShellSingleQuotedString(string value)
 	{
 		return "'" + value.Replace("'", "''", StringComparison.Ordinal) + "'";
-	}
-
-	private static string QuoteCommandLineArgument(string value)
-	{
-		return "\"" + value.Replace("\"", "\\\"", StringComparison.Ordinal) + "\"";
-	}
-
-	private static void TryDeleteFile(string path)
-	{
-		try
-		{
-			File.Delete(path);
-		}
-		catch
-		{
-		}
 	}
 
 	private static void TryKillProcess(Process process)
