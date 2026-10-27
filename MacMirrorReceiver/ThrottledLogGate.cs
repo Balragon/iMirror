@@ -10,8 +10,11 @@ namespace MacMirrorReceiver;
 /// </summary>
 internal sealed class ThrottledLogGate
 {
+	// Far in the past, so a fresh or reset gate lets its first caller through whatever the clock reads.
+	private const long NeverPassed = long.MinValue / 2;
+
 	private readonly long _intervalMilliseconds;
-	private long _lastPassTick;
+	private long _lastPassTick = NeverPassed;
 
 	public ThrottledLogGate(TimeSpan interval)
 	{
@@ -37,6 +40,6 @@ internal sealed class ThrottledLogGate
 	/// <summary>Lets the next caller through regardless of the interval.</summary>
 	public void Reset()
 	{
-		Interlocked.Exchange(ref _lastPassTick, 0L);
+		Interlocked.Exchange(ref _lastPassTick, NeverPassed);
 	}
 }
