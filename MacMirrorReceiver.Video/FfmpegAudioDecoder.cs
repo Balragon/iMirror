@@ -24,21 +24,14 @@ public sealed class FfmpegAudioDecoder : IDisposable
 	private readonly int _pcmFrameBytes;
 	private readonly CancellationTokenSource _cts = new CancellationTokenSource();
 	private readonly object _processGate = new object();
-	private readonly object _inputGate = new object();
-	private readonly SemaphoreSlim _inputSignal = new SemaphoreSlim(0);
-	private readonly Queue<AacAudioInputFrame> _inputQueue = new Queue<AacAudioInputFrame>();
+	private readonly object _seenGate = new object();
+	private readonly PipeInputQueue<AacAudioInputFrame> _inputQueue = new PipeInputQueue<AacAudioInputFrame>(MaxQueuedInputFrames, MaxQueuedInputBytes, frame => frame.Payload.Length);
+	private readonly PipeWriteMetrics _writeMetrics = new PipeWriteMetrics(WriteStallThresholdMs);
 	private readonly AudioTimingQueue _writtenTiming = new AudioTimingQueue();
 	private readonly HashSet<ushort> _seenSequences = new HashSet<ushort>();
 	private readonly Queue<ushort> _seenSequenceOrder = new Queue<ushort>();
-	private long _queuedInputBytes;
-	private long _acceptedInputFrames;
-	private long _writtenInputFrames;
 	private long _decodedPcmFrames;
 	private long _duplicateInputFrames;
-	private long _latestWriteMilliseconds;
-	private long _maxWriteMilliseconds;
-	private long _writeStalls;
-	private long _lastWriteStallStatusTick;
 	private uint? _baseRtpTimestamp;
 	private ulong _nextDecodeTime;
 	private uint _fragmentSequence = 1;
@@ -62,43 +55,25 @@ public sealed class FfmpegAudioDecoder : IDisposable
 
 	public int PcmFrameBytes => _pcmFrameBytes;
 
-	public long AcceptedInputFrames => Interlocked.Read(ref _acceptedInputFrames);
+	public long AcceptedInputFrames => _inputQueue.Accepted;
 
-	public long WrittenInputFrames => Interlocked.Read(ref _writtenInputFrames);
+	public long WrittenInputFrames => _writeMetrics.Written;
 
 	public long DecodedPcmFrames => Interlocked.Read(ref _decodedPcmFrames);
 
 	public long DuplicateInputFrames => Interlocked.Read(ref _duplicateInputFrames);
 
-	public long DroppedInputFrames { get; private set; }
+	public long DroppedInputFrames => _inputQueue.Dropped;
 
-	public long LatestWriteMilliseconds => Interlocked.Read(ref _latestWriteMilliseconds);
+	public long LatestWriteMilliseconds => _writeMetrics.LatestMilliseconds;
 
-	public long MaxWriteMilliseconds => Interlocked.Read(ref _maxWriteMilliseconds);
+	public long MaxWriteMilliseconds => _writeMetrics.MaxMilliseconds;
 
-	public long WriteStalls => Interlocked.Read(ref _writeStalls);
+	public long WriteStalls => _writeMetrics.Stalls;
 
-	public int QueuedInputFrames
-	{
-		get
-		{
-			lock (_inputGate)
-			{
-				return _inputQueue.Count;
-			}
-		}
-	}
+	public int QueuedInputFrames => _inputQueue.Count;
 
-	public long QueuedInputBytes
-	{
-		get
-		{
-			lock (_inputGate)
-			{
-				return _queuedInputBytes;
-			}
-		}
-	}
+	public long QueuedInputBytes => _inputQueue.Bytes;
 
 	public event Action<string>? StatusChanged;
 
@@ -106,25 +81,18 @@ public sealed class FfmpegAudioDecoder : IDisposable
 
 	public void Start()
 	{
-		string? ffmpegPath = FfmpegDecoder.FindFfmpeg();
-		if (ffmpegPath == null)
-		{
-			throw new InvalidOperationException("ffmpeg.exe was not found. Put it on PATH or at tools\\ffmpeg\\bin\\ffmpeg.exe.");
-		}
-
-		StartFfmpegProcess(ffmpegPath);
+		StartFfmpegProcess(FfmpegPipe.FindFfmpegOrThrow());
 		_writeTask = Task.Run(WriteInputLoopAsync);
 	}
 
 	public bool QueueFrame(byte[] frame, uint rtpTimestamp, ushort sequence, long receivedTick)
 	{
-		if (frame == null || frame.Length == 0 || _cts.IsCancellationRequested || !IsProcessAlive(_process))
+		if (frame == null || frame.Length == 0 || _cts.IsCancellationRequested || !FfmpegPipe.IsAlive(_process))
 		{
 			return false;
 		}
 
-		bool shouldSignal = false;
-		lock (_inputGate)
+		lock (_seenGate)
 		{
 			if (_seenSequences.Contains(sequence))
 			{
@@ -137,28 +105,16 @@ public sealed class FfmpegAudioDecoder : IDisposable
 			{
 				_seenSequences.Remove(_seenSequenceOrder.Dequeue());
 			}
-
-			if (_inputQueue.Count >= MaxQueuedInputFrames || _queuedInputBytes + frame.Length > MaxQueuedInputBytes)
-			{
-				// Only the not-yet-written frames are dropped. _writtenTiming describes frames
-				// already inside ffmpeg whose PCM is still to come, so it must stay intact or
-				// every later PCM frame would be paired with a newer packet's timing and the
-				// latency estimate would under-report for the rest of the session.
-				DroppedInputFrames += _inputQueue.Count;
-				_inputQueue.Clear();
-				_queuedInputBytes = 0L;
-				this.StatusChanged?.Invoke("Audio decoder input overflow: flushed queued AAC frames to recover low latency.");
-			}
-
-			shouldSignal = _inputQueue.Count == 0;
-			_inputQueue.Enqueue(new AacAudioInputFrame(frame, rtpTimestamp, sequence, receivedTick));
-			_queuedInputBytes += frame.Length;
-			Interlocked.Increment(ref _acceptedInputFrames);
 		}
 
-		if (shouldSignal)
+		// On overflow only the not-yet-written frames are dropped. _writtenTiming describes frames
+		// already inside ffmpeg whose PCM is still to come, so it must stay intact or every later
+		// PCM frame would be paired with a newer packet's timing and the latency estimate would
+		// under-report for the rest of the session.
+		PipeEnqueueResult result = _inputQueue.Enqueue(new AacAudioInputFrame(frame, rtpTimestamp, sequence, receivedTick), static _ => true);
+		if (result.Flushed > 0)
 		{
-			_inputSignal.Release();
+			this.StatusChanged?.Invoke("Audio decoder input overflow: flushed queued AAC frames to recover low latency.");
 		}
 		return true;
 	}
@@ -166,22 +122,7 @@ public sealed class FfmpegAudioDecoder : IDisposable
 	private void StartFfmpegProcess(string ffmpegPath)
 	{
 		string arguments = BuildArguments();
-		var process = new Process
-		{
-			StartInfo = new ProcessStartInfo
-			{
-				FileName = ffmpegPath,
-				Arguments = arguments,
-				UseShellExecute = false,
-				RedirectStandardInput = true,
-				RedirectStandardOutput = true,
-				RedirectStandardError = true,
-				CreateNoWindow = true
-			},
-			EnableRaisingEvents = true
-		};
-		process.Start();
-		TrySetAboveNormalPriority(process);
+		Process process = FfmpegPipe.Start(ffmpegPath, arguments);
 		lock (_processGate)
 		{
 			_process = process;
@@ -189,7 +130,12 @@ public sealed class FfmpegAudioDecoder : IDisposable
 
 		this.StatusChanged?.Invoke($"FFmpeg audio decoder started: {ffmpegPath} (AAC-ELD -> s16le {_sampleRate}Hz/{_channels}ch)");
 		this.StatusChanged?.Invoke($"FFmpeg audio cmd: {ffmpegPath} {arguments}");
-		Task.Run(() => ReadErrorLinesAsync(process));
+		Task.Run(() => FfmpegPipe.ReadStderrLinesAsync(
+			process,
+			() => ReferenceEquals(_process, process),
+			_cts.Token,
+			line => this.StatusChanged?.Invoke("audio: " + line),
+			message => this.StatusChanged?.Invoke("FFmpeg audio stderr reader stopped: " + message)));
 		_readTask = Task.Run(() => ReadPcmFramesAsync(process));
 	}
 
@@ -200,31 +146,9 @@ public sealed class FfmpegAudioDecoder : IDisposable
 			+ $"-f s16le -acodec pcm_s16le -ar {_sampleRate} -ac {_channels} pipe:1";
 	}
 
-	private async Task ReadErrorLinesAsync(Process process)
-	{
-		try
-		{
-			while (!_cts.IsCancellationRequested && ReferenceEquals(_process, process))
-			{
-				string? line = await process.StandardError.ReadLineAsync();
-				if (line == null)
-				{
-					break;
-				}
-				if (!string.IsNullOrWhiteSpace(line))
-				{
-					this.StatusChanged?.Invoke("audio: " + line.Trim());
-				}
-			}
-		}
-		catch
-		{
-		}
-	}
-
 	private async Task WriteInputLoopAsync()
 	{
-		SetCurrentThreadAboveNormal();
+		FfmpegPipe.SetCurrentThreadAboveNormal();
 		try
 		{
 			Process? process = _process;
@@ -237,54 +161,7 @@ public sealed class FfmpegAudioDecoder : IDisposable
 			await process.StandardInput.BaseStream.WriteAsync(init, _cts.Token);
 			await process.StandardInput.BaseStream.FlushAsync(_cts.Token);
 
-			while (!_cts.IsCancellationRequested)
-			{
-				await _inputSignal.WaitAsync(_cts.Token);
-				while (!_cts.IsCancellationRequested)
-				{
-					AacAudioInputFrame? packet = null;
-					lock (_inputGate)
-					{
-						if (_inputQueue.Count > 0)
-						{
-							packet = _inputQueue.Dequeue();
-							_queuedInputBytes = Math.Max(0L, _queuedInputBytes - packet.Payload.Length);
-						}
-					}
-					if (packet == null)
-					{
-						break;
-					}
-
-					process = _process;
-					if (!IsProcessAlive(process))
-					{
-						return;
-					}
-
-					try
-					{
-						ulong sourceTimestampNanos = CalculateAudioSourceTimestampNanos(packet.RtpTimestamp);
-						byte[] segment = BuildMediaSegment(packet.Payload, _fragmentSequence++, _nextDecodeTime, _samplesPerFrame);
-						_nextDecodeTime += (ulong)_samplesPerFrame;
-						long startTick = Stopwatch.GetTimestamp();
-						await process!.StandardInput.BaseStream.WriteAsync(segment, _cts.Token);
-						await process.StandardInput.BaseStream.FlushAsync(_cts.Token);
-						long endTick = Stopwatch.GetTimestamp();
-						int staleTimings = _writtenTiming.Enqueue(new AudioFrameTiming(packet.RtpTimestamp, packet.Sequence, packet.ReceivedTick, sourceTimestampNanos), startTick);
-						if (staleTimings > 0)
-						{
-							this.StatusChanged?.Invoke($"Audio decoder realigned frame timing: dropped {staleTimings} stale entr{(staleTimings == 1 ? "y" : "ies")} left by frames ffmpeg never returned.");
-						}
-						RecordWriteMetrics(ElapsedMilliseconds(startTick, endTick));
-					}
-					catch (Exception ex) when (ex is IOException || ex is InvalidOperationException || ex is ObjectDisposedException)
-					{
-						this.StatusChanged?.Invoke("Audio decoder input stopped: " + ex.Message);
-						return;
-					}
-				}
-			}
+			await FfmpegPipe.RunInputLoopAsync(_inputQueue, WritePacketAsync, _cts.Token);
 		}
 		catch (OperationCanceledException)
 		{
@@ -295,55 +172,48 @@ public sealed class FfmpegAudioDecoder : IDisposable
 		}
 	}
 
-	private async Task ReadPcmFramesAsync(Process process)
+	private async Task<bool> WritePacketAsync(AacAudioInputFrame packet)
 	{
-		SetCurrentThreadAboveNormal();
+		Process? process = _process;
+		if (!FfmpegPipe.IsAlive(process))
+		{
+			return false;
+		}
+
 		try
 		{
-			Stream stream = process.StandardOutput.BaseStream;
-			while (!_cts.IsCancellationRequested)
+			ulong sourceTimestampNanos = CalculateAudioSourceTimestampNanos(packet.RtpTimestamp);
+			byte[] segment = BuildMediaSegment(packet.Payload, _fragmentSequence++, _nextDecodeTime, _samplesPerFrame);
+			_nextDecodeTime += (ulong)_samplesPerFrame;
+			long startTick = Stopwatch.GetTimestamp();
+			await process!.StandardInput.BaseStream.WriteAsync(segment, _cts.Token);
+			await process.StandardInput.BaseStream.FlushAsync(_cts.Token);
+			long endTick = Stopwatch.GetTimestamp();
+			int staleTimings = _writtenTiming.Enqueue(new AudioFrameTiming(packet.RtpTimestamp, packet.Sequence, packet.ReceivedTick, sourceTimestampNanos), startTick);
+			if (staleTimings > 0)
 			{
-				byte[] buffer = ArrayPool<byte>.Shared.Rent(_pcmFrameBytes);
-				try
-				{
-					await ReadExactAsync(stream, buffer, _pcmFrameBytes, _cts.Token);
-					AudioFrameTiming timing = _writtenTiming.DequeueOrEmpty();
-
-					var frame = new AudioPcmFrame
-					{
-						Buffer = buffer,
-						ByteCount = _pcmFrameBytes,
-						SampleRate = _sampleRate,
-						Channels = _channels,
-						SamplesPerFrame = _samplesPerFrame,
-						RtpTimestamp = timing.RtpTimestamp,
-						Sequence = timing.Sequence,
-						ReceivedTick = timing.ReceivedTick,
-						DecodedTick = Stopwatch.GetTimestamp(),
-						SourceTimestampNanos = timing.SourceTimestampNanos,
-						ReturnBuffer = rented => ArrayPool<byte>.Shared.Return(rented)
-					};
-
-					if (this.PcmFrameDecoded is { } handler)
-					{
-						handler(frame);
-					}
-					else
-					{
-						frame.Release();
-					}
-
-					if (Interlocked.Increment(ref _decodedPcmFrames) == 1)
-					{
-						this.StatusChanged?.Invoke("FFmpeg audio decoded first PCM frame.");
-					}
-				}
-				catch
-				{
-					ArrayPool<byte>.Shared.Return(buffer);
-					throw;
-				}
+				this.StatusChanged?.Invoke($"Audio decoder realigned frame timing: dropped {staleTimings} stale entr{(staleTimings == 1 ? "y" : "ies")} left by frames ffmpeg never returned.");
 			}
+			long writeMs = FfmpegPipe.ElapsedMilliseconds(startTick, endTick);
+			if (_writeMetrics.Record(writeMs))
+			{
+				this.StatusChanged?.Invoke($"FFmpeg audio stdin write stall: {writeMs}ms, queued={QueuedInputFrames}, dropped={DroppedInputFrames:N0}");
+			}
+			return true;
+		}
+		catch (Exception ex) when (ex is IOException || ex is InvalidOperationException || ex is ObjectDisposedException)
+		{
+			this.StatusChanged?.Invoke("Audio decoder input stopped: " + ex.Message);
+			return false;
+		}
+	}
+
+	private async Task ReadPcmFramesAsync(Process process)
+	{
+		FfmpegPipe.SetCurrentThreadAboveNormal();
+		try
+		{
+			await FfmpegPipe.ReadFixedSizeFramesAsync(process.StandardOutput.BaseStream, _pcmFrameBytes, OnPcmFrameRead, _cts.Token);
 		}
 		catch (OperationCanceledException)
 		{
@@ -357,6 +227,40 @@ public sealed class FfmpegAudioDecoder : IDisposable
 		}
 	}
 
+	private void OnPcmFrameRead(byte[] buffer)
+	{
+		AudioFrameTiming timing = _writtenTiming.DequeueOrEmpty();
+
+		var frame = new AudioPcmFrame
+		{
+			Buffer = buffer,
+			ByteCount = _pcmFrameBytes,
+			SampleRate = _sampleRate,
+			Channels = _channels,
+			SamplesPerFrame = _samplesPerFrame,
+			RtpTimestamp = timing.RtpTimestamp,
+			Sequence = timing.Sequence,
+			ReceivedTick = timing.ReceivedTick,
+			DecodedTick = Stopwatch.GetTimestamp(),
+			SourceTimestampNanos = timing.SourceTimestampNanos,
+			ReturnBuffer = rented => ArrayPool<byte>.Shared.Return(rented)
+		};
+
+		if (this.PcmFrameDecoded is { } handler)
+		{
+			handler(frame);
+		}
+		else
+		{
+			frame.Release();
+		}
+
+		if (Interlocked.Increment(ref _decodedPcmFrames) == 1)
+		{
+			this.StatusChanged?.Invoke("FFmpeg audio decoded first PCM frame.");
+		}
+	}
+
 	private ulong CalculateAudioSourceTimestampNanos(uint rtpTimestamp)
 	{
 		if (!_baseRtpTimestamp.HasValue)
@@ -367,36 +271,6 @@ public sealed class FfmpegAudioDecoder : IDisposable
 
 		uint delta = unchecked(rtpTimestamp - _baseRtpTimestamp.Value);
 		return (ulong)Math.Round((double)delta * 1_000_000_000.0 / _sampleRate);
-	}
-
-	private void RecordWriteMetrics(long writeMs)
-	{
-		Interlocked.Increment(ref _writtenInputFrames);
-		Interlocked.Exchange(ref _latestWriteMilliseconds, writeMs);
-		long previousMax;
-		do
-		{
-			previousMax = Interlocked.Read(ref _maxWriteMilliseconds);
-			if (writeMs <= previousMax)
-			{
-				break;
-			}
-		}
-		while (Interlocked.CompareExchange(ref _maxWriteMilliseconds, writeMs, previousMax) != previousMax);
-
-		if (writeMs < WriteStallThresholdMs)
-		{
-			return;
-		}
-
-		Interlocked.Increment(ref _writeStalls);
-		long now = Environment.TickCount64;
-		long previous = Interlocked.Read(ref _lastWriteStallStatusTick);
-		if (now - previous >= 1000)
-		{
-			Interlocked.Exchange(ref _lastWriteStallStatusTick, now);
-			this.StatusChanged?.Invoke($"FFmpeg audio stdin write stall: {writeMs}ms, queued={QueuedInputFrames}, dropped={DroppedInputFrames:N0}");
-		}
 	}
 
 	internal static byte[] BuildInitSegment(int sampleRate, int channels, int samplesPerFrame)
@@ -631,86 +505,10 @@ public sealed class FfmpegAudioDecoder : IDisposable
 		};
 	}
 
-	private static async Task ReadExactAsync(Stream stream, byte[] buffer, int count, CancellationToken cancellationToken)
-	{
-		int read;
-		for (int offset = 0; offset < count; offset += read)
-		{
-			read = await stream.ReadAsync(buffer.AsMemory(offset, count - offset), cancellationToken);
-			if (read == 0)
-			{
-				throw new EndOfStreamException();
-			}
-		}
-	}
-
-	private static long ElapsedMilliseconds(long startTick, long endTick)
-	{
-		if (endTick <= startTick)
-		{
-			return 0L;
-		}
-		return Math.Max(0L, (long)Math.Round((double)(endTick - startTick) * 1000.0 / Stopwatch.Frequency));
-	}
-
-	private static void TrySetAboveNormalPriority(Process process)
-	{
-		try
-		{
-			process.PriorityClass = ProcessPriorityClass.AboveNormal;
-		}
-		catch
-		{
-		}
-	}
-
-	private static void SetCurrentThreadAboveNormal()
-	{
-		try
-		{
-			Thread.CurrentThread.Priority = ThreadPriority.AboveNormal;
-		}
-		catch
-		{
-		}
-	}
-
-	private static bool IsProcessAlive(Process? process)
-	{
-		if (process == null)
-		{
-			return false;
-		}
-		try
-		{
-			return !process.HasExited;
-		}
-		catch (InvalidOperationException)
-		{
-			return false;
-		}
-	}
-
 	public void Dispose()
 	{
 		_cts.Cancel();
-		try
-		{
-			_process?.StandardInput.Close();
-		}
-		catch
-		{
-		}
-		try
-		{
-			if (IsProcessAlive(_process))
-			{
-				_process!.Kill(entireProcessTree: true);
-			}
-		}
-		catch
-		{
-		}
+		FfmpegPipe.Kill(_process);
 		try
 		{
 			_readTask?.Wait(TimeSpan.FromSeconds(1.0));
@@ -720,7 +518,7 @@ public sealed class FfmpegAudioDecoder : IDisposable
 		{
 		}
 		_process?.Dispose();
-		_inputSignal.Dispose();
+		_inputQueue.Dispose();
 		_cts.Dispose();
 	}
 

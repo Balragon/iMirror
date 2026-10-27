@@ -70,7 +70,7 @@ internal static class StartupDiagnostics
 
 	private static PreflightCheck CheckFfmpeg()
 	{
-		string? path = FfmpegDecoder.FindFfmpeg();
+		string? path = FfmpegPipe.FindFfmpeg();
 		if (path != null)
 		{
 			return new PreflightCheck("ffmpeg", "FFmpeg", PreflightStatus.Ok, "Found.", path);

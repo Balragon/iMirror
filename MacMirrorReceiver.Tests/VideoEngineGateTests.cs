@@ -135,7 +135,7 @@ public sealed class VideoEngineGateTests
 			Directory.CreateDirectory(Path.GetDirectoryName(ffmpegPath)!);
 			File.WriteAllBytes(ffmpegPath, Array.Empty<byte>());
 
-			string? result = FfmpegDecoder.FindFfmpegInAncestorTools(startDirectory);
+			string? result = FfmpegPipe.FindFfmpegInAncestorTools(startDirectory);
 
 			Assert.Equal(ffmpegPath, result);
 		}
