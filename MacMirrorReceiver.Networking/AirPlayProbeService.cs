@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Buffers.Binary;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -95,6 +95,11 @@ public sealed class AirPlayProbeService : IDisposable
 	private readonly int _mdnsPort;
 	private readonly string _displayName;
 	private readonly string _hostName;
+	// Names this responder answers mDNS queries for (see PacketAsksForProbe).
+	private readonly string[] _mdnsAnsweredNames;
+	private long _lastQueryResponseTicks = long.MinValue / 2;
+	private const int QueryResponseMinimumIntervalMilliseconds = 1000;
+	private const string DnsSdServiceEnumerationName = "_services._dns-sd._udp.local";
 	private readonly string _airPlayInstanceName;
 	private readonly string _raopInstanceName;
 	private readonly string _deviceId;
@@ -208,6 +213,7 @@ public sealed class AirPlayProbeService : IDisposable
 		_pairingId = Guid.NewGuid().ToString("D");
 		_airPlayInstanceName = _displayName + "." + AirPlayServiceType;
 		_raopInstanceName = _deviceId.Replace(":", "", StringComparison.Ordinal) + "@" + _displayName + "." + RaopServiceType;
+		_mdnsAnsweredNames = new[] { AirPlayServiceType, RaopServiceType, DnsSdServiceEnumerationName, _airPlayInstanceName, _raopInstanceName, _hostName };
 		_audioAdvertised = advertiseAudio;
 		_writeDiagnostics = writeDiagnostics;
 		_dumpAudio = dumpAudio;
@@ -2292,10 +2298,22 @@ public sealed class AirPlayProbeService : IDisposable
 			try
 			{
 				UdpReceiveResult result = await _mdnsClient!.ReceiveAsync(_cts.Token);
-				if (PacketAsksForProbe(result.Buffer))
+				if (!PacketAsksForProbe(result.Buffer, _mdnsAnsweredNames))
 				{
-					await SendAnnouncementAsync(_cts.Token);
+					continue;
 				}
+
+				// RFC 6762 section 6: a multicast responder must not send a given record more
+				// than once per second. Queries from many hosts (or a flood from one) collapse
+				// into at most one announcement per second; the periodic announce loop and
+				// the goodbye are unaffected.
+				long now = Environment.TickCount64;
+				if (now - _lastQueryResponseTicks < QueryResponseMinimumIntervalMilliseconds)
+				{
+					continue;
+				}
+				_lastQueryResponseTicks = now;
+				await SendAnnouncementAsync(_cts.Token);
 			}
 			catch (OperationCanceledException)
 			{
@@ -2423,9 +2441,23 @@ public sealed class AirPlayProbeService : IDisposable
 			};
 	}
 
-	private static bool PacketAsksForProbe(byte[] packet)
+	/// <summary>
+	/// True when <paramref name="packet"/> is an mDNS query (QR bit clear) and one of its
+	/// questions names something this responder answers for: the two service types, the
+	/// DNS-SD service enumeration name, our instance names or our host name. Responses
+	/// from other devices and queries for other names (every ".local" name on the LAN,
+	/// Chromecasts, printers, other AirPlay receivers) are ignored, so this responder
+	/// neither amplifies other hosts' traffic nor answers for them.
+	/// </summary>
+	internal static bool PacketAsksForProbe(byte[] packet, IReadOnlyCollection<string> answeredNames)
 	{
 		if (packet.Length < 12)
+		{
+			return false;
+		}
+
+		// Header flags: QR (bit 15) set means this is a response, not a query.
+		if ((packet[2] & 0x80) != 0)
 		{
 			return false;
 		}
@@ -2442,29 +2474,60 @@ public sealed class AirPlayProbeService : IDisposable
 					break;
 				}
 				offset += 4;
-				if (IsProbeName(name))
+				if (IsAnsweredName(name, answeredNames))
 				{
 					return true;
 				}
 			}
 		}
-		catch
+		catch (Exception ex) when (ex is IndexOutOfRangeException || ex is ArgumentException || ex is DecoderFallbackException)
 		{
+			// Malformed question section: treat as not for us.
 		}
 
-		string payload = Encoding.ASCII.GetString(packet);
-		return payload.Contains("_airplay", StringComparison.OrdinalIgnoreCase) ||
-			payload.Contains("_raop", StringComparison.OrdinalIgnoreCase);
+		return false;
 	}
 
-	private static bool IsProbeName(string name)
+	private static bool IsAnsweredName(string name, IReadOnlyCollection<string> answeredNames)
 	{
-		return name.EndsWith(AirPlayServiceType, StringComparison.OrdinalIgnoreCase) ||
-			name.EndsWith(RaopServiceType, StringComparison.OrdinalIgnoreCase) ||
-			name.EndsWith(".local", StringComparison.OrdinalIgnoreCase);
+		string trimmed = name.TrimEnd('.');
+		foreach (string answered in answeredNames)
+		{
+			if (string.Equals(trimmed, answered, StringComparison.OrdinalIgnoreCase))
+			{
+				return true;
+			}
+		}
+		return false;
 	}
 
+	private static readonly object LocalAddressCacheGate = new object();
+	private static IReadOnlyList<IPAddress>? _cachedLocalAddresses;
+	private static long _cachedLocalAddressesTicks;
+	private const int LocalAddressCacheMilliseconds = 30_000;
+
+	/// <summary>
+	/// Local IPv4 addresses for the A records, cached for 30 s. Enumerating adapters is a
+	/// slow Win32 call and this runs on the mDNS receive thread for every answered query.
+	/// </summary>
 	private static IReadOnlyList<IPAddress> ResolveLocalIPv4Addresses()
+	{
+		lock (LocalAddressCacheGate)
+		{
+			long now = Environment.TickCount64;
+			if (_cachedLocalAddresses != null && now - _cachedLocalAddressesTicks < LocalAddressCacheMilliseconds)
+			{
+				return _cachedLocalAddresses;
+			}
+
+			IReadOnlyList<IPAddress> fresh = EnumerateLocalIPv4Addresses();
+			_cachedLocalAddresses = fresh;
+			_cachedLocalAddressesTicks = now;
+			return fresh;
+		}
+	}
+
+	private static IReadOnlyList<IPAddress> EnumerateLocalIPv4Addresses()
 	{
 		List<IPAddress> addresses = new List<IPAddress>();
 		foreach (NetworkInterface networkInterface in NetworkInterface.GetAllNetworkInterfaces())
