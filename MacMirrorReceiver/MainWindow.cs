@@ -82,6 +82,8 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 
 	private const long SoftwareMaxLiveFrameAgeMilliseconds = 240;
 
+	private const long SoftwareMaxPresentGapMilliseconds = 250;
+
 	private const int MaxAutoReconnectAttempts = 5;
 
 	// Keep the initial SPS/PPS/IDR burst while the decoder/render sink spins up.
@@ -205,6 +207,9 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 	private long _staleSoftwareFramesDropped;
 
 	private long _lastStaleSoftwareFrameDropLogTick;
+
+	// UI thread only.
+	private long _lastSoftwarePresentTick;
 
 	private long _latestReceiveToRenderMs;
 
@@ -1433,6 +1438,7 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 			_renderDroppedFrames = 0L;
 			_staleSoftwareFramesDropped = 0L;
 			_lastStaleSoftwareFrameDropLogTick = 0L;
+			_lastSoftwarePresentTick = 0L;
 			_latestReceiveToRenderMs = 0L;
 			_latestDecodeToRenderMs = 0L;
 			_receiveToPresentLatencyWindow.Reset();
@@ -2866,7 +2872,13 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 			if (frame.ReceivedTick > 0)
 			{
 				long ageMs = ElapsedMilliseconds(frame.ReceivedTick, renderStartTick);
-				if (ageMs > SoftwareMaxLiveFrameAgeMilliseconds)
+				// The pending frame is always the newest one, so dropping it never shows anything
+				// fresher; under sustained latency every frame would be dropped and the screen would
+				// freeze. Present a stale frame anyway once the screen has gone too long without one.
+				long sinceLastPresentMs = _lastSoftwarePresentTick == 0
+					? 0
+					: ElapsedMilliseconds(_lastSoftwarePresentTick, renderStartTick);
+				if (ageMs > SoftwareMaxLiveFrameAgeMilliseconds && sinceLastPresentMs < SoftwareMaxPresentGapMilliseconds)
 				{
 					Interlocked.Increment(ref _renderDroppedFrames);
 					long staleDropped = Interlocked.Increment(ref _staleSoftwareFramesDropped);
@@ -2878,6 +2890,7 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 
 			PresentFrameToActiveRenderer(frame);
 			long renderDoneTick = Stopwatch.GetTimestamp();
+			_lastSoftwarePresentTick = renderDoneTick;
 			long renderedFrames = Interlocked.Increment(ref _renderedFrames);
 			if (frame.ReceivedTick > 0)
 			{

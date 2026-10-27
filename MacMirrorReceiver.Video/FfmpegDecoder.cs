@@ -21,6 +21,11 @@ public sealed class FfmpegDecoder : IDisposable
 
 	private const string OutputPixelFormat = "bgra";
 
+	// Written after every packet. FFmpeg's raw H.264 parser only closes an access unit when it
+	// sees the start of the next one, so without this each frame waits for the following packet
+	// (one frame at 60fps, seconds for sparse updates). An AUD marks the boundary immediately.
+	private static readonly byte[] AccessUnitDelimiter = { 0x00, 0x00, 0x00, 0x01, 0x09, 0xF0 };
+
 	private readonly int _inputWidth;
 
 	private readonly int _inputHeight;
@@ -401,12 +406,20 @@ public sealed class FfmpegDecoder : IDisposable
 		// streams. Smaller portrait/phone streams do not need that much parallelism; using fewer
 		// frame threads keeps the software fallback below its latency tier without reintroducing
 		// the old 1080p backlog.
+		// NOTE (measured 2026-10-27, FFmpeg 8.1.1): libavcodec disables frame threading whenever
+		// AV_CODEC_FLAG_LOW_DELAY is set, so with "-flags low_delay" the decoder actually runs on
+		// one thread (cpu/real 1.0, same fps as -threads 1). It still decodes 1080p desktop
+		// content at ~400 fps, so the flag stays; the thread settings below are effectively inert.
+		// Output "-threads 1": the rawvideo encoder otherwise runs frame-threaded and holds three
+		// frames before emitting the first, which is ~50ms at 60fps and seconds when the Mac sends
+		// sparse updates (typing, cursor blink) — long enough for every such frame to be dropped as
+		// stale before presentation.
 		int decoderThreads = ResolveDecoderThreadCount(_outputWidth, _outputHeight, _targetOutputFps);
 		return "-hide_banner -loglevel error -flags low_delay -probesize 1M -analyzeduration 200000 -avioflags direct -max_delay 0 "
 			+ GetDecoderInputArgument()
 			+ $"-threads {decoderThreads} -thread_type frame -f h264 -i pipe:0 "
 			+ videoFilter
-			+ $"-fps_mode passthrough -f rawvideo -pix_fmt {OutputPixelFormat} pipe:1";
+			+ $"-fps_mode passthrough -threads 1 -f rawvideo -pix_fmt {OutputPixelFormat} pipe:1";
 	}
 
 	internal static int ResolveDecoderThreadCount(int outputWidth, int outputHeight, int targetOutputFps)
@@ -454,7 +467,8 @@ public sealed class FfmpegDecoder : IDisposable
 				string? text = await process.StandardError.ReadLineAsync();
 				if (text != null)
 				{
-					if (!string.IsNullOrWhiteSpace(text))
+					// The trailing AccessUnitDelimiter has no picture after it when stdin closes.
+					if (!string.IsNullOrWhiteSpace(text) && !text.Contains("missing picture in access unit with size 6", StringComparison.Ordinal))
 					{
 						this.StatusChanged?.Invoke(text.Trim());
 					}
@@ -608,6 +622,7 @@ public sealed class FfmpegDecoder : IDisposable
 							Interlocked.Exchange(ref _latestInputSourceTimestampNanos, unchecked((long)packet.SourceTimestampNanos));
 							long startTick = Stopwatch.GetTimestamp();
 							await process.StandardInput.BaseStream.WriteAsync(packet.Payload, _cts.Token);
+							await process.StandardInput.BaseStream.WriteAsync(AccessUnitDelimiter, _cts.Token);
 							long endTick = Stopwatch.GetTimestamp();
 							lock (_fifoGate)
 							{
