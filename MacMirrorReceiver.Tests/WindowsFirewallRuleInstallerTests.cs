@@ -1,3 +1,6 @@
+using System;
+using System.IO;
+using System.Text;
 using MacMirrorReceiver;
 using Xunit;
 
@@ -42,6 +45,29 @@ public sealed class WindowsFirewallRuleInstallerTests
 		Assert.Contains(@"$program = 'C:\Tools\iMirror\iMirror.exe'", script);
 		Assert.Contains("exit 0", script);
 		Assert.Contains("exit 1", script);
+	}
+
+	[Fact]
+	public void BuildEncodedCommandArguments_EncodesScriptAsUtf16Base64WithoutAFile()
+	{
+		string script = WindowsFirewallRuleInstaller.BuildFirewallRuleScript(@"C:\Users\John's PC\iMirror.exe");
+
+		string arguments = WindowsFirewallRuleInstaller.BuildEncodedCommandArguments(script);
+
+		Assert.StartsWith("-NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand ", arguments);
+		Assert.DoesNotContain("-File", arguments);
+		string encoded = arguments.Substring(arguments.LastIndexOf(' ') + 1);
+		Assert.Equal(script, Encoding.Unicode.GetString(Convert.FromBase64String(encoded)));
+	}
+
+	[Fact]
+	public void PowerShellPath_IsAbsoluteUnderTheSystemDirectory()
+	{
+		string path = WindowsFirewallRuleInstaller.PowerShellPath;
+
+		Assert.True(Path.IsPathRooted(path));
+		Assert.StartsWith(Environment.SystemDirectory, path, StringComparison.OrdinalIgnoreCase);
+		Assert.EndsWith(@"WindowsPowerShell\v1.0\powershell.exe", path, StringComparison.OrdinalIgnoreCase);
 	}
 
 	[Fact]

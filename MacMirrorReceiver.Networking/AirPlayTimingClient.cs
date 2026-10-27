@@ -31,14 +31,42 @@ internal sealed class AirPlayTimingClient : IDisposable
 		lock (_gate)
 		{
 			_cts?.Cancel();
+			_cts?.Dispose();
+			_cts = null;
 			_client?.Dispose();
+			_client = null;
+			UdpClient client;
+			try
+			{
+				client = new UdpClient(new IPEndPoint(IPAddress.Any, _localPort));
+			}
+			catch (SocketException ex)
+			{
+				// Timing is best-effort (the replies are not consumed). A bind failure, e.g.
+				// another program holding UDP 7102, must not escape into the SETUP handler,
+				// where it would be treated as the control connection closing.
+				AppLog.Write($"AirPlay timing UDP port {_localPort} unavailable ({ex.SocketErrorCode}); continuing without timing requests.");
+				return;
+			}
+
 			_cts = new CancellationTokenSource();
-			_client = new UdpClient(new IPEndPoint(IPAddress.Any, _localPort));
-			_client.Client.ReceiveTimeout = 100;
-			_ = Task.Run(() => SendTimingLoopAsync(_client, new IPEndPoint(remoteAddress, remotePort), _cts.Token));
+			_client = client;
+			_ = Task.Run(() => SendTimingLoopAsync(client, new IPEndPoint(remoteAddress, remotePort), _cts.Token));
 		}
 
 		AppLog.Write($"AirPlay timing UDP started from local port {_localPort} to {remoteAddress}:{remotePort}.");
+	}
+
+	/// <summary>True while a timing socket is bound and the request loop is running.</summary>
+	public bool IsRunning
+	{
+		get
+		{
+			lock (_gate)
+			{
+				return _client != null;
+			}
+		}
 	}
 
 	private static async Task SendTimingLoopAsync(UdpClient client, IPEndPoint endpoint, CancellationToken token)

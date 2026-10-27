@@ -154,6 +154,7 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 	private volatile bool _videoSinkAcceptingInput;
 
 	private readonly object _audioGate = new object();
+	private readonly AudioStartBackoff _audioStartBackoff = new AudioStartBackoff();
 
 	// 3s warmup grace: BeginWarmup fires at decoder (re)start, but frames only flow after FFmpeg/MF
 	// spin-up (~0.8s) plus decryptor settling, so a shorter grace lets a startup straggler inflate
@@ -396,14 +397,37 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 
 	private async void Window_Loaded(object sender, RoutedEventArgs e)
 	{
+		// async void: an unhandled exception here goes to DispatcherUnhandledException, which
+		// only logs it, so the process would exit at startup. Each step is isolated so a
+		// failing discovery/listener/preflight step degrades the UI instead of killing the app.
 		AppLog.Write("MainWindow Loaded entered.");
-		await _browser.StartAsync();
-		await _airPlayProbe.StartAsync();
-		PreflightReport report = await StartupDiagnostics.RunAsync(_airPlayProbe);
-		AppLog.Write($"Preflight: {report.Worst} - " +
-			string.Join("; ", System.Linq.Enumerable.Select(report.Checks, check => $"{check.Id}={check.Status}")));
-		BindReadinessStrip(report);
+		await RunStartupStepAsync("mDNS browser start", () => _browser.StartAsync());
+		await RunStartupStepAsync("AirPlay probe start", () => _airPlayProbe.StartAsync());
+		PreflightReport? report = null;
+		await RunStartupStepAsync("startup preflight", async () => report = await StartupDiagnostics.RunAsync(_airPlayProbe));
+		if (report != null)
+		{
+			AppLog.Write($"Preflight: {report.Worst} - " +
+				string.Join("; ", System.Linq.Enumerable.Select(report.Checks, check => $"{check.Id}={check.Status}")));
+			BindReadinessStrip(report);
+		}
+		else
+		{
+			SetStatus("Startup checks could not run; see the log for details.");
+		}
 		_ = _updateController.CheckForUpdatesOnStartupAsync();
+	}
+
+	private static async Task RunStartupStepAsync(string label, Func<Task> step)
+	{
+		try
+		{
+			await step();
+		}
+		catch (Exception ex)
+		{
+			AppLog.Write($"Startup step '{label}' failed: {ex}");
+		}
 	}
 
 	private void BindReadinessStrip(PreflightReport report)
@@ -875,6 +899,16 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 			return;
 		}
 
+		if (Volatile.Read(ref _shutdownStarted))
+		{
+			// During shutdown the UI thread is blocked inside _airPlayProbe.Dispose() (which
+			// waits up to 1 s for the network tasks that raise this event), so a blocking
+			// Invoke could never be pumped and only burned the whole wait. The session state
+			// is about to be torn down anyway.
+			AppLog.Write("AirPlay mirror session ended during shutdown; skipping UI state reset.");
+			return;
+		}
+
 		base.Dispatcher.Invoke(new Action(delegate
 		{
 			ResetAirPlayMirrorSessionState(activeSession: false, "AirPlay session ended.", "AirPlay mirror session state reset after sender ended the session.");
@@ -1014,6 +1048,9 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 			{
 				StopAudioPipelineLocked();
 			}
+			// A new SETUP (new session or new format) gets a fresh start attempt regardless
+			// of earlier failures in this session.
+			_audioStartBackoff.Reset();
 			StartAudioPipelineLocked("AirPlay audio stream setup");
 			if (_audioDecoder != null && _audioOutput != null)
 			{
@@ -1203,6 +1240,12 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 		{
 			return;
 		}
+		if (!_audioStartBackoff.ShouldAttempt(Environment.TickCount64))
+		{
+			// A recent start failed; HandleAirPlayAudioFrame calls here on every frame, so
+			// without this the WASAPI client and ffmpeg spawn were retried ~100 times a second.
+			return;
+		}
 
 		try
 		{
@@ -1220,6 +1263,7 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 			long decoderTick = Stopwatch.GetTimestamp();
 
 			_audioStatus = $"started ({_audioSampleRate}Hz/{_audioChannels}ch/{_audioSamplesPerFrame}spf)";
+			_audioStartBackoff.Reset();
 			AppLog.Write(
 				$"Audio pipeline started for {reason} in {Stopwatch.GetElapsedTime(startTick, decoderTick).TotalMilliseconds:N0}ms " +
 				$"(wasapi={Stopwatch.GetElapsedTime(startTick, outputTick).TotalMilliseconds:N0}ms, " +
@@ -1228,9 +1272,10 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 		}
 		catch (Exception ex)
 		{
-			_audioStatus = "failed: " + ex.Message;
-			AppLog.Write("Audio pipeline failed to start: " + ex);
 			StopAudioPipelineLocked();
+			TimeSpan retryDelay = _audioStartBackoff.RecordFailure(Environment.TickCount64);
+			_audioStatus = $"failed: {ex.Message} (retry in {retryDelay.TotalSeconds:N0}s)";
+			AppLog.Write($"Audio pipeline failed to start (attempt {_audioStartBackoff.ConsecutiveFailures}, next retry in {retryDelay.TotalSeconds:N0}s): {ex}");
 			QueueDiagnosticsUpdate();
 		}
 	}
@@ -1461,6 +1506,7 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 			_audioPcmFrames = 0L;
 			_audioPcmBytes = 0L;
 			_audioStatus = "waiting for stream";
+			_audioStartBackoff.Reset();
 			StopAudioPipeline();
 			_streamConfig = null;
 			ResetRemoteCursorState();
@@ -2436,13 +2482,21 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 		// cap the decoded/presented output to keep decode + present load manageable.
 		_decoderMaxRenderWidth = Math.Min(ResolveMaxRenderWidth(config), ResponsiveMaxRenderWidth);
 		_decoderOutputFps = ResolveOutputFps(config, _decoderMaxRenderWidth);
-		_decoder = new FfmpegDecoder(config.Width, config.Height, config.Fps, _decoderMaxRenderWidth, _decoderOutputFps);
-		_decoder.DumpH264Enabled = StartupReceiverSettings.Effective.DumpH264;
-		_decoder.StatusChanged += delegate(string message)
+		// Every callback below checks that the raising decoder is still the active one: a
+		// callback from a decoder that StartFreshDecoder has already replaced (its Dispose only
+		// waits ~1 s for the read/write tasks) must not touch the new decoder's state.
+		FfmpegDecoder decoder = new FfmpegDecoder(config.Width, config.Height, config.Fps, _decoderMaxRenderWidth, _decoderOutputFps);
+		_decoder = decoder;
+		decoder.DumpH264Enabled = StartupReceiverSettings.Effective.DumpH264;
+		decoder.StatusChanged += delegate(string message)
 		{
 			string message2 = message;
 			base.Dispatcher.BeginInvoke(new Action(delegate
 			{
+				if (!ReferenceEquals(_decoder, decoder))
+				{
+					return;
+				}
 				_decoderStatus = message2;
 				AppLog.Write("Decoder status: " + message2);
 				if (IsDecoderResyncError(message2))
@@ -2462,27 +2516,45 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 				UpdateDiagnostics();
 			}), DispatcherPriority.Background);
 		};
-		_decoder.FrameDecoded += QueueFrameForPresentation;
-		_decoder.DecoderRestarted += delegate
+		decoder.FrameDecoded += delegate(VideoFrame frame)
 		{
-			base.Dispatcher.Invoke(delegate
+			if (!ReferenceEquals(Volatile.Read(ref _decoder), decoder))
 			{
+				frame.Release();
+				return;
+			}
+			QueueFrameForPresentation(frame);
+		};
+		// BeginInvoke, not Invoke: this fires from the decoder's read task, which Dispose()
+		// waits on from the UI thread, so a blocking Invoke here could deadlock for that wait.
+		decoder.DecoderRestarted += delegate
+		{
+			base.Dispatcher.BeginInvoke(new Action(delegate
+			{
+				if (!ReferenceEquals(_decoder, decoder))
+				{
+					return;
+				}
 				Interlocked.Increment(ref _decoderRestarts);
 				RequireH264Keyframe();
 				AppLog.Write("Decoder restarted (hwaccel fallback); requiring fresh SPS/PPS keyframe.");
 				UpdateDiagnostics();
-			});
+			}));
 		};
-		_decoder.InputQueueOverflowed += delegate
+		decoder.InputQueueOverflowed += delegate
 		{
 			base.Dispatcher.BeginInvoke(new Action(delegate
 			{
+				if (!ReferenceEquals(_decoder, decoder))
+				{
+					return;
+				}
 				RequireH264Keyframe();
 				AppLog.Write("Decoder input queue overflowed; holding video until next keyframe.");
 				UpdateDiagnostics();
 			}));
 		};
-		_decoder.Start();
+		decoder.Start();
 		_decoderStatus = "started";
 		_videoSinkAcceptingInput = true;
 		FlushPendingVideoToSink();
@@ -2541,11 +2613,20 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 					UpdateDiagnostics();
 				}), DispatcherPriority.Background);
 			};
+			// Each callback checks that this decoder is still the active one. Without that, a
+			// queued Faulted from a decoder that StartFreshDecoder (or a synchronous present
+			// failure) already replaced would dispose the replacement and disable the GPU
+			// path for the session, and a late FrameDecoded could hand a texture from the
+			// old device to the new presenter.
 			decoder.StatusChanged += delegate(string message)
 			{
 				string message2 = message;
 				base.Dispatcher.BeginInvoke(new Action(delegate
 				{
+					if (!ReferenceEquals(_mediaFoundationD3DDecoder, decoder))
+					{
+						return;
+					}
 					_decoderStatus = message2;
 					AppLog.Write("Media Foundation D3D11 decoder status: " + message2);
 					SetStatus(message2);
@@ -2557,10 +2638,23 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 				string message2 = message;
 				base.Dispatcher.BeginInvoke(new Action(delegate
 				{
+					if (!ReferenceEquals(_mediaFoundationD3DDecoder, decoder))
+					{
+						AppLog.Write("Ignoring fault from a superseded Media Foundation decoder: " + message2);
+						return;
+					}
 					HandleHighResolutionD3DFatal("High-resolution D3D decoder faulted: " + message2);
 				}), DispatcherPriority.Background);
 			};
-			decoder.FrameDecoded += QueueD3DFrameForPresentation;
+			decoder.FrameDecoded += delegate(IHighResolutionD3DFrame frame)
+			{
+				if (!ReferenceEquals(Volatile.Read(ref _mediaFoundationD3DDecoder), decoder))
+				{
+					frame.Dispose();
+					return;
+				}
+				QueueD3DFrameForPresentation(frame);
+			};
 			decoder.Start();
 			_decoderStatus = "Media Foundation D3D11 decoder started";
 			AppLog.Write($"High-resolution D3D path active for {reason}: {config.Width}x{config.Height}@{config.Fps}, gpuBinding=Vortice, d3d11MultithreadProtected={presenter.IsMultithreadProtected}.");

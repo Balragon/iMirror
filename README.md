@@ -122,7 +122,7 @@ $env:IMIRROR_DUMP_AUDIO = "1"
 $env:IMIRROR_AUDIO_DISCOVERY = "1"  # verbose data-stream logging only
 ```
 
-Generated logs, H.264 dumps, audio dumps, and diagnostic snapshots can contain private screen content or key material. They are ignored by git and should stay local.
+Generated logs, H.264 dumps, audio dumps, and diagnostic snapshots can contain private screen content or key material. They should stay local. The default locations under `%LOCALAPPDATA%\iMirror` are outside the repository, and the dump file extensions are git-ignored, but `IMIRROR_DUMP_AUDIO` / `IMIRROR_DUMP_H264` accept arbitrary paths, so do not point them inside a checkout.
 
 ## Validation Tools
 

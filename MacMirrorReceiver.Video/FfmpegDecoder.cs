@@ -798,6 +798,12 @@ public sealed class FfmpegDecoder : IDisposable
 	{
 		lock (_processGate)
 		{
+			if (_cts.IsCancellationRequested)
+			{
+				// Dispose() killed the process; the resulting EndOfStream is not a decoder
+				// failure, and starting a replacement ffmpeg.exe here would leak it.
+				return false;
+			}
 			if (!ReferenceEquals(_process, failedProcess))
 			{
 				return true;
@@ -978,7 +984,18 @@ public sealed class FfmpegDecoder : IDisposable
 		catch
 		{
 		}
-		_process?.Dispose();
+		// Kill whatever process is current now: a hwaccel fallback racing this Dispose could
+		// have replaced _process after the Kill above, and a bare Dispose() leaves it running.
+		Process? remaining;
+		lock (_processGate)
+		{
+			remaining = _process;
+			_process = null;
+		}
+		if (remaining != null)
+		{
+			StopProcess(remaining);
+		}
 		_submittedDump?.Dispose();
 		_writtenDump?.Dispose();
 		_inputSignal.Dispose();
