@@ -3,7 +3,6 @@ using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Diagnostics;
-using DrawingIcon = System.Drawing.Icon;
 using System.Linq;
 using System.Net;
 using System.Net.Sockets;
@@ -23,7 +22,6 @@ using MacMirrorReceiver.Models;
 using MacMirrorReceiver.Networking;
 using MacMirrorReceiver.Protocol;
 using MacMirrorReceiver.Video;
-using Forms = System.Windows.Forms;
 using Wpf.Ui.Controls;
 
 namespace MacMirrorReceiver;
@@ -35,36 +33,6 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 		Auto = 0,
 		Quality = 3
 	}
-
-	private const int GwlStyle = -16;
-
-	private const int GwlExtendedStyle = -20;
-
-	private const long WindowStyleCaption = 0x00C00000L;
-
-	private const long WindowStyleThickFrame = 0x00040000L;
-
-	private const long WindowStyleSystemMenu = 0x00080000L;
-
-	private const long WindowStyleMinimizeBox = 0x00020000L;
-
-	private const long WindowStyleMaximizeBox = 0x00010000L;
-
-	private const uint SetWindowPosNoMove = 0x0002;
-
-	private const uint SetWindowPosNoSize = 0x0001;
-
-	private const uint SetWindowPosNoZOrder = 0x0004;
-
-	private const uint SetWindowPosNoActivate = 0x0010;
-
-	private const uint SetWindowPosFrameChanged = 0x0020;
-
-	private const uint SetWindowPosShowWindow = 0x0040;
-
-	private static readonly IntPtr HwndTopmost = new IntPtr(-1);
-
-	private static readonly IntPtr HwndNotTopmost = new IntPtr(-2);
 
 	private const int RealtimeMaxRenderWidth = 3840;
 
@@ -136,9 +104,7 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 	private readonly object _frameGate = new object();
 
 
-	private readonly object _pendingVideoGate = new object();
-
-	private readonly Queue<PendingVideoPayload> _pendingVideoBeforeSink = new Queue<PendingVideoPayload>();
+	private readonly PendingVideoBuffer _pendingVideoBeforeSink = new PendingVideoBuffer(MaxPendingVideoPacketsBeforeSink, MaxPendingVideoBytesBeforeSink);
 
 	private volatile bool _videoSinkAcceptingInput;
 
@@ -210,10 +176,6 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 
 	private long _lastVideoHealthRenderedFrames;
 
-	private long _pendingVideoBytesBeforeSink;
-
-	private long _pendingVideoDroppedBeforeSink;
-
 	private long _lastPendingVideoDropLogTick;
 
 	private long _decoderRestarts;
@@ -271,8 +233,6 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 
 	private int _audioSamplesPerFrame = 480;
 
-	private readonly record struct PendingVideoPayload(byte[] Payload, ulong SourceTimestampNanos, long ReceivedTick);
-
 	private string _statusText = "Waiting for iPhone or iPad...";
 
 	private bool _isFullscreen;
@@ -285,11 +245,9 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 
 	private readonly UpdateController _updateController;
 
-	private Forms.NotifyIcon? _trayIcon;
+	private TrayIconHost? _trayIconHost;
 
-	private Forms.ContextMenuStrip? _trayMenu;
-
-	private DrawingIcon? _trayIconImage;
+	private readonly NativeWindowFrame _nativeFrame = new NativeWindowFrame();
 
 	private bool? _appliedLightThemeIcon;
 
@@ -310,12 +268,6 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 	private Rect _previousWindowBounds;
 
 	private Stretch _previousVideoStretch = Stretch.Uniform;
-
-	private nint _previousNativeWindowStyle;
-
-	private nint _previousNativeExtendedWindowStyle;
-
-	private bool _previousNativeWindowStyleCaptured;
 
 	public MainWindow()
 	{
@@ -652,49 +604,14 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 
 	private void InitializeTrayIcon()
 	{
-		try
-		{
-			_trayIconImage = CreateTrayIconImage();
-			_trayMenu = new Forms.ContextMenuStrip();
-			var showItem = new Forms.ToolStripMenuItem("Show iMirror");
-			showItem.Click += delegate
-			{
-				RestoreFromTray();
-			};
-			var settingsItem = new Forms.ToolStripMenuItem("Settings...");
-			settingsItem.Click += delegate
+		_trayIconHost = new TrayIconHost(
+			RestoreFromTray,
+			() =>
 			{
 				RestoreFromTray();
 				ShowSettingsWindow();
-			};
-			var exitItem = new Forms.ToolStripMenuItem("Exit");
-			exitItem.Click += async delegate
-			{
-				await ShutdownApplicationAsync();
-			};
-			_trayMenu.Items.Add(showItem);
-			_trayMenu.Items.Add(settingsItem);
-			_trayMenu.Items.Add(new Forms.ToolStripSeparator());
-			_trayMenu.Items.Add(exitItem);
-
-			_trayIcon = new Forms.NotifyIcon
-			{
-				ContextMenuStrip = _trayMenu,
-				Icon = _trayIconImage,
-				Text = "iMirror",
-				Visible = true
-			};
-			_trayIcon.MouseUp += TrayIcon_MouseUp;
-			_trayIcon.DoubleClick += delegate
-			{
-				RestoreFromTray();
-			};
-		}
-		catch (Exception ex)
-		{
-			AppLog.Write("Tray icon initialization failed: " + ex);
-			DisposeTrayIcon();
-		}
+			},
+			ShutdownApplicationAsync);
 	}
 
 	private void SystemEvents_UserPreferenceChanged(object sender, Microsoft.Win32.UserPreferenceChangedEventArgs e)
@@ -734,67 +651,10 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 			AppLog.Write($"Window icon update failed ({iconUri}): {ex.Message}");
 		}
 
-		if (_trayIcon != null)
-		{
-			DrawingIcon? previous = _trayIconImage;
-			try
-			{
-				DrawingIcon trayImage = LoadTrayIconImage(iconUri);
-				_trayIconImage = trayImage;
-				_trayIcon.Icon = trayImage;
-				previous?.Dispose();
-			}
-			catch (Exception ex)
-			{
-				AppLog.Write($"Tray icon update failed ({iconUri}): {ex.Message}");
-			}
-		}
+		_trayIconHost?.ApplyIcon(iconUri);
 
 		_appliedLightThemeIcon = light;
 		AppLog.Write("App icon set for " + (light ? "light" : "dark") + " Windows theme.");
-	}
-
-	private static DrawingIcon LoadTrayIconImage(Uri resourceUri)
-	{
-		System.Windows.Resources.StreamResourceInfo? resource = Application.GetResourceStream(resourceUri);
-		if (resource == null)
-		{
-			throw new InvalidOperationException("Icon resource not found: " + resourceUri);
-		}
-		using System.IO.Stream stream = resource.Stream;
-		// The tray wants a small frame; System.Drawing picks the best match for 32x32 from the
-		// multi-size .ico and scales to the shell's current icon size.
-		return new DrawingIcon(stream, 32, 32);
-	}
-
-	private static DrawingIcon CreateTrayIconImage()
-	{
-		try
-		{
-			string? executablePath = Environment.ProcessPath;
-			if (!string.IsNullOrWhiteSpace(executablePath))
-			{
-				DrawingIcon? icon = DrawingIcon.ExtractAssociatedIcon(executablePath);
-				if (icon != null)
-				{
-					return icon;
-				}
-			}
-		}
-		catch (Exception ex)
-		{
-			AppLog.Write("App icon extraction failed: " + ex.Message);
-		}
-
-		return (DrawingIcon)System.Drawing.SystemIcons.Application.Clone();
-	}
-
-	private void TrayIcon_MouseUp(object? sender, Forms.MouseEventArgs e)
-	{
-		if (e.Button == Forms.MouseButtons.Left)
-		{
-			RestoreFromTray();
-		}
 	}
 
 	private void RestoreFromTray()
@@ -843,22 +703,9 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 
 	private void DisposeTrayIcon()
 	{
-		Forms.NotifyIcon? trayIcon = _trayIcon;
-		_trayIcon = null;
-		if (trayIcon != null)
-		{
-			trayIcon.MouseUp -= TrayIcon_MouseUp;
-			trayIcon.Visible = false;
-			trayIcon.Dispose();
-		}
-
-		Forms.ContextMenuStrip? trayMenu = _trayMenu;
-		_trayMenu = null;
-		trayMenu?.Dispose();
-
-		DrawingIcon? trayIconImage = _trayIconImage;
-		_trayIconImage = null;
-		trayIconImage?.Dispose();
+		TrayIconHost? host = _trayIconHost;
+		_trayIconHost = null;
+		host?.Dispose();
 	}
 
 	ReceiverSettingsSnapshot ISettingsHost.StartupReceiverSettings => StartupReceiverSettings;
@@ -1534,7 +1381,7 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 			_decoderRestarts = 0L;
 			_gpuPathDisabledThisSession = false;
 			_lastGateLogTick = 0L;
-			_pendingVideoDroppedBeforeSink = 0L;
+			_pendingVideoBeforeSink.ResetDroppedCount();
 			_lastPendingVideoDropLogTick = 0L;
 			_staleD3DFramesDropped = 0L;
 			_lastStaleD3DFrameDropLogTick = 0L;
@@ -1686,32 +1533,16 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 
 	private void BufferVideoUntilSinkReady(byte[] payload, ulong sourceTimestampNanos, long receivedTick)
 	{
-		lock (_pendingVideoGate)
-		{
-			_pendingVideoBeforeSink.Enqueue(new PendingVideoPayload(payload, sourceTimestampNanos, receivedTick));
-			_pendingVideoBytesBeforeSink += payload.Length;
-			while (_pendingVideoBeforeSink.Count > MaxPendingVideoPacketsBeforeSink || _pendingVideoBytesBeforeSink > MaxPendingVideoBytesBeforeSink)
-			{
-				PendingVideoPayload dropped = _pendingVideoBeforeSink.Dequeue();
-				_pendingVideoBytesBeforeSink = Math.Max(0L, _pendingVideoBytesBeforeSink - dropped.Payload.Length);
-				Interlocked.Increment(ref _pendingVideoDroppedBeforeSink);
-			}
-		}
+		_pendingVideoBeforeSink.Enqueue(new PendingVideoPayload(payload, sourceTimestampNanos, receivedTick));
 		LogPendingVideoDropsThrottled();
 	}
 
 	private void FlushPendingVideoToSink()
 	{
-		PendingVideoPayload[] pending;
-		lock (_pendingVideoGate)
+		PendingVideoPayload[] pending = _pendingVideoBeforeSink.Drain();
+		if (pending.Length == 0)
 		{
-			if (_pendingVideoBeforeSink.Count == 0)
-			{
-				return;
-			}
-			pending = _pendingVideoBeforeSink.ToArray();
-			_pendingVideoBeforeSink.Clear();
-			_pendingVideoBytesBeforeSink = 0L;
+			return;
 		}
 
 		AppLog.Write($"Flushing {pending.Length:N0} pending video packets to renderer.");
@@ -1723,11 +1554,7 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 
 	private void ClearPendingVideoBeforeSink()
 	{
-		lock (_pendingVideoGate)
-		{
-			_pendingVideoBeforeSink.Clear();
-			_pendingVideoBytesBeforeSink = 0L;
-		}
+		_pendingVideoBeforeSink.Clear();
 	}
 
 
@@ -1908,7 +1735,7 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 	private void EnterFullscreenChrome()
 	{
 		IntPtr hwnd = new WindowInteropHelper(this).EnsureHandle();
-		CaptureNativeWindowStyles(hwnd);
+		_nativeFrame.CaptureStyles(hwnd);
 		_previousWindowBounds = new Rect(Left, Top, Width, Height);
 		_previousVideoStretch = VideoImage.Stretch;
 
@@ -1927,8 +1754,8 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 			UseAeroCaptionButtons = false
 		});
 		base.Topmost = true;
-		ApplyFullscreenNativeFrame(hwnd);
-		MoveWindowToCurrentMonitor(hwnd);
+		_nativeFrame.ApplyFullscreenFrame(hwnd);
+		NativeWindowFrame.MoveToCurrentMonitor(hwnd);
 		UpdateHighResolutionD3DPresenterLayout();
 		ScheduleFullscreenChromeEnforcement(hwnd);
 	}
@@ -1943,7 +1770,7 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 		WindowChrome.SetWindowChrome(this, _previousWindowChrome);
 		base.WindowStyle = _previousWindowStyle;
 		base.ResizeMode = _previousResizeMode;
-		RestoreNativeWindowStyles(hwnd);
+		_nativeFrame.RestoreStyles(hwnd);
 		if (_previousWindowState == WindowState.Normal && _previousWindowBounds.Width > 0.0 && _previousWindowBounds.Height > 0.0)
 		{
 			Left = _previousWindowBounds.Left;
@@ -1955,14 +1782,7 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 		MainTitleBar.Visibility = Visibility.Visible;
 		if (!_previousTopmost)
 		{
-			_ = SetWindowPos(
-				hwnd,
-				HwndNotTopmost,
-				0,
-				0,
-				0,
-				0,
-				SetWindowPosNoMove | SetWindowPosNoSize | SetWindowPosNoActivate | SetWindowPosFrameChanged);
+			NativeWindowFrame.ClearTopmost(hwnd);
 		}
 		UpdateHighResolutionD3DPresenterLayout();
 	}
@@ -1982,108 +1802,11 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 			base.WindowStyle = WindowStyle.None;
 			base.ResizeMode = ResizeMode.NoResize;
 			VideoImage.Stretch = Stretch.UniformToFill;
-			ApplyFullscreenNativeFrame(hwnd);
-			MoveWindowToCurrentMonitor(hwnd);
+			_nativeFrame.ApplyFullscreenFrame(hwnd);
+			NativeWindowFrame.MoveToCurrentMonitor(hwnd);
 			UpdateHighResolutionD3DPresenterLayout();
 		}), DispatcherPriority.ApplicationIdle);
 	}
-
-	private void CaptureNativeWindowStyles(IntPtr hwnd)
-	{
-		_previousNativeWindowStyle = GetWindowLongPtr(hwnd, GwlStyle);
-		_previousNativeExtendedWindowStyle = GetWindowLongPtr(hwnd, GwlExtendedStyle);
-		_previousNativeWindowStyleCaptured = true;
-	}
-
-	private void ApplyFullscreenNativeFrame(IntPtr hwnd)
-	{
-		nint style = GetWindowLongPtr(hwnd, GwlStyle);
-		style = new IntPtr(style.ToInt64() & ~(
-			WindowStyleCaption |
-			WindowStyleThickFrame |
-			WindowStyleSystemMenu |
-			WindowStyleMinimizeBox |
-			WindowStyleMaximizeBox));
-		_ = SetWindowLongPtr(hwnd, GwlStyle, style);
-		_ = SetWindowPos(
-			hwnd,
-			HwndTopmost,
-			0,
-			0,
-			0,
-			0,
-			SetWindowPosNoMove | SetWindowPosNoSize | SetWindowPosNoActivate | SetWindowPosFrameChanged);
-	}
-
-	private void RestoreNativeWindowStyles(IntPtr hwnd)
-	{
-		if (!_previousNativeWindowStyleCaptured)
-		{
-			return;
-		}
-
-		_ = SetWindowLongPtr(hwnd, GwlStyle, _previousNativeWindowStyle);
-		_ = SetWindowLongPtr(hwnd, GwlExtendedStyle, _previousNativeExtendedWindowStyle);
-		_ = SetWindowPos(
-			hwnd,
-			IntPtr.Zero,
-			0,
-			0,
-			0,
-			0,
-			SetWindowPosNoMove | SetWindowPosNoSize | SetWindowPosNoZOrder | SetWindowPosNoActivate | SetWindowPosFrameChanged);
-		_previousNativeWindowStyleCaptured = false;
-	}
-
-	private static void MoveWindowToCurrentMonitor(IntPtr hwnd)
-	{
-		Forms.Screen screen = Forms.Screen.FromHandle(hwnd);
-		System.Drawing.Rectangle bounds = screen.Bounds;
-		_ = SetWindowPos(
-			hwnd,
-			HwndTopmost,
-			bounds.Left,
-			bounds.Top,
-			bounds.Width,
-			bounds.Height,
-			SetWindowPosNoActivate | SetWindowPosFrameChanged | SetWindowPosShowWindow);
-	}
-
-	private static nint GetWindowLongPtr(IntPtr hwnd, int index)
-	{
-		return IntPtr.Size == 8
-			? GetWindowLongPtr64(hwnd, index)
-			: new IntPtr(GetWindowLong32(hwnd, index));
-	}
-
-	private static nint SetWindowLongPtr(IntPtr hwnd, int index, nint value)
-	{
-		return IntPtr.Size == 8
-			? SetWindowLongPtr64(hwnd, index, value)
-			: new IntPtr(SetWindowLong32(hwnd, index, value.ToInt32()));
-	}
-
-	[DllImport("user32.dll", EntryPoint = "GetWindowLongPtr", SetLastError = true)]
-	private static extern nint GetWindowLongPtr64(IntPtr hwnd, int index);
-
-	[DllImport("user32.dll", EntryPoint = "GetWindowLong", SetLastError = true)]
-	private static extern int GetWindowLong32(IntPtr hwnd, int index);
-
-	[DllImport("user32.dll", EntryPoint = "SetWindowLongPtr", SetLastError = true)]
-	private static extern nint SetWindowLongPtr64(IntPtr hwnd, int index, nint value);
-
-	[DllImport("user32.dll", EntryPoint = "SetWindowLong", SetLastError = true)]
-	private static extern int SetWindowLong32(IntPtr hwnd, int index, int value);
-
-	[DllImport("user32.dll", SetLastError = true)]
-	private static extern bool SetWindowPos(
-		IntPtr hwnd,
-		IntPtr hwndInsertAfter,
-		int x,
-		int y,
-		int width,
-		int height,
-		uint flags);
 
 
 	private async Task<IPEndPoint> ResolveEndpointAsync()
@@ -3159,22 +2882,23 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 		bool connected = IsMirroringActive();
 		int deviceCount = _devices.Count;
 		bool audioFirewallWarning = _audioFirewallWarningActive;
+		var state = new ReceiverChromeState(connected, _isConnecting, deviceCount, audioFirewallWarning);
 
-		HeaderSubtitleTextBlock.Text = ResolveReceiverSubtitle(connected, deviceCount, audioFirewallWarning);
-		DeviceSummaryTextBlock.Text = ResolveDeviceSummary(deviceCount);
-		ReceiverCardTitleTextBlock.Text = ResolveReceiverCardTitle(connected);
-		ReceiverStateBadgeTextBlock.Text = ResolveReceiverBadgeText(connected, deviceCount);
+		HeaderSubtitleTextBlock.Text = ReceiverChromeText.Subtitle(state);
+		DeviceSummaryTextBlock.Text = ReceiverChromeText.DeviceSummary(deviceCount);
+		ReceiverCardTitleTextBlock.Text = ReceiverChromeText.CardTitle(state);
+		ReceiverStateBadgeTextBlock.Text = ReceiverChromeText.BadgeText(state);
 		ReceiverStatusTextBlock.Text = _statusText;
 		EmptyStateStatusTextBlock.Text = _statusText;
-		EmptyStateTextBlock.Text = ResolveEmptyStateTitle(connected, deviceCount);
-		EmptyStateDetailTextBlock.Text = ResolveEmptyStateDetail(connected, deviceCount);
+		EmptyStateTextBlock.Text = ReceiverChromeText.EmptyStateTitle(state);
+		EmptyStateDetailTextBlock.Text = ReceiverChromeText.EmptyStateDetail(state);
 		HowToMirrorCard.Visibility = connected || _isConnecting ? Visibility.Collapsed : Visibility.Visible;
 		StatusSummaryPanel.Visibility = connected || _isConnecting ? Visibility.Collapsed : Visibility.Visible;
 		// While mirroring, keep the stage clean unless there is an actionable warning.
 		ReceiverCardBorder.Visibility = connected && !audioFirewallWarning ? Visibility.Collapsed : Visibility.Visible;
 		FirewallAllowButton.Visibility = audioFirewallWarning ? Visibility.Visible : Visibility.Collapsed;
 
-		Brush statusBrush = ResolveReceiverStatusBrush(connected, deviceCount, audioFirewallWarning);
+		Brush statusBrush = ResolveReceiverStatusBrush(ReceiverChromeText.Tone(state));
 		SidebarStatusDot.Fill = statusBrush;
 		EmptyStateStatusDot.Fill = statusBrush;
 		ReceiverStateBadge.Background = statusBrush;
@@ -3191,106 +2915,16 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 			;
 	}
 
-	private string ResolveReceiverCardTitle(bool connected)
+	private Brush ResolveReceiverStatusBrush(ReceiverStatusTone tone)
 	{
-		if (connected)
+		return tone switch
 		{
-			return "Mirroring";
-		}
-		if (_isConnecting)
-		{
-			return "Connecting";
-		}
-		return "Ready to receive";
-	}
-
-	private string ResolveReceiverBadgeText(bool connected, int deviceCount)
-	{
-		if (connected)
-		{
-			return "LIVE";
-		}
-		if (_isConnecting)
-		{
-			return "LINKING";
-		}
-		return deviceCount > 0 ? "LEGACY" : "READY";
-	}
-
-	private string ResolveReceiverSubtitle(bool connected, int deviceCount, bool audioFirewallWarning)
-	{
-		if (audioFirewallWarning)
-		{
-			return "Audio blocked by Windows Firewall";
-		}
-		if (connected)
-		{
-			return "Mirroring";
-		}
-		if (_isConnecting)
-		{
-			return "Connecting";
-		}
-		return deviceCount > 0 ? "Legacy sender available" : "Ready for AirPlay";
-	}
-
-	private string ResolveDeviceSummary(int deviceCount)
-	{
-		return deviceCount switch
-		{
-			0 => "No legacy sender found yet. iPhone mirroring does not need this field.",
-			1 => "1 legacy sender is ready. Enter its PIN to use the old path.",
-			_ => $"{deviceCount} senders are available. Choose one, then enter its PIN."
+			ReceiverStatusTone.Warning => (Brush)FindResource("WarningBrush"),
+			ReceiverStatusTone.Live => (Brush)FindResource("SuccessBrush"),
+			ReceiverStatusTone.Connecting => (Brush)FindResource("WarningBrush"),
+			ReceiverStatusTone.LegacySenderAvailable => new SolidColorBrush(Color.FromRgb(96, 205, 255)),
+			_ => (Brush)FindResource("MutedTextBrush")
 		};
-	}
-
-	private string ResolveEmptyStateTitle(bool connected, int deviceCount)
-	{
-		if (connected)
-		{
-			return "Preparing the stream";
-		}
-		if (_isConnecting)
-		{
-			return "Connecting";
-		}
-		return deviceCount > 0 ? "Legacy sender found" : "Ready to mirror";
-	}
-
-	private string ResolveEmptyStateDetail(bool connected, int deviceCount)
-	{
-		if (connected)
-		{
-			return "The mirrored screen will appear here as soon as video frames arrive.";
-		}
-		if (_isConnecting)
-		{
-			return "Keep both devices on the same network while the secure session starts.";
-		}
-		return deviceCount > 0
-			? "Enter the sender PIN, then press Connect Sender."
-			: "Open Control Center, tap Screen Mirroring, then choose iMirror.";
-	}
-
-	private Brush ResolveReceiverStatusBrush(bool connected, int deviceCount, bool audioFirewallWarning)
-	{
-		if (audioFirewallWarning)
-		{
-			return (Brush)FindResource("WarningBrush");
-		}
-		if (connected)
-		{
-			return (Brush)FindResource("SuccessBrush");
-		}
-		if (_isConnecting)
-		{
-			return (Brush)FindResource("WarningBrush");
-		}
-		if (deviceCount > 0)
-		{
-			return new SolidColorBrush(Color.FromRgb(96, 205, 255));
-		}
-		return (Brush)FindResource("MutedTextBrush");
 	}
 
 	private void UpdateDiagnostics()
@@ -3309,16 +2943,11 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 				long renderedFrames = Interlocked.Read(ref _renderedFrames);
 				int pendingRenderFrames = GetPendingRenderFrameCount();
 				int dispatcherQueued = Volatile.Read(ref _renderQueued);
-				int pendingVideoBeforeSinkPackets;
-				long pendingVideoBeforeSinkBytes;
-				lock (_pendingVideoGate)
-				{
-					pendingVideoBeforeSinkPackets = _pendingVideoBeforeSink.Count;
-					pendingVideoBeforeSinkBytes = _pendingVideoBytesBeforeSink;
-				}
+				int pendingVideoBeforeSinkPackets = _pendingVideoBeforeSink.Count;
+				long pendingVideoBeforeSinkBytes = _pendingVideoBeforeSink.Bytes;
 					(long h264Forwarded, long h264Dropped) = GetH264GateCounts();
 					string latencyWindow = FormatLatencyWindow(_receiveToPresentLatencyWindow.GetCurrentOrLastSnapshot(Stopwatch.GetTimestamp()));
-					DiagnosticsTextBlock.Text = $"{value}\nrealtime output: {value2}\n{outputValue}\n{ResolveAudioDiagnostics()}\nreceived video: {value3:N0} / {(double)num / 1024.0:N1} KB\npre-render queue/dropped: {pendingVideoBeforeSinkPackets:N0} ({(double)pendingVideoBeforeSinkBytes / 1024.0:N1} KB) / {Interlocked.Read(ref _pendingVideoDroppedBeforeSink):N0}\nforwarded/dropped h264: {h264Forwarded:N0} / {h264Dropped:N0}\ndecoded/rendered: {decodedFrames:N0} / {renderedFrames:N0}\nrender dropped: {Interlocked.Read(ref _renderDroppedFrames):N0}\nlatest latency: recv->render {Interlocked.Read(ref _latestReceiveToRenderMs)} ms, decode->render {Interlocked.Read(ref _latestDecodeToRenderMs)} ms\nlatency window: {latencyWindow}\nrender queue: pending {pendingRenderFrames}, dispatcher {dispatcherQueued}\ndecoder input queued/dropped: {ActiveQueuedInputPackets:N0} ({(double)ActiveQueuedInputBytes / 1024.0:N1} KB) / {ActiveDroppedInputPackets:N0}\nh264 accepted/written: {ActiveAcceptedInputPackets:N0} / {ActiveWrittenInputPackets:N0}\nstdin write: {ActiveLatestWriteMilliseconds} ms, max {ActiveMaxWriteMilliseconds} ms, stalls {ActiveWriteStalls:N0}\ndecoder restarts: {Interlocked.Read(ref _decoderRestarts):N0}\ndecoder: {_decoderStatus}";
+					DiagnosticsTextBlock.Text = $"{value}\nrealtime output: {value2}\n{outputValue}\n{ResolveAudioDiagnostics()}\nreceived video: {value3:N0} / {(double)num / 1024.0:N1} KB\npre-render queue/dropped: {pendingVideoBeforeSinkPackets:N0} ({(double)pendingVideoBeforeSinkBytes / 1024.0:N1} KB) / {_pendingVideoBeforeSink.Dropped:N0}\nforwarded/dropped h264: {h264Forwarded:N0} / {h264Dropped:N0}\ndecoded/rendered: {decodedFrames:N0} / {renderedFrames:N0}\nrender dropped: {Interlocked.Read(ref _renderDroppedFrames):N0}\nlatest latency: recv->render {Interlocked.Read(ref _latestReceiveToRenderMs)} ms, decode->render {Interlocked.Read(ref _latestDecodeToRenderMs)} ms\nlatency window: {latencyWindow}\nrender queue: pending {pendingRenderFrames}, dispatcher {dispatcherQueued}\ndecoder input queued/dropped: {ActiveQueuedInputPackets:N0} ({(double)ActiveQueuedInputBytes / 1024.0:N1} KB) / {ActiveDroppedInputPackets:N0}\nh264 accepted/written: {ActiveAcceptedInputPackets:N0} / {ActiveWrittenInputPackets:N0}\nstdin write: {ActiveLatestWriteMilliseconds} ms, max {ActiveMaxWriteMilliseconds} ms, stalls {ActiveWriteStalls:N0}\ndecoder restarts: {Interlocked.Read(ref _decoderRestarts):N0}\ndecoder: {_decoderStatus}";
 		CompactStatusTextBlock.Text = ((renderedFrames > 0) ? $"Live: {renderedFrames:N0} frames" : CompactStatus(_statusText));
 	}
 
@@ -3544,7 +3173,7 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 
 	private void LogPendingVideoDropsThrottled()
 	{
-		long dropped = Interlocked.Read(ref _pendingVideoDroppedBeforeSink);
+		long dropped = _pendingVideoBeforeSink.Dropped;
 		if (dropped == 0)
 		{
 			return;
@@ -3555,29 +3184,7 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 		if (tickCount - previous >= 1000)
 		{
 			Interlocked.Exchange(ref _lastPendingVideoDropLogTick, tickCount);
-			AppLog.Write($"Pre-render video queue dropped={dropped:N0}, pending={PendingVideoBeforeSinkCount:N0} packets/{(double)PendingVideoBeforeSinkBytes / 1024.0:N1} KB");
-		}
-	}
-
-	private int PendingVideoBeforeSinkCount
-	{
-		get
-		{
-			lock (_pendingVideoGate)
-			{
-				return _pendingVideoBeforeSink.Count;
-			}
-		}
-	}
-
-	private long PendingVideoBeforeSinkBytes
-	{
-		get
-		{
-			lock (_pendingVideoGate)
-			{
-				return _pendingVideoBytesBeforeSink;
-			}
+			AppLog.Write($"Pre-render video queue dropped={dropped:N0}, pending={_pendingVideoBeforeSink.Count:N0} packets/{(double)_pendingVideoBeforeSink.Bytes / 1024.0:N1} KB");
 		}
 	}
 
