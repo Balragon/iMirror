@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Buffers.Binary;
 using System.Globalization;
 using System.IO;
@@ -678,22 +678,28 @@ internal static class AirPlayPlayFair
 			ReadInts(sapHash, "i0_index"));
 	}
 
+	/// <summary>
+	/// Forces the table parse (normally deferred to the first pairing) so a broken embedded
+	/// resource surfaces as a test failure instead of a silent decrypt failure on a device.
+	/// </summary>
+	internal static void EnsureTablesLoaded()
+	{
+		_ = LazyTables.Value;
+	}
+
 	private static string ReadThirdPartyFile(string fileName)
 	{
-		string baseDirectory = Path.GetDirectoryName(typeof(AirPlayPlayFair).Assembly.Location) ?? AppContext.BaseDirectory;
-		string path = Path.Combine(baseDirectory, "ThirdParty", "playfair", fileName);
-		if (File.Exists(path))
+		// Embedded at build time (see MacMirrorReceiver.csproj); never read from disk so a
+		// missing or modified copy next to the executable cannot change the tables.
+		string resourceName = "playfair/" + fileName;
+		using Stream? stream = typeof(AirPlayPlayFair).Assembly.GetManifestResourceStream(resourceName);
+		if (stream == null)
 		{
-			return File.ReadAllText(path);
+			throw new InvalidOperationException("Embedded FairPlay table resource is missing from the build: " + resourceName);
 		}
 
-		string fallback = Path.Combine(baseDirectory, "..", "..", "..", "ThirdParty", "playfair", fileName);
-		if (File.Exists(fallback))
-		{
-			return File.ReadAllText(fallback);
-		}
-
-		throw new FileNotFoundException("Missing AirPlay FairPlay table file.", path);
+		using var reader = new StreamReader(stream);
+		return reader.ReadToEnd();
 	}
 
 	private static byte[] ReadBytes(string content, string name)

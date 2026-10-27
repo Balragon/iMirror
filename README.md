@@ -1,4 +1,4 @@
-<p align="center"><img src="Assets/iMirror.png" alt="iMirror" width="128"></p>
+﻿<p align="center"><img src="Assets/iMirror.png" alt="iMirror" width="128"></p>
 
 # iMirror
 
@@ -26,7 +26,7 @@ The only other project is `MacMirrorReceiver.Tests`.
 - `MacMirrorReceiver.Video/` - H.264 stream gate, FFmpeg fallback decoder, Media Foundation/D3D11 decoder, GPU presenters, and latency windows.
 - `MacMirrorReceiver.Audio/` - WASAPI PCM output.
 - `MacMirrorReceiver.Protocol/` - Shared protocol models for mirror/auth/status/config messages.
-- `ThirdParty/playfair/` - FairPlay SAP sources (GPLv3) read at runtime for the FairPlay tables; required for real-device mirroring.
+- `ThirdParty/playfair/` - FairPlay SAP sources (GPLv3). The FairPlay tables are embedded into the executable at build time from `omg_hax.h`, `omg_hax.c` and `sap_hash.c`; required for real-device mirroring. The copies shipped next to the executable are for source distribution only.
 - `tools/` - Focused diagnostics and acceptance helpers.
 - `docs/` - Product architecture and validation notes.
 
@@ -161,7 +161,7 @@ See `docs/validation.md` for the recommended release gate.
 iMirror is licensed under the **GNU General Public License v3** (the verbatim
 license text is in `LICENSE`; iMirror's copyright and combined-work statement are
 in `NOTICE`). The project is GPLv3 because it combines required GPLv3 components: the
-`ThirdParty/playfair` FairPlay sources (read at runtime; mandatory for
+`ThirdParty/playfair` FairPlay sources (embedded at build time; mandatory for
 real-device mirroring) and a bundled GPLv3 FFmpeg build. See
 `THIRD_PARTY_NOTICES.txt` for per-component provenance and corresponding-source
 offers, and `docs/specs/open-source-strategy.md` for the licensing rationale and
