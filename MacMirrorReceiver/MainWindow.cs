@@ -563,7 +563,8 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 				RestoreFromTray();
 				ShowSettingsWindow();
 			},
-			ShutdownApplicationAsync);
+			ShutdownApplicationAsync,
+			CurrentTrayMenuStatus);
 	}
 
 	private void SystemEvents_UserPreferenceChanged(object sender, Microsoft.Win32.UserPreferenceChangedEventArgs e)
@@ -2114,12 +2115,23 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 		UpdateReceiverChrome();
 	}
 
+	private ReceiverChromeState CurrentChromeState()
+	{
+		return new ReceiverChromeState(IsMirroringActive(), _isConnecting, _devices.Count, _audioSession.FirewallWarningActive);
+	}
+
+	private TrayMenuStatus CurrentTrayMenuStatus()
+	{
+		ReceiverChromeState state = CurrentChromeState();
+		return new TrayMenuStatus(ReceiverChromeText.Subtitle(state), ReceiverChromeText.Tone(state));
+	}
+
 	private void UpdateReceiverChrome()
 	{
-		bool connected = IsMirroringActive();
-		int deviceCount = _devices.Count;
-		bool audioFirewallWarning = _audioSession.FirewallWarningActive;
-		var state = new ReceiverChromeState(connected, _isConnecting, deviceCount, audioFirewallWarning);
+		ReceiverChromeState state = CurrentChromeState();
+		bool connected = state.Connected;
+		int deviceCount = state.DeviceCount;
+		bool audioFirewallWarning = state.AudioFirewallWarning;
 
 		HeaderSubtitleTextBlock.Text = ReceiverChromeText.Subtitle(state);
 		DeviceSummaryTextBlock.Text = ReceiverChromeText.DeviceSummary(deviceCount);
