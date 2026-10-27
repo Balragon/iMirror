@@ -22,6 +22,19 @@ public sealed class WindowsFirewallRuleInstallerTests
 		Assert.Contains(@"$program = 'C:\Tools\iMirror\iMirror.exe'", script);
 		Assert.Contains("dynamic audio RTP", script);
 	}
+
+	[Fact]
+	public void BuildFirewallRuleScript_DisablesInboundBlockRulesForTheProgram()
+	{
+		string script = WindowsFirewallRuleInstaller.BuildFirewallRuleScript(@"C:\Tools\iMirror\iMirror.exe");
+
+		// Windows' own prompt rules are named after the exe, so match on the program only.
+		Assert.Contains("Get-NetFirewallApplicationFilter -Program $program", script);
+		Assert.Contains("$_.Action.ToString() -eq 'Block'", script);
+		Assert.Contains("Disable-NetFirewallRule", script);
+		Assert.DoesNotContain("Remove-NetFirewallRule", script);
+	}
+
 	[Fact]
 	public void BuildFirewallRuleScript_EscapesPowerShellSingleQuotes()
 	{
@@ -93,11 +106,16 @@ public sealed class WindowsFirewallRuleInstallerTests
 		Assert.Contains("trap { exit 2 }", script);
 	}
 
-	[Fact]
-	public void BuildInboundCoverageCheckScript_IsValidPowerShell()
+	[Theory]
+	[InlineData(false)]
+	[InlineData(true)]
+	public void GeneratedFirewallScripts_AreValidPowerShell(bool installScript)
 	{
-		string scriptPath = Path.Combine(Path.GetTempPath(), "iMirror-coverage-" + Guid.NewGuid().ToString("N") + ".ps1");
-		File.WriteAllText(scriptPath, WindowsFirewallRuleInstaller.BuildInboundCoverageCheckScript(@"C:\Users\John's PC\iMirror.exe"));
+		const string program = @"C:\Users\John's PC\iMirror.exe";
+		string scriptPath = Path.Combine(Path.GetTempPath(), "iMirror-firewall-" + Guid.NewGuid().ToString("N") + ".ps1");
+		File.WriteAllText(scriptPath, installScript
+			? WindowsFirewallRuleInstaller.BuildFirewallRuleScript(program)
+			: WindowsFirewallRuleInstaller.BuildInboundCoverageCheckScript(program));
 		try
 		{
 			string parse =
