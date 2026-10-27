@@ -85,6 +85,13 @@ internal static class ReceiverSettings
 	{
 		get
 		{
+			// An explicit data directory is self-contained: never pull in the user's old
+			// Roaming settings (a test run would otherwise inherit the developer's choices).
+			if (AppPaths.IsDataDirectoryOverridden)
+			{
+				return string.Empty;
+			}
+
 			string roaming = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
 			if (string.IsNullOrWhiteSpace(roaming))
 			{

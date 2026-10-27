@@ -18,11 +18,19 @@ internal static class AppPaths
 {
 	private const string AppFolderName = "iMirror";
 
+	// An absolute path here replaces %LOCALAPPDATA%\iMirror for logs, settings, diagnostics,
+	// dumps and update downloads. The test assembly sets it so a test run never reads the
+	// developer's settings or writes into their real iMirror.log.
+	public const string DataDirectoryEnvironmentVariableName = "IMIRROR_DATA_DIR";
+
 	// Resolved once. If LocalApplicationData is unavailable (rare — e.g. a
 	// stripped-down service account) we fall back to the per-user temp
 	// directory, NEVER to the install directory, which would reintroduce the
 	// read-only write failure this class exists to prevent.
 	private static readonly string Root = ResolveRoot();
+
+	/// <summary>True when <see cref="DataDirectoryEnvironmentVariableName"/> chose the data directory.</summary>
+	public static bool IsDataDirectoryOverridden { get; } = ResolveOverride() != null;
 
 	public static string LogsDirectory { get; } = EnsureDirectory(Path.Combine(Root, "Logs"));
 
@@ -36,6 +44,12 @@ internal static class AppPaths
 
 	private static string ResolveRoot()
 	{
+		string? overridden = ResolveOverride();
+		if (overridden != null)
+		{
+			return overridden;
+		}
+
 		string localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
 		if (string.IsNullOrWhiteSpace(localAppData))
 		{
@@ -43,6 +57,19 @@ internal static class AppPaths
 		}
 
 		return Path.Combine(localAppData, AppFolderName);
+	}
+
+	// Only an absolute path counts: a relative one would resolve against the working
+	// directory, which for an installed app is often the read-only install directory.
+	private static string? ResolveOverride()
+	{
+		string? value = Environment.GetEnvironmentVariable(DataDirectoryEnvironmentVariableName);
+		if (string.IsNullOrWhiteSpace(value) || !Path.IsPathFullyQualified(value))
+		{
+			return null;
+		}
+
+		return Path.GetFullPath(value);
 	}
 
 	private static string EnsureDirectory(string path)
