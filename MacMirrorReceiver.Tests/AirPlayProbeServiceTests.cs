@@ -103,6 +103,57 @@ public sealed class AirPlayProbeServiceTests
 		await harness.WaitEndedAsync();
 	}
 
+	[Fact]
+	public async Task MirrorSession_TakeoverDisconnectsTheReplacedSender_AndKeepsTheNewSession()
+	{
+		// A Mac mirroring, then an iPhone mirroring: without this the Mac kept its control
+		// connection open and went on showing "mirroring" with no picture.
+		await using var harness = await SessionHarness.StartAsync();
+		using TcpClient first = await harness.ConnectAsync(harness.Service.RaopListenerPort);
+		await SendMirrorSetupAsync(first, sessionId: 1001);
+		await harness.WaitStartedAsync();
+		using TcpClient second = await harness.ConnectAsync(harness.Service.RaopListenerPort);
+
+		await SendMirrorSetupAsync(second, sessionId: 1002);
+
+		Assert.True(await ClosedByReceiverAsync(first), "the replaced sender's control connection should be closed");
+		Assert.False(await harness.EndedWithinAsync(NoSessionEndGrace), "closing the replaced sender must not end the new session");
+		await SendRequestAsync(second, "GET_PARAMETER", Array.Empty<byte>(), sessionId: 1002);
+		second.Close();
+		await harness.WaitEndedAsync();
+	}
+
+	[Fact]
+	public async Task MirrorSession_RepeatedSetupOnTheOwnerConnectionKeepsItOpen()
+	{
+		await using var harness = await SessionHarness.StartAsync();
+		using TcpClient owner = await harness.ConnectAsync(harness.Service.RaopListenerPort);
+		await SendMirrorSetupAsync(owner);
+		await harness.WaitStartedAsync();
+
+		await SendMirrorSetupAsync(owner);
+		await SendRequestAsync(owner, "GET_PARAMETER", Array.Empty<byte>());
+
+		Assert.False(await harness.EndedWithinAsync(NoSessionEndGrace));
+	}
+
+	private static async Task<bool> ClosedByReceiverAsync(TcpClient client)
+	{
+		using var cts = new CancellationTokenSource(SessionEventTimeout);
+		try
+		{
+			return await client.GetStream().ReadAsync(new byte[1], cts.Token) == 0;
+		}
+		catch (IOException)
+		{
+			return true;
+		}
+		catch (OperationCanceledException)
+		{
+			return false;
+		}
+	}
+
 	private static byte[] StreamsPlist(params int[] streamTypes)
 	{
 		return AirPlayBinaryPlist.Write(new Dictionary<string, object>
