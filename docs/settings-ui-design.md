@@ -30,7 +30,7 @@ Every option iMirror currently reads, with its target home.
 | Render / quality mode | `IMIRROR_RENDER_MODE` | Stable \| Quality | Quality (HW) | restart |
 | Video engine | `IMIRROR_FORCE_SOFTWARE_VIDEO` | Auto (GPU) \| Force software | Auto | restart |
 | Audio enabled | `IMIRROR_AUDIO_DISCOVERY` (logging only today) | bool | on | restart* |
-| Audio sync offset | `IMIRROR_AUDIO_SYNC_OFFSET_MS` | int 60–220 ms | 120 | **live** |
+| Audio sync offset | `IMIRROR_AUDIO_SYNC_OFFSET_MS` | int 120–220 ms | 120 | **live** |
 
 \* Audio advertise/disable is restart-scoped because it changes what the receiver
 advertises over mDNS. Audio sync offset is the one option that should apply live

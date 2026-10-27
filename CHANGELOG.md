@@ -8,6 +8,10 @@ For detailed release notes, see [GitHub Releases](https://github.com/Balragon/iM
 
 ## [Unreleased] (main branch)
 
+### Changed
+
+- The audio sync offset slider and `IMIRROR_AUDIO_SYNC_OFFSET_MS` now start at 120 ms instead of 60 ms. The audio target latency has always been clamped to 120–220 ms, so offsets below 120 had no effect; a saved value below 120 is read as 120.
+
 ---
 
 ## [0.8.0] - 2026-10-27

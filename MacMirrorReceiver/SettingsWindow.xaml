@@ -169,7 +169,7 @@
                                 Width="150"
                                 VerticalAlignment="Center"
                                 AutomationProperties.Name="Audio sync offset"
-                                Minimum="60"
+                                Minimum="120"
                                 Maximum="220"
                                 TickFrequency="10"
                                 IsSnapToTickEnabled="True"

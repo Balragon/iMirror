@@ -117,7 +117,7 @@ Other environment overrides (all optional; Settings is the normal way to change 
 |---|---|
 | `IMIRROR_FORCE_SOFTWARE` / `IMIRROR_PREFER_HARDWARE` | FFmpeg decoder candidate order (software first / hardware first). |
 | `IMIRROR_AUDIO_ENABLED` | `0` disables the audio pipeline for the session. |
-| `IMIRROR_AUDIO_SYNC_OFFSET_MS` | Audio target latency relative to measured video latency, 60-220 ms (default 120). |
+| `IMIRROR_AUDIO_SYNC_OFFSET_MS` | Audio target latency relative to measured video latency, 120-220 ms (default 120). Values below 120 are clamped to 120. |
 | `IMIRROR_D3D_COLOR_SPACE` | Overrides the D3D11 video-processor input/output colour space pair. |
 | `IMIRROR_HR_V2_PROBE` | Runs the Media Foundation/D3D11 capability probe at startup and logs the result. |
 | `IMIRROR_DATA_DIR` | Absolute path that replaces `%LOCALAPPDATA%\iMirror` for logs, settings, diagnostics, dumps and update downloads. The test suite sets it to a temp folder. |

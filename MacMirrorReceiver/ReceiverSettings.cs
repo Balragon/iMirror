@@ -51,7 +51,9 @@ internal static class ReceiverSettings
 
 	public const string DefaultReceiverName = "iMirror";
 	public const int DefaultAudioSyncOffsetMs = 120;
-	public const int MinAudioSyncOffsetMs = 60;
+	// The audio target latency is clamped to 120..220 ms (MainWindow.Min/MaxAudioSyncTargetMilliseconds),
+	// so an offset below 120 never changed the target; the floor matches so every slider position acts.
+	public const int MinAudioSyncOffsetMs = 120;
 	public const int MaxAudioSyncOffsetMs = 220;
 	public const int MaxReceiverNameLength = 32;
 
