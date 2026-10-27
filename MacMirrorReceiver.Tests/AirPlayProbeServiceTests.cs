@@ -338,7 +338,7 @@ public sealed class AirPlayProbeServiceTests
 
 		SweepResult expected = FullDecryptSweep(candidates, encryptedFirst);
 		List<string> report = new List<string>();
-		bool found = AirPlayProbeService.TryFindMirrorDecryptor(candidates, encryptedFirst, report, out AirPlayMirrorDecryptor? decryptor, out byte[] selectedAnnexB, out string format, out int tested);
+		bool found = MirrorDecryptorSelector.TryFindMirrorDecryptor(candidates, encryptedFirst, report, out AirPlayMirrorDecryptor? decryptor, out byte[] selectedAnnexB, out string format, out int tested);
 
 		Assert.Equal(expectedCandidate, expected.Name);
 		Assert.True(found);
@@ -363,7 +363,7 @@ public sealed class AirPlayProbeServiceTests
 
 		SweepResult expected = FullDecryptSweep(candidates, undecryptable);
 		List<string> report = new List<string>();
-		bool found = AirPlayProbeService.TryFindMirrorDecryptor(candidates, undecryptable, report, out AirPlayMirrorDecryptor? decryptor, out _, out _, out int tested);
+		bool found = MirrorDecryptorSelector.TryFindMirrorDecryptor(candidates, undecryptable, report, out AirPlayMirrorDecryptor? decryptor, out _, out _, out int tested);
 
 		Assert.Null(expected.Name);
 		Assert.False(found);
@@ -380,7 +380,7 @@ public sealed class AirPlayProbeServiceTests
 		foreach (byte[] payload in NormalizablePayloadShapes(random))
 		{
 			shapes++;
-			byte[] prefix = payload.Take(AirPlayProbeService.ClearH264ProbeBytes).ToArray();
+			byte[] prefix = payload.Take(MirrorDecryptorSelector.ClearH264ProbeBytes).ToArray();
 			string description = $"length={payload.Length}, head={Convert.ToHexString(prefix)}";
 			Assert.True(MirrorH264Payloads.TryNormalizeClearH264Payload(payload, out _, out _), description);
 			Assert.True(MirrorH264Payloads.MayBeClearH264Payload(prefix, payload.Length), description);
@@ -416,7 +416,7 @@ public sealed class AirPlayProbeServiceTests
 		int tested = 0;
 		foreach (AirPlayMirrorDecryptorCandidate baseCandidate in baseCandidates)
 		{
-			foreach (AirPlayMirrorDecryptorCandidate candidate in AirPlayProbeService.ExpandPayloadOffsetCandidates(baseCandidate, payload.Length))
+			foreach (AirPlayMirrorDecryptorCandidate candidate in MirrorDecryptorSelector.ExpandPayloadOffsetCandidates(baseCandidate, payload.Length))
 			{
 				tested++;
 				byte[] preview;
