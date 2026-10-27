@@ -8,24 +8,64 @@ For detailed release notes, see [GitHub Releases](https://github.com/Balragon/iM
 
 ## [Unreleased] (main branch)
 
-### Changed
+---
 
-- Removed the NTP timing client. It bound UDP 7102 and sent 40 timing requests per SETUP whose replies were never read; A/V sync is latency-matched on the receiver and does not use them. The `timingPort` in the SETUP response and the TCP 7102 listener are unchanged, and UDP 7102 is no longer opened.
-- The FairPlay tables are embedded into the executable at build time instead of being parsed from the `ThirdParty\playfair` source files next to it, so a missing or edited copy can no longer silently disable mirror decryption. The source files are still shipped for GPLv3 compliance.
-- New app icon: two overlapping rounded screen panels (blue and translucent silver) on a dark background, used for the executable, window title, tray and installer. A light-background variant (`Assets/iMirror-light.ico`) and the editable SVG sources (`Assets/icon-source/`) are included.
-- The window title and tray icons follow the Windows system theme (`SystemUsesLightTheme`): light variant on a light theme, dark otherwise, updated live when the theme changes. The executable and installer icons stay dark.
-- Refactor the update workflow (startup/manual checks, notice policy, download, installer handoff) out of `MainWindow` into a new `UpdateController` with injected UI/shutdown seams. No behavior change; the silent-update handoff and SHA-256 fail-closed verification are unchanged.
-- Removed the always-defined `HIGH_RESOLUTION_D3D` compile constant and the `#else` branches that no build ever compiled; moved `VorticeD3D11VideoProcessorD3DImagePresenter` (used only by the replay probe tool) out of the product sources.
-- Local/dev builds now report version 0.7.5 (matching the latest release) instead of 0.2.0, so an untagged build no longer always sees an update as available.
-- The FFmpeg decoder reports when its stderr reader stops mid-session, when an H.264 dump file stops accepting writes, and when the WinGet ffmpeg probe fails, instead of swallowing those errors.
+## [0.8.0] - 2026-10-27
+
+Hardening release from the 2026-10-26 full code review: network-input limits, sender checks, lifecycle and deadlock fixes, firewall detection, and a large internal restructuring of the receiver window with new tests. Updating from 0.7.5: if the in-app update does not finish (a 0.7.5 handoff issue fixed in this release), download `iMirror-0.8.0-setup.exe` from this release and run it.
+
+### Security
+
+- Harden binary plist parsing against malformed SETUP bodies: reference cycles, excessive nesting and truncated or overflowing integers are rejected instead of hanging or crashing the receiver (#52).
+- Bound RTSP control requests: header and body size caps (oversized `Content-Length` is refused and the connection closed), a per-connection read timeout and a cap on concurrent control connections (#53).
+- Bound the mirror decryptor candidate sweep to once per session and fix the data-stream buffer cap (#54).
+- Accept the mirror data connection and audio RTP only from the host that performed SETUP; packets and connections from any other LAN host are rejected (#55).
+- Run the Windows Firewall rule script inline (`-EncodedCommand`) with PowerShell resolved by absolute path, instead of an elevated script file in `%TEMP%` that another process could swap before the UAC prompt was accepted (#56).
+- Release workflows pass the tag through `env:`, pin every action to a commit SHA and use least-privilege tokens (#58).
+- Git-ignore audio/H.264 dump files, which can carry session key material (#59).
 
 ### Fixed
 
-- Close iMirror automatically after launching the silent update installer, allowing setup to replace files and restart the app without asking the user to close it first.
-- Clean up leftover downloaded update installers (`setup.exe` / partial `.download` files) from `%LOCALAPPDATA%\iMirror\Updates` at startup instead of letting them accumulate one per update.
-- Cancel an in-flight update check or installer download when iMirror starts shutting down, instead of letting it race process teardown; a canceled install no longer flashes the retry UI on the closing window.
-- Make the settings "Save & Restart" handoff reliable: a relaunched iMirror now waits up to 5 seconds for the exiting instance to release the single-instance mutex instead of silently quitting when the old process is still shutting down.
-- Keep video playing when the software (FFmpeg) decoder's input queue overflows: drop only the incoming non-keyframe and keep the queued frames, as the Media Foundation path does. Previously the queue was flushed to wait for a keyframe that Mac senders never send again, so video stayed frozen until reconnect while audio kept playing.
+- End the mirror session only from the control connection that set it up. Mac senders run the whole session on the RAOP port, so stopping mirroring on the Mac now really ends the session (ffmpeg stops, the window returns to idle), and another host opening and dropping a connection on port 7000 can no longer reset an active session. An audio-only TEARDOWN keeps the session (#79).
+- When another device starts mirroring, the previous sender is disconnected and shows mirroring as ended instead of staying "connected" with no picture (#86).
+- The readiness check detects a blocking Windows Firewall (no inbound allow rule for this iMirror on the current network, or a block rule) instead of reporting "Ready" because the ports could bind; the Allow in Firewall button now appears in that case (#80).
+- Allow in Firewall also disables the inbound block rules Windows creates when its own "allow access" prompt is cancelled, which previously overrode the new allow rule (#81).
+- Fix a WASAPI output deadlock between `Stop()` and `PlaybackStopped` that could freeze audio and the window when the output device changed or disappeared; repeated default-device notifications no longer restart the output twice (#63).
+- Back off the audio pipeline start after a failure (5 s → 60 s cap) instead of retrying on every packet, and keep a timing-port bind failure out of SETUP (#61).
+- Guard every decoder callback by decoder identity and stop `FfmpegDecoder` from respawning during `Dispose`, so a late event from a replaced decoder can no longer touch the new one or leave a zombie ffmpeg (#60).
+- Shutdown-safe session end, a guarded `Window_Loaded`, and download stall and size guards for the updater (#62).
+- Release the single-instance mutex before launching the update installer, so a silent update no longer aborts with "application is running" and leaves neither the old nor the new version (#57).
+- Keep the Media Foundation output sample alive until its frame is disposed (#78); keep the MF overflow policy but stop the per-packet "input unavailable" log spam and size the queue for the session-start burst (#66).
+- Keep the queued GOP on FFmpeg decoder input overflow instead of flushing to wait for a keyframe Mac senders never resend (#67).
+- Cut the mirror decryptor warm-up from seconds to tens of milliseconds (#74), and cut software-path latency and stale-frame freezes (#76).
+- Read audio diagnostics without the audio start lock (#77).
+- Decrypt audio with one-shot AES-CBC; keep and, after an idle gap, realign the written-frame timing so the audio latency estimate no longer jumps to several seconds when sound resumes (#83, #87).
+- Answer mDNS queries only for iMirror's own names, at most once per second, with cached addresses, instead of re-announcing for every `.local` query on the LAN (#82).
+- Rotate the app log (5 MB × 3) and write it from a background thread; crash handlers flush it (#72).
+- Small fixes: UTF-16 plist strings, async DNS, atomic settings write, HTTPS checksums, no working-directory ffmpeg probe, a single in-flight install (#71).
+- Close iMirror automatically after launching the silent update installer (#48); clean up leftover update downloads and cancel in-flight update work on shutdown (#51); make the settings "Save & Restart" handoff wait for the exiting instance (#50).
+
+### Changed
+
+- New app icon; window and tray icons follow the Windows light/dark theme live (#64, #65).
+- The FairPlay tables are embedded into the executable at build time instead of being parsed from the `ThirdParty\playfair` files next to it; the source files are still shipped for GPLv3 compliance (#85).
+- Removed the NTP timing client, whose replies were never read; UDP 7102 is no longer opened (#88).
+- New `IMIRROR_DATA_DIR` environment variable: an absolute path that replaces `%LOCALAPPDATA%\iMirror` for logs, settings, diagnostics, dumps and update downloads (#94).
+- Local/dev builds report the latest release version, so an untagged build no longer always sees an update as available (#84).
+- The FFmpeg decoder reports a stopped stderr reader, a failing H.264 dump and a failing WinGet ffmpeg probe instead of swallowing them (#84, #87).
+- Docs and packaging: stale docs synced, playfair provenance recorded, `LICENSE` and `NOTICE` shipped with the app (#73).
+
+### Internal
+
+- `MainWindow` split into focused pieces with no behaviour change: `UpdateController`, `PendingVideoBuffer`, `ReceiverChromeText`, `NativeWindowFrame`, `TrayIconHost`, `AudioSessionHost`, `LatestFrameMailbox`, `ThrottledLogGate` and `VideoEngineHost` (3,786 → 2,500 lines) (#89, #90, #91, #92).
+- Dead code removed (#70, #84).
+- New fixture tests for protocol parsing, both decryptors, the latency window, fMP4, RTP and the audio receiver's data path (#69, #93), the session-ownership rules (#79, #86), the firewall readiness check (#80, #81) and the GPU-fault fallback (#92); the tests no longer touch fixed ports, the real settings file or the real log (#68, #94).
+
+### Validation
+
+- `dotnet test .\iMirror.sln -c Release`: 280 tests passed.
+- Windows 11 device checks with a Mac and an iPhone on the GPU and software engines: discovery, mirroring with audio, Mac stop → idle, reconnect, Mac → iPhone takeover, audio-only TEARDOWN cycles, output-device removal, firewall block/allow, tray exit and Save & Restart.
+- Release gate on the packaged `iMirror-0.8.0-win-x64.zip` extracted outside the repository (local package with FFmpeg full_build; the published package is rebuilt by CI with the pinned Essentials build): smoke test with Mac and iPhone; reconnect gate with three disconnect/reconnect cycles (GPU path and audio restarted cleanly each time); latency gate on one continuous 20 min 21 s active-motion Mac session: `PASS`, 122 windows, worst p95 58 ms, worst max 78 ms, 0 windows ≥ 150 ms, `contiguousEvidence=True`, `corruption=pass`, `highResolutionD3D=pass`.
 
 ---
 
