@@ -18,6 +18,13 @@ obj/
 outputs/
 artifacts/
 Diagnostics/
+# Local diagnostic dumps (IMIRROR_DUMP_AUDIO / IMIRROR_DUMP_H264 accept arbitrary paths, and
+# the audio dump's .meta.json records FairPlay session key material).
+Dumps/
+*.rtp
+*.control
+*.aacframes
+*.meta.json
 tools/ffmpeg/
 tools/mpv/
 experiments/winui3-shell/.dotnet/

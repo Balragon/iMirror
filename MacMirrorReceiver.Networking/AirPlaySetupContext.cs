@@ -154,7 +154,13 @@ internal sealed class AirPlaySetupContext
 	private static int? ReadInt(Dictionary<string, object?> dictionary, string key)
 	{
 		long? value = ReadLong(dictionary, key);
-		return value.HasValue ? checked((int)value.Value) : null;
+		if (!value.HasValue || value.Value < int.MinValue || value.Value > int.MaxValue)
+		{
+			// A sender-supplied 64-bit value outside int range is treated as absent rather than
+			// throwing OverflowException out of the SETUP handler.
+			return null;
+		}
+		return (int)value.Value;
 	}
 
 	private static long? ReadLong(Dictionary<string, object?> dictionary, string key)
