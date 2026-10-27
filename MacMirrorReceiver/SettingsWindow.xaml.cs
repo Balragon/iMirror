@@ -48,7 +48,8 @@ public partial class SettingsWindow : Wpf.Ui.Controls.FluentWindow
 		_pendingDumpAudio = _host.StartupReceiverSettings.Persisted.DumpAudio;
 
 		InitializeComponent();
-		VersionTextBlock.Text = AppVersionInfo.DisplayText;
+		VersionTextBlock.Text = AppVersionInfo.ShortDisplayText;
+		VersionTextBlock.ToolTip = AppVersionInfo.DisplayText;
 		ReleasesHyperlink.NavigateUri = new Uri(AppVersionInfo.ReleasesUrl);
 		SourceHyperlink.NavigateUri = new Uri(AppVersionInfo.SourceUrl);
 		LicenseHyperlink.NavigateUri = new Uri(AppVersionInfo.LicenseUrl);
@@ -92,11 +93,12 @@ public partial class SettingsWindow : Wpf.Ui.Controls.FluentWindow
 		}
 
 		_pendingRenderModeSetting = displayedMode;
-		StableRenderModeRadioButton.IsChecked = displayedMode == ReceiverRenderModeSetting.Stable;
-		QualityRenderModeRadioButton.IsChecked = displayedMode == ReceiverRenderModeSetting.Quality;
+		RenderModeComboBox.SelectedItem = displayedMode == ReceiverRenderModeSetting.Quality
+			? QualityRenderModeItem
+			: StableRenderModeItem;
 		bool canEditSetting = !renderModeSettings.HasEnvironmentOverride;
-		StableRenderModeRadioButton.IsEnabled = canEditSetting;
-		QualityRenderModeRadioButton.IsEnabled = canEditSetting && _host.QualityPathAvailable;
+		RenderModeComboBox.IsEnabled = canEditSetting;
+		QualityRenderModeItem.IsEnabled = canEditSetting && _host.QualityPathAvailable;
 		RenderModeOverrideTextBlock.Visibility = renderModeSettings.HasEnvironmentOverride
 			? Visibility.Visible
 			: Visibility.Collapsed;
@@ -108,14 +110,14 @@ public partial class SettingsWindow : Wpf.Ui.Controls.FluentWindow
 		UpdateRenderModeSettingsUi();
 	}
 
-	private void RenderModeSettingRadioButton_Checked(object sender, RoutedEventArgs e)
+	private void RenderModeComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
 	{
 		if (!_renderModeSettingsUiReady || _host.StartupRenderModeSettings.HasEnvironmentOverride)
 		{
 			return;
 		}
 
-		_pendingRenderModeSetting = QualityRenderModeRadioButton.IsChecked == true
+		_pendingRenderModeSetting = ReferenceEquals(RenderModeComboBox.SelectedItem, QualityRenderModeItem)
 			? ReceiverRenderModeSetting.Quality
 			: ReceiverRenderModeSetting.Stable;
 		UpdateRenderModeSettingsUi();
@@ -157,10 +159,11 @@ public partial class SettingsWindow : Wpf.Ui.Controls.FluentWindow
 		ReceiverNameTextBox.MaxLength = ReceiverSettings.MaxReceiverNameLength;
 
 		_pendingVideoEngine = overrides.VideoEngine ? effective.VideoEngine : persisted.VideoEngine;
-		AutoVideoEngineRadioButton.IsChecked = _pendingVideoEngine == ReceiverVideoEngineSetting.Auto;
-		SoftwareVideoEngineRadioButton.IsChecked = _pendingVideoEngine == ReceiverVideoEngineSetting.Software;
-		AutoVideoEngineRadioButton.IsEnabled = !overrides.VideoEngine;
-		SoftwareVideoEngineRadioButton.IsEnabled = !overrides.VideoEngine;
+		VideoEngineComboBox.SelectedItem = _pendingVideoEngine == ReceiverVideoEngineSetting.Software
+			? SoftwareVideoEngineItem
+			: AutoVideoEngineItem;
+		VideoEngineComboBox.IsEnabled = !overrides.VideoEngine;
+		UpdateVideoEngineDetail();
 		SetOverrideNote(VideoEngineOverrideTextBlock, overrides.VideoEngine, ReceiverSettings.VideoEngineEnvironmentVariableName);
 
 		_pendingAudioEnabled = overrides.AudioEnabled ? effective.AudioEnabled : persisted.AudioEnabled;
@@ -218,17 +221,25 @@ public partial class SettingsWindow : Wpf.Ui.Controls.FluentWindow
 		UpdateSettingsDirtyState();
 	}
 
-	private void VideoEngineRadioButton_Checked(object sender, RoutedEventArgs e)
+	private void VideoEngineComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
 	{
 		if (!_receiverSettingsUiReady || _host.StartupReceiverSettings.Overrides.VideoEngine)
 		{
 			return;
 		}
 
-		_pendingVideoEngine = SoftwareVideoEngineRadioButton.IsChecked == true
+		_pendingVideoEngine = ReferenceEquals(VideoEngineComboBox.SelectedItem, SoftwareVideoEngineItem)
 			? ReceiverVideoEngineSetting.Software
 			: ReceiverVideoEngineSetting.Auto;
+		UpdateVideoEngineDetail();
 		UpdateSettingsDirtyState();
+	}
+
+	private void UpdateVideoEngineDetail()
+	{
+		VideoEngineDetailTextBlock.Text = _pendingVideoEngine == ReceiverVideoEngineSetting.Software
+			? "Always use the FFmpeg software decoder."
+			: "Hardware decode when available, software fallback otherwise.";
 	}
 
 	private void AudioEnabledCheckBox_Changed(object sender, RoutedEventArgs e)
