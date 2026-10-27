@@ -62,6 +62,14 @@
     <Content Include="ThirdParty\playfair\omg_hax.h" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="ThirdParty\playfair\sap_hash.c" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
+  <!-- The FairPlay tables are parsed from these sources at first use. Embedding them makes the
+       build the only source of truth: a missing or edited copy next to the exe can no longer
+       turn decryption off. The Content copies above remain for GPLv3 source distribution. -->
+  <ItemGroup>
+    <EmbeddedResource Include="ThirdParty\playfair\omg_hax.h" LogicalName="playfair/omg_hax.h" />
+    <EmbeddedResource Include="ThirdParty\playfair\omg_hax.c" LogicalName="playfair/omg_hax.c" />
+    <EmbeddedResource Include="ThirdParty\playfair\sap_hash.c" LogicalName="playfair/sap_hash.c" />
+  </ItemGroup>
   <ItemGroup>
     <PackageReference Include="Vortice.Direct3D11" Version="3.8.3" />
     <PackageReference Include="Vortice.Direct3D9" Version="3.8.3" />
