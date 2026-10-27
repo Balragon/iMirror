@@ -249,21 +249,21 @@ internal sealed class AirPlayAudioReceiver : IDisposable
 
 	private void HandleDataPacket(byte[] packet)
 	{
-		if (packet.Length < RtpHeaderLength)
+		if (!RtpPacketHeader.TryParse(packet, out RtpPacketHeader rtp))
 		{
 			return;
 		}
 
-		int version = (packet[0] >> 6) & 0x03;
+		int version = rtp.Version;
 		if (version != 2)
 		{
 			return;
 		}
-		bool marker = (packet[1] & 0x80) != 0;
-		int payloadType = packet[1] & 0x7F;
-		int sequence = BinaryPrimitives.ReadUInt16BigEndian(packet.AsSpan(2, 2));
-		uint timestamp = BinaryPrimitives.ReadUInt32BigEndian(packet.AsSpan(4, 4));
-		uint ssrc = BinaryPrimitives.ReadUInt32BigEndian(packet.AsSpan(8, 4));
+		bool marker = rtp.Marker;
+		int payloadType = rtp.PayloadType;
+		int sequence = rtp.SequenceNumber;
+		uint timestamp = rtp.Timestamp;
+		uint ssrc = rtp.Ssrc;
 		int payloadLength = packet.Length - RtpHeaderLength;
 
 		long count = Interlocked.Increment(ref _packetCount);
