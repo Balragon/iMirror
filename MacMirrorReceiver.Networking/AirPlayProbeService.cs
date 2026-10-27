@@ -22,9 +22,9 @@ namespace MacMirrorReceiver.Networking;
 
 public sealed class AirPlayProbeService : IDisposable
 {
-	private const string AirPlayServiceType = "_airplay._tcp.local";
-	private const string RaopServiceType = "_raop._tcp.local";
-	private const int MdnsPort = 5353;
+	private const string AirPlayServiceType = AirPlayMdnsResponder.AirPlayServiceType;
+	private const string RaopServiceType = AirPlayMdnsResponder.RaopServiceType;
+	private const int MdnsPort = AirPlayMdnsResponder.DefaultPort;
 	// Ports advertised in the legacy XML /info body; the live listeners use _ports.
 	private const int DataPort = 7100;
 	private const int EventPort = 7101;
@@ -63,8 +63,6 @@ public sealed class AirPlayProbeService : IDisposable
 	private static readonly bool AudioDiscoveryLogging = string.Equals(
 		Environment.GetEnvironmentVariable("IMIRROR_AUDIO_DISCOVERY"), "1", StringComparison.OrdinalIgnoreCase);
 
-	private static readonly IPAddress MulticastAddress = IPAddress.Parse("224.0.0.251");
-	private static readonly IPEndPoint MulticastEndpoint = new IPEndPoint(MulticastAddress, MdnsPort);
 	// Evaluated on first use rather than at type load: constructing the service (e.g. in a unit
 	// test) must not read the developer's real settings file.
 	private static readonly Lazy<bool> QualityRenderModeLazy = new Lazy<bool>(
@@ -86,14 +84,8 @@ public sealed class AirPlayProbeService : IDisposable
 	internal const int MaxControlConnections = 32;
 	internal static readonly TimeSpan DefaultRequestReadTimeout = TimeSpan.FromSeconds(15);
 	private int _activeControlConnections;
-	private readonly int _mdnsPort;
 	private readonly string _displayName;
 	private readonly string _hostName;
-	// Names this responder answers mDNS queries for (see PacketAsksForProbe).
-	private readonly string[] _mdnsAnsweredNames;
-	private long _lastQueryResponseTicks = long.MinValue / 2;
-	private const int QueryResponseMinimumIntervalMilliseconds = 1000;
-	private const string DnsSdServiceEnumerationName = "_services._dns-sd._udp.local";
 	private readonly string _airPlayInstanceName;
 	private readonly string _raopInstanceName;
 	private readonly string _deviceId;
@@ -108,8 +100,7 @@ public sealed class AirPlayProbeService : IDisposable
 	private readonly AirPlaySetupContext _setup;
 	private readonly object _mirrorKeyGate = new object();
 
-	private UdpClient? _mdnsClient;
-	private bool _mdnsBound;
+	private readonly AirPlayMdnsResponder _mdns;
 	private TcpListener? _airPlayListener;
 	private TcpListener? _raopListener;
 	private string? _airPlayListenerBindError;
@@ -119,10 +110,7 @@ public sealed class AirPlayProbeService : IDisposable
 	private TcpListener? _timingListener;
 
 	// Expose bind results for startup diagnostics — read after StartAsync().
-	// _mdnsClient is assigned before Bind(), so a bind failure (e.g. port 5353
-	// already held by Bonjour/iTunes) would leave it non-null; track success with
-	// a dedicated flag set only after the multicast join completes.
-	public bool IsMdnsBound => _mdnsBound;
+	public bool IsMdnsBound => _mdns.IsBound;
 	public bool IsAirPlayListenerBound => _airPlayListener != null;
 	public bool IsRaopListenerBound => _raopListener != null;
 	public int AirPlayListenerPort => BoundPort(_airPlayListener) ?? _ports.AirPlay;
@@ -135,8 +123,6 @@ public sealed class AirPlayProbeService : IDisposable
 	public string? AirPlayListenerBindError => _airPlayListenerBindError;
 	public string? RaopListenerBindError => _raopListenerBindError;
 
-	private Task? _receiveTask;
-	private Task? _announceTask;
 	private Task? _airPlayAcceptTask;
 	private Task? _raopAcceptTask;
 	private Task? _dataAcceptTask;
@@ -200,7 +186,6 @@ public sealed class AirPlayProbeService : IDisposable
 		int mdnsPort = MdnsPort,
 		AirPlayListenerPorts? listenerPorts = null)
 	{
-		_mdnsPort = mdnsPort;
 		_ports = listenerPorts ?? AirPlayListenerPorts.Default;
 		_displayName = SanitizeLabel(displayName);
 		_hostName = SanitizeLabel(Environment.MachineName) + ".local";
@@ -208,7 +193,15 @@ public sealed class AirPlayProbeService : IDisposable
 		_pairingId = Guid.NewGuid().ToString("D");
 		_airPlayInstanceName = _displayName + "." + AirPlayServiceType;
 		_raopInstanceName = _deviceId.Replace(":", "", StringComparison.Ordinal) + "@" + _displayName + "." + RaopServiceType;
-		_mdnsAnsweredNames = new[] { AirPlayServiceType, RaopServiceType, DnsSdServiceEnumerationName, _airPlayInstanceName, _raopInstanceName, _hostName };
+		_mdns = new AirPlayMdnsResponder(
+			mdnsPort,
+			_hostName,
+			_airPlayInstanceName,
+			_raopInstanceName,
+			() => AirPlayListenerPort,
+			() => RaopListenerPort,
+			BuildAirPlayTxt,
+			BuildRaopTxt);
 		_audioAdvertised = advertiseAudio;
 		_writeDiagnostics = writeDiagnostics;
 		_dumpAudio = dumpAudio;
@@ -270,24 +263,17 @@ public sealed class AirPlayProbeService : IDisposable
 
 	public async Task StartAsync()
 	{
-		if (_mdnsClient != null)
+		if (_mdns.IsBound)
 		{
 			return;
 		}
 
-		UdpClient? mdnsClient = null;
 		try
 		{
-			mdnsClient = new UdpClient(AddressFamily.InterNetwork);
-			mdnsClient.Client.ExclusiveAddressUse = false;
-			mdnsClient.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, optionValue: true);
-			mdnsClient.Client.Bind(new IPEndPoint(IPAddress.Any, _mdnsPort));
-			mdnsClient.JoinMulticastGroup(MulticastAddress);
-			// Publish the socket to the field only after bind+join succeed. A failure above (most
-			// commonly UDP 5353 already held by Bonjour/iTunes) then leaves _mdnsClient null, so the
-			// entry guard does not wedge a half-started receiver and StartAsync can be retried.
-			_mdnsClient = mdnsClient;
-			_mdnsBound = true;
+			// A bind/join failure (most commonly UDP 5353 already held by Bonjour/iTunes) throws
+			// with the responder still unbound, so the entry guard does not wedge a half-started
+			// receiver and StartAsync can be retried.
+			_mdns.Bind();
 
 			_airPlayListener = TryStartListener(_ports.AirPlay, "AirPlay", error => _airPlayListenerBindError = error);
 			_raopListener = TryStartListener(_ports.Raop, "RAOP", error => _raopListenerBindError = error);
@@ -295,43 +281,32 @@ public sealed class AirPlayProbeService : IDisposable
 			_eventListener = TryStartListener(_ports.Event, "AirPlay event", null);
 			_timingListener = TryStartListener(_ports.Timing, "AirPlay timing", null);
 
-			_receiveTask = Task.Run(ReceiveLoopAsync);
-			_announceTask = Task.Run(AnnounceLoopAsync);
+			_mdns.StartLoops(_cts.Token);
 			_airPlayAcceptTask = StartAcceptLoop(_airPlayListener, "AirPlay");
 			_raopAcceptTask = StartAcceptLoop(_raopListener, "RAOP");
 			_dataAcceptTask = StartAcceptLoop(_dataListener, "AirPlay data");
 			_eventAcceptTask = StartAcceptLoop(_eventListener, "AirPlay event");
 			_timingAcceptTask = StartAcceptLoop(_timingListener, "AirPlay timing");
 
-			await SendAnnouncementAsync(_cts.Token);
+			await _mdns.SendAnnouncementAsync(_cts.Token);
 			SetStatus($"AirPlay receiver advertising as \"{_displayName}\".");
 		}
 		catch (Exception ex)
 		{
 			SetStatus("AirPlay receiver unavailable: " + ex.Message);
 			AppLog.Write("AirPlay receiver failed to start: " + ex);
-			CleanupPartialStart(mdnsClient);
+			CleanupPartialStart();
 		}
 	}
 
 	// Undo a partially completed StartAsync so the entry guard does not wedge a half-started receiver
-	// and a later StartAsync can retry cleanly (e.g. after UDP 5353 was momentarily held). The mDNS
-	// socket local is passed so a bind/join failure before the field assignment is still disposed.
-	// Any listeners that started are stopped; their accept loops and the mDNS receive loop terminate on
+	// and a later StartAsync can retry cleanly (e.g. after UDP 5353 was momentarily held). Any
+	// listeners that started are stopped; their accept loops and the mDNS receive loop terminate on
 	// the resulting ObjectDisposedException. _cts is the shared session token and is left untouched so a
 	// retry can reuse it.
-	private void CleanupPartialStart(UdpClient? mdnsClient)
+	private void CleanupPartialStart()
 	{
-		try
-		{
-			mdnsClient?.Dispose();
-		}
-		catch
-		{
-		}
-
-		_mdnsClient = null;
-		_mdnsBound = false;
+		_mdns.Reset();
 
 		_airPlayListener?.Stop();
 		_raopListener?.Stop();
@@ -1959,114 +1934,6 @@ public sealed class AirPlayProbeService : IDisposable
 		AppLog.Write($"AirPlay {label} body length={body.Length}.");
 	}
 
-	private async Task ReceiveLoopAsync()
-	{
-		while (!_cts.IsCancellationRequested)
-		{
-			try
-			{
-				UdpReceiveResult result = await _mdnsClient!.ReceiveAsync(_cts.Token);
-				if (!PacketAsksForProbe(result.Buffer, _mdnsAnsweredNames))
-				{
-					continue;
-				}
-
-				// RFC 6762 section 6: a multicast responder must not send a given record more
-				// than once per second. Queries from many hosts (or a flood from one) collapse
-				// into at most one announcement per second; the periodic announce loop and
-				// the goodbye are unaffected.
-				long now = Environment.TickCount64;
-				if (now - _lastQueryResponseTicks < QueryResponseMinimumIntervalMilliseconds)
-				{
-					continue;
-				}
-				_lastQueryResponseTicks = now;
-				await SendAnnouncementAsync(_cts.Token);
-			}
-			catch (OperationCanceledException)
-			{
-				break;
-			}
-			catch (ObjectDisposedException)
-			{
-				break;
-			}
-			catch (Exception ex)
-			{
-				AppLog.Write("AirPlay receiver mDNS receive failed: " + ex.Message);
-			}
-		}
-	}
-
-	private async Task AnnounceLoopAsync()
-	{
-		TimeSpan delay = TimeSpan.FromSeconds(3.0);
-		while (!_cts.IsCancellationRequested)
-		{
-			try
-			{
-				await Task.Delay(delay, _cts.Token);
-				await SendAnnouncementAsync(_cts.Token);
-				delay = TimeSpan.FromSeconds(30.0);
-			}
-			catch (OperationCanceledException)
-			{
-				break;
-			}
-			catch (Exception ex)
-			{
-				AppLog.Write("AirPlay receiver mDNS announce failed: " + ex.Message);
-			}
-		}
-	}
-
-	private async Task SendAnnouncementAsync(CancellationToken token)
-	{
-		if (_mdnsClient == null)
-		{
-			return;
-		}
-
-		byte[] packet = BuildMdnsResponse(ttlSeconds: 120);
-		await _mdnsClient.SendAsync(packet, MulticastEndpoint, token);
-	}
-
-	private byte[] BuildMdnsResponse(uint ttlSeconds)
-	{
-		List<DnsRecord> records = new List<DnsRecord>
-		{
-			DnsRecord.Ptr(AirPlayServiceType, _airPlayInstanceName, ttlSeconds),
-			DnsRecord.Ptr(RaopServiceType, _raopInstanceName, ttlSeconds),
-			DnsRecord.Srv(_airPlayInstanceName, AirPlayListenerPort, _hostName, ttlSeconds),
-			DnsRecord.Txt(_airPlayInstanceName, BuildAirPlayTxt(), ttlSeconds),
-			DnsRecord.Srv(_raopInstanceName, RaopListenerPort, _hostName, ttlSeconds),
-			DnsRecord.Txt(_raopInstanceName, BuildRaopTxt(), ttlSeconds)
-		};
-
-		foreach (IPAddress address in ResolveLocalIPv4Addresses())
-		{
-			records.Add(DnsRecord.A(_hostName, address, ttlSeconds));
-		}
-
-		using MemoryStream stream = new MemoryStream();
-		Span<byte> header = stackalloc byte[12];
-		BinaryPrimitives.WriteUInt16BigEndian(header.Slice(2, 2), 0x8400);
-		BinaryPrimitives.WriteUInt16BigEndian(header.Slice(6, 2), (ushort)records.Count);
-		stream.Write(header);
-
-		foreach (DnsRecord record in records)
-		{
-			WriteName(stream, record.Name);
-			WriteUInt16(stream, record.Type);
-			WriteUInt16(stream, record.Class);
-			WriteUInt32(stream, record.Ttl);
-			WriteUInt16(stream, (ushort)record.Data.Length);
-			stream.Write(record.Data);
-		}
-
-		return stream.ToArray();
-	}
-
 	private IReadOnlyList<string> BuildAirPlayTxt()
 	{
 		return new[]
@@ -2109,115 +1976,6 @@ public sealed class AirPlayProbeService : IDisposable
 			};
 	}
 
-	/// <summary>
-	/// True when <paramref name="packet"/> is an mDNS query (QR bit clear) and one of its
-	/// questions names something this responder answers for: the two service types, the
-	/// DNS-SD service enumeration name, our instance names or our host name. Responses
-	/// from other devices and queries for other names (every ".local" name on the LAN,
-	/// Chromecasts, printers, other AirPlay receivers) are ignored, so this responder
-	/// neither amplifies other hosts' traffic nor answers for them.
-	/// </summary>
-	internal static bool PacketAsksForProbe(byte[] packet, IReadOnlyCollection<string> answeredNames)
-	{
-		if (packet.Length < 12)
-		{
-			return false;
-		}
-
-		// Header flags: QR (bit 15) set means this is a response, not a query.
-		if ((packet[2] & 0x80) != 0)
-		{
-			return false;
-		}
-
-		try
-		{
-			ushort questionCount = BinaryPrimitives.ReadUInt16BigEndian(packet.AsSpan(4, 2));
-			int offset = 12;
-			for (int i = 0; i < questionCount && offset < packet.Length; i++)
-			{
-				string name = ReadName(packet, ref offset);
-				if (offset + 4 > packet.Length)
-				{
-					break;
-				}
-				offset += 4;
-				if (IsAnsweredName(name, answeredNames))
-				{
-					return true;
-				}
-			}
-		}
-		catch (Exception ex) when (ex is IndexOutOfRangeException || ex is ArgumentException || ex is DecoderFallbackException)
-		{
-			// Malformed question section: treat as not for us.
-		}
-
-		return false;
-	}
-
-	private static bool IsAnsweredName(string name, IReadOnlyCollection<string> answeredNames)
-	{
-		string trimmed = name.TrimEnd('.');
-		foreach (string answered in answeredNames)
-		{
-			if (string.Equals(trimmed, answered, StringComparison.OrdinalIgnoreCase))
-			{
-				return true;
-			}
-		}
-		return false;
-	}
-
-	private static readonly object LocalAddressCacheGate = new object();
-	private static IReadOnlyList<IPAddress>? _cachedLocalAddresses;
-	private static long _cachedLocalAddressesTicks;
-	private const int LocalAddressCacheMilliseconds = 30_000;
-
-	/// <summary>
-	/// Local IPv4 addresses for the A records, cached for 30 s. Enumerating adapters is a
-	/// slow Win32 call and this runs on the mDNS receive thread for every answered query.
-	/// </summary>
-	private static IReadOnlyList<IPAddress> ResolveLocalIPv4Addresses()
-	{
-		lock (LocalAddressCacheGate)
-		{
-			long now = Environment.TickCount64;
-			if (_cachedLocalAddresses != null && now - _cachedLocalAddressesTicks < LocalAddressCacheMilliseconds)
-			{
-				return _cachedLocalAddresses;
-			}
-
-			IReadOnlyList<IPAddress> fresh = EnumerateLocalIPv4Addresses();
-			_cachedLocalAddresses = fresh;
-			_cachedLocalAddressesTicks = now;
-			return fresh;
-		}
-	}
-
-	private static IReadOnlyList<IPAddress> EnumerateLocalIPv4Addresses()
-	{
-		List<IPAddress> addresses = new List<IPAddress>();
-		foreach (NetworkInterface networkInterface in NetworkInterface.GetAllNetworkInterfaces())
-		{
-			if (networkInterface.OperationalStatus != OperationalStatus.Up)
-			{
-				continue;
-			}
-
-			foreach (UnicastIPAddressInformation unicast in networkInterface.GetIPProperties().UnicastAddresses)
-			{
-				IPAddress address = unicast.Address;
-				if (address.AddressFamily == AddressFamily.InterNetwork && !IPAddress.IsLoopback(address))
-				{
-					addresses.Add(address);
-				}
-			}
-		}
-
-		return addresses.Count > 0 ? addresses : new[] { IPAddress.Loopback };
-	}
-
 	private static string ResolveDeviceId()
 	{
 		PhysicalAddress? address = NetworkInterface.GetAllNetworkInterfaces()
@@ -2239,108 +1997,6 @@ public sealed class AirPlayProbeService : IDisposable
 			cleaned = "iMirror";
 		}
 		return cleaned.Length <= 40 ? cleaned : cleaned.Substring(0, 40);
-	}
-
-	private static string ReadName(byte[] packet, ref int offset)
-	{
-		List<string> labels = new List<string>();
-		bool jumped = false;
-		int returnOffset = 0;
-		int guard = 0;
-		while (offset < packet.Length && guard++ < 32)
-		{
-			byte length = packet[offset++];
-			if (length == 0)
-			{
-				break;
-			}
-			if ((length & 0xC0) == 0xC0)
-			{
-				if (offset >= packet.Length)
-				{
-					break;
-				}
-				int pointer = ((length & 0x3F) << 8) | packet[offset++];
-				if (!jumped)
-				{
-					returnOffset = offset;
-				}
-				offset = pointer;
-				jumped = true;
-			}
-			else
-			{
-				if (offset + length > packet.Length)
-				{
-					break;
-				}
-				labels.Add(Encoding.UTF8.GetString(packet, offset, length));
-				offset += length;
-			}
-		}
-		if (jumped)
-		{
-			offset = returnOffset;
-		}
-		return string.Join(".", labels);
-	}
-
-	private static void WriteName(Stream stream, string name)
-	{
-		foreach (string label in name.TrimEnd('.').Split('.'))
-		{
-			byte[] bytes = Encoding.UTF8.GetBytes(label);
-			stream.WriteByte((byte)bytes.Length);
-			stream.Write(bytes);
-		}
-		stream.WriteByte(0);
-	}
-
-	private static void WriteUInt16(Stream stream, ushort value)
-	{
-		Span<byte> buffer = stackalloc byte[2];
-		BinaryPrimitives.WriteUInt16BigEndian(buffer, value);
-		stream.Write(buffer);
-	}
-
-	private static void WriteUInt32(Stream stream, uint value)
-	{
-		Span<byte> buffer = stackalloc byte[4];
-		BinaryPrimitives.WriteUInt32BigEndian(buffer, value);
-		stream.Write(buffer);
-	}
-
-	private static byte[] BuildNameData(string name)
-	{
-		using MemoryStream stream = new MemoryStream();
-		WriteName(stream, name);
-		return stream.ToArray();
-	}
-
-	private static byte[] BuildSrvData(int port, string target)
-	{
-		using MemoryStream stream = new MemoryStream();
-		WriteUInt16(stream, 0);
-		WriteUInt16(stream, 0);
-		WriteUInt16(stream, (ushort)port);
-		WriteName(stream, target);
-		return stream.ToArray();
-	}
-
-	private static byte[] BuildTxtData(IEnumerable<string> values)
-	{
-		using MemoryStream stream = new MemoryStream();
-		foreach (string value in values)
-		{
-			byte[] bytes = Encoding.UTF8.GetBytes(value);
-			if (bytes.Length > 255)
-			{
-				continue;
-			}
-			stream.WriteByte((byte)bytes.Length);
-			stream.Write(bytes);
-		}
-		return stream.ToArray();
 	}
 
 	private void SetStatus(string message)
@@ -2368,11 +2024,7 @@ public sealed class AirPlayProbeService : IDisposable
 		_cts.Cancel();
 		try
 		{
-			if (_mdnsClient != null)
-			{
-				byte[] goodbye = BuildMdnsResponse(ttlSeconds: 0);
-				_mdnsClient.Send(goodbye, goodbye.Length, MulticastEndpoint);
-			}
+			_mdns.SendGoodbye();
 		}
 		catch
 		{
@@ -2391,11 +2043,11 @@ public sealed class AirPlayProbeService : IDisposable
 					DisposeMirrorProbePoolLocked();
 					_decryptorStreamConnectionId = null;
 				}
-		_mdnsClient?.Dispose();
+		_mdns.Dispose();
 		try
 		{
 			Task.WaitAll(
-				new[] { _receiveTask, _announceTask, _airPlayAcceptTask, _raopAcceptTask, _dataAcceptTask, _eventAcceptTask, _timingAcceptTask }.Where(task => task != null).Cast<Task>().ToArray(),
+				_mdns.BackgroundTasks.Concat(new[] { _airPlayAcceptTask, _raopAcceptTask, _dataAcceptTask, _eventAcceptTask, _timingAcceptTask }.Where(task => task != null).Cast<Task>()).ToArray(),
 				TimeSpan.FromSeconds(1.0));
 		}
 		catch
@@ -2411,18 +2063,4 @@ public sealed class AirPlayProbeService : IDisposable
 		string FirstLine,
 		Dictionary<string, string> Headers,
 		byte[] Body);
-
-	private readonly record struct DnsRecord(string Name, ushort Type, ushort Class, uint Ttl, byte[] Data)
-	{
-		private const ushort ClassIn = 1;
-		private const ushort ClassInCacheFlush = 0x8001;
-
-		public static DnsRecord Ptr(string name, string value, uint ttl) => new DnsRecord(name, 12, ClassIn, ttl, BuildNameData(value));
-
-		public static DnsRecord Srv(string name, int port, string target, uint ttl) => new DnsRecord(name, 33, ClassInCacheFlush, ttl, BuildSrvData(port, target));
-
-		public static DnsRecord Txt(string name, IEnumerable<string> values, uint ttl) => new DnsRecord(name, 16, ClassInCacheFlush, ttl, BuildTxtData(values));
-
-		public static DnsRecord A(string name, IPAddress address, uint ttl) => new DnsRecord(name, 1, ClassInCacheFlush, ttl, address.GetAddressBytes());
-	}
 }
