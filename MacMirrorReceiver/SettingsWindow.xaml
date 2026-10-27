@@ -4,8 +4,8 @@
                  xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
                  Title="iMirror Settings"
                  AutomationProperties.Name="iMirror Settings"
-                 Width="360"
-                 MaxHeight="720"
+                 Width="560"
+                 MaxHeight="760"
                  SizeToContent="Height"
                  ResizeMode="NoResize"
                  ShowInTaskbar="False"
@@ -14,7 +14,7 @@
                  WindowBackdropType="Mica"
                  Background="Transparent"
                  FontFamily="Segoe UI Variable Text, Segoe UI"
-                 FontSize="13"
+                 FontSize="14"
                  Foreground="{DynamicResource TextBrush}"
                  KeyDown="SettingsWindow_KeyDown"
                  Closing="SettingsWindow_Closing"
@@ -26,6 +26,37 @@
             <ResourceDictionary.MergedDictionaries>
                 <ResourceDictionary Source="/MacMirrorReceiver/SharedResources.xaml" />
             </ResourceDictionary.MergedDictionaries>
+
+            <!-- Section label above a group of setting cards, as in Windows 11 Settings. -->
+            <Style x:Key="SectionHeaderStyle" TargetType="TextBlock">
+                <Setter Property="FontSize" Value="14" />
+                <Setter Property="FontWeight" Value="SemiBold" />
+                <Setter Property="Foreground" Value="{StaticResource TextBrush}" />
+                <Setter Property="Margin" Value="2,18,0,8" />
+            </Style>
+
+            <!-- Card title and the secondary line under it. -->
+            <Style x:Key="CardTitleStyle" TargetType="TextBlock">
+                <Setter Property="FontSize" Value="14" />
+                <Setter Property="Foreground" Value="{StaticResource TextBrush}" />
+            </Style>
+            <Style x:Key="CardDescriptionStyle" TargetType="TextBlock">
+                <Setter Property="FontSize" Value="12" />
+                <Setter Property="Foreground" Value="{StaticResource MutedTextBrush}" />
+                <Setter Property="TextWrapping" Value="Wrap" />
+                <Setter Property="LineHeight" Value="16" />
+                <Setter Property="Margin" Value="0,2,0,0" />
+            </Style>
+            <!-- Override and fallback notes: same as a description, hidden until needed. -->
+            <Style x:Key="CardNoteStyle" TargetType="TextBlock" BasedOn="{StaticResource CardDescriptionStyle}">
+                <Setter Property="Visibility" Value="Collapsed" />
+                <Setter Property="Margin" Value="0,4,0,0" />
+            </Style>
+
+            <Style x:Key="SettingCardStyle" TargetType="ui:CardControl">
+                <Setter Property="Margin" Value="0,0,0,4" />
+                <Setter Property="Padding" Value="16,12" />
+            </Style>
         </ResourceDictionary>
     </ui:FluentWindow.Resources>
 
@@ -36,340 +67,247 @@
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
-        <Grid Grid.Row="0">
-            <ui:TitleBar Title="Settings"
-                         ShowMinimize="False"
-                         ShowMaximize="False"
-                         ShowClose="True" />
-        </Grid>
+        <ui:TitleBar Grid.Row="0"
+                     Title="Settings"
+                     ShowMinimize="False"
+                     ShowMaximize="False"
+                     ShowClose="True" />
 
         <ScrollViewer Grid.Row="1"
                       VerticalScrollBarVisibility="Auto"
                       HorizontalScrollBarVisibility="Disabled"
-                      Padding="0"
-                      Margin="18,8,18,0">
+                      Padding="20,0,20,16">
             <StackPanel>
-                <ui:Card Padding="14"
-                         Margin="0,0,0,12">
-                    <StackPanel>
-                        <TextBlock Text="GENERAL"
-                                   FontWeight="SemiBold"
-                                   FontSize="12"
-                                   Foreground="{StaticResource MutedTextBrush}"
-                                   Margin="0,0,0,10" />
-                        <TextBlock Text="Receiver name" Style="{StaticResource LabelTextStyle}" />
-                        <ui:TextBox x:Name="ReceiverNameTextBox"
-                                    AutomationProperties.Name="Receiver name"
-                                    TextChanged="ReceiverNameTextBox_TextChanged"
-                                    Height="40"
-                                    Padding="12,0"
-                                    VerticalContentAlignment="Center" />
-                        <TextBlock Text="Name shown to nearby Apple devices. Requires restart."
-                                   Foreground="{StaticResource MutedTextBrush}"
-                                   FontSize="12"
-                                   TextWrapping="Wrap"
-                                   Margin="0,6,0,0" />
-                    </StackPanel>
-                </ui:Card>
+                <!-- General ─────────────────────────────────────────────── -->
+                <TextBlock Text="General" Style="{StaticResource SectionHeaderStyle}" Margin="2,4,0,8" />
+                <ui:CardControl Style="{StaticResource SettingCardStyle}"
+                                Icon="{ui:SymbolIcon Desktop24}">
+                    <ui:CardControl.Header>
+                        <StackPanel Margin="0,0,16,0">
+                            <TextBlock Text="Receiver name" Style="{StaticResource CardTitleStyle}" />
+                            <TextBlock Text="Shown to nearby Apple devices. Requires restart."
+                                       Style="{StaticResource CardDescriptionStyle}" />
+                        </StackPanel>
+                    </ui:CardControl.Header>
+                    <ui:TextBox x:Name="ReceiverNameTextBox"
+                                Width="200"
+                                AutomationProperties.Name="Receiver name"
+                                TextChanged="ReceiverNameTextBox_TextChanged" />
+                </ui:CardControl>
 
-                <ui:Card Padding="14"
-                         Margin="0,0,0,12">
-                    <StackPanel>
-                        <TextBlock Text="VIDEO"
-                                   FontWeight="SemiBold"
-                                   FontSize="12"
-                                   Foreground="{StaticResource MutedTextBrush}"
-                                   Margin="0,0,0,10" />
-                        <TextBlock Text="Quality mode" FontWeight="SemiBold" FontSize="14" />
-                        <TextBlock x:Name="RenderModeSettingDetailTextBlock"
-                                   Text="1080p AirPlay display for smooth mirroring."
-                                   Foreground="{StaticResource MutedTextBrush}"
-                                   TextWrapping="Wrap"
-                                   Margin="0,5,0,0"
-                                   LineHeight="18" />
-                        <RadioButton x:Name="StableRenderModeRadioButton"
-                                     GroupName="ReceiverRenderMode"
-                                     AutomationProperties.Name="Stable quality mode"
-                                     Checked="RenderModeSettingRadioButton_Checked"
-                                     Margin="0,12,0,0">
-                            <StackPanel Margin="6,0,0,0">
-                                <TextBlock Text="Stable (recommended)" FontWeight="SemiBold" />
-                                <TextBlock Text="1080p, smoother on more PCs."
-                                           Foreground="{StaticResource MutedTextBrush}"
-                                           FontSize="12"
-                                           TextWrapping="Wrap"
-                                           Margin="0,2,0,0" />
-                            </StackPanel>
-                        </RadioButton>
-                        <RadioButton x:Name="QualityRenderModeRadioButton"
-                                     GroupName="ReceiverRenderMode"
-                                     AutomationProperties.Name="High quality mode"
-                                     Checked="RenderModeSettingRadioButton_Checked"
-                                     Margin="0,10,0,0">
-                            <StackPanel Margin="6,0,0,0">
-                                <TextBlock Text="High quality" FontWeight="SemiBold" />
-                                <TextBlock Text="Native GPU path. May not work on all hardware."
-                                           Foreground="{StaticResource MutedTextBrush}"
-                                           FontSize="12"
-                                           TextWrapping="Wrap"
-                                           Margin="0,2,0,0" />
-                            </StackPanel>
-                        </RadioButton>
-                        <TextBlock x:Name="RenderModeNoteTextBlock"
-                                   Text="GPU mode is enabled when hardware decode is available."
-                                   Foreground="{StaticResource MutedTextBrush}"
-                                   FontSize="12"
-                                   TextWrapping="Wrap"
-                                   Visibility="Collapsed"
-                                   Margin="0,10,0,0"
-                                   LineHeight="17" />
-                        <TextBlock x:Name="RenderModeOverrideTextBlock"
-                                   Text="IMIRROR_RENDER_MODE is overriding this setting."
-                                   Foreground="{StaticResource MutedTextBrush}"
-                                   FontSize="12"
-                                   TextWrapping="Wrap"
-                                   Visibility="Collapsed"
-                                   Margin="0,10,0,0"
-                                   LineHeight="17" />
+                <!-- Video ───────────────────────────────────────────────── -->
+                <TextBlock Text="Video" Style="{StaticResource SectionHeaderStyle}" />
+                <ui:CardControl Style="{StaticResource SettingCardStyle}"
+                                Icon="{ui:SymbolIcon Sparkle24}">
+                    <ui:CardControl.Header>
+                        <StackPanel Margin="0,0,16,0">
+                            <TextBlock Text="Quality mode" Style="{StaticResource CardTitleStyle}" />
+                            <TextBlock x:Name="RenderModeSettingDetailTextBlock"
+                                       Text="1080p AirPlay display for smooth mirroring."
+                                       Style="{StaticResource CardDescriptionStyle}" />
+                            <TextBlock x:Name="RenderModeNoteTextBlock" Style="{StaticResource CardNoteStyle}" />
+                            <TextBlock x:Name="RenderModeOverrideTextBlock" Style="{StaticResource CardNoteStyle}" />
+                        </StackPanel>
+                    </ui:CardControl.Header>
+                    <ComboBox x:Name="RenderModeComboBox"
+                              Width="200"
+                              AutomationProperties.Name="Quality mode"
+                              SelectionChanged="RenderModeComboBox_SelectionChanged">
+                        <ComboBoxItem x:Name="StableRenderModeItem" Content="Stable (recommended)" />
+                        <ComboBoxItem x:Name="QualityRenderModeItem" Content="High quality" />
+                    </ComboBox>
+                </ui:CardControl>
+                <ui:CardControl Style="{StaticResource SettingCardStyle}"
+                                Icon="{ui:SymbolIcon DeveloperBoard24}">
+                    <ui:CardControl.Header>
+                        <StackPanel Margin="0,0,16,0">
+                            <TextBlock Text="Video engine" Style="{StaticResource CardTitleStyle}" />
+                            <TextBlock x:Name="VideoEngineDetailTextBlock"
+                                       Text="Hardware decode when available, software fallback otherwise."
+                                       Style="{StaticResource CardDescriptionStyle}" />
+                            <TextBlock x:Name="VideoEngineOverrideTextBlock" Style="{StaticResource CardNoteStyle}" />
+                        </StackPanel>
+                    </ui:CardControl.Header>
+                    <ComboBox x:Name="VideoEngineComboBox"
+                              Width="200"
+                              AutomationProperties.Name="Video engine"
+                              SelectionChanged="VideoEngineComboBox_SelectionChanged">
+                        <ComboBoxItem x:Name="AutoVideoEngineItem" Content="Auto (GPU)" />
+                        <ComboBoxItem x:Name="SoftwareVideoEngineItem" Content="Force software" />
+                    </ComboBox>
+                </ui:CardControl>
 
-                        <TextBlock Text="Video engine" FontWeight="SemiBold" Margin="0,16,0,0" />
-                        <RadioButton x:Name="AutoVideoEngineRadioButton"
-                                     GroupName="VideoEngine"
-                                     AutomationProperties.Name="Auto video engine"
-                                     Checked="VideoEngineRadioButton_Checked"
-                                     Margin="0,8,0,0">
-                            <StackPanel Margin="6,0,0,0">
-                                <TextBlock Text="Auto (GPU)" FontWeight="SemiBold" />
-                                <TextBlock Text="Hardware decode when available, software fallback otherwise."
-                                           Foreground="{StaticResource MutedTextBrush}"
-                                           FontSize="12"
-                                           TextWrapping="Wrap"
-                                           Margin="0,2,0,0" />
-                            </StackPanel>
-                        </RadioButton>
-                        <RadioButton x:Name="SoftwareVideoEngineRadioButton"
-                                     GroupName="VideoEngine"
-                                     AutomationProperties.Name="Force software video engine"
-                                     Checked="VideoEngineRadioButton_Checked"
-                                     Margin="0,8,0,0">
-                            <StackPanel Margin="6,0,0,0">
-                                <TextBlock Text="Force software" FontWeight="SemiBold" />
-                                <TextBlock Text="Always use the FFmpeg software decoder."
-                                           Foreground="{StaticResource MutedTextBrush}"
-                                           FontSize="12"
-                                           TextWrapping="Wrap"
-                                           Margin="0,2,0,0" />
-                            </StackPanel>
-                        </RadioButton>
-                        <TextBlock x:Name="VideoEngineOverrideTextBlock"
-                                   Foreground="{StaticResource MutedTextBrush}"
-                                   FontSize="12"
-                                   TextWrapping="Wrap"
-                                   Visibility="Collapsed"
-                                   Margin="0,8,0,0"
-                                   LineHeight="17" />
-                    </StackPanel>
-                </ui:Card>
-
-                <ui:Card Padding="14"
-                         Margin="0,0,0,12">
-                    <StackPanel>
-                        <TextBlock Text="AUDIO"
-                                   FontWeight="SemiBold"
-                                   FontSize="12"
-                                   Foreground="{StaticResource MutedTextBrush}"
-                                   Margin="0,0,0,10" />
-                        <ui:ToggleSwitch x:Name="AudioEnabledCheckBox"
-                                         Content="Receive audio from senders"
-                                         Checked="AudioEnabledCheckBox_Changed"
-                                         Unchecked="AudioEnabledCheckBox_Changed" />
-                        <TextBlock x:Name="AudioEnabledOverrideTextBlock"
-                                   Foreground="{StaticResource MutedTextBrush}"
-                                   FontSize="12"
-                                   TextWrapping="Wrap"
-                                   Visibility="Collapsed"
-                                   Margin="0,6,0,0"
-                                   LineHeight="17" />
-                        <Grid Margin="0,14,0,0">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="*" />
-                                <ColumnDefinition Width="Auto" />
-                            </Grid.ColumnDefinitions>
-                            <TextBlock Text="Audio sync offset"
-                                       FontWeight="SemiBold"
-                                       VerticalAlignment="Center" />
-                            <TextBlock x:Name="AudioSyncOffsetValueText"
-                                       Grid.Column="1"
-                                       Text="120 ms"
-                                       Foreground="{StaticResource MutedTextBrush}"
-                                       VerticalAlignment="Center" />
-                        </Grid>
+                <!-- Audio ───────────────────────────────────────────────── -->
+                <TextBlock Text="Audio" Style="{StaticResource SectionHeaderStyle}" />
+                <ui:CardControl Style="{StaticResource SettingCardStyle}"
+                                Icon="{ui:SymbolIcon Speaker224}">
+                    <ui:CardControl.Header>
+                        <StackPanel Margin="0,0,16,0">
+                            <TextBlock Text="Receive audio" Style="{StaticResource CardTitleStyle}" />
+                            <TextBlock Text="Play sound from the sender on this PC."
+                                       Style="{StaticResource CardDescriptionStyle}" />
+                            <TextBlock x:Name="AudioEnabledOverrideTextBlock" Style="{StaticResource CardNoteStyle}" />
+                        </StackPanel>
+                    </ui:CardControl.Header>
+                    <ui:ToggleSwitch x:Name="AudioEnabledCheckBox"
+                                     AutomationProperties.Name="Receive audio from senders"
+                                     Checked="AudioEnabledCheckBox_Changed"
+                                     Unchecked="AudioEnabledCheckBox_Changed" />
+                </ui:CardControl>
+                <ui:CardControl Style="{StaticResource SettingCardStyle}"
+                                Icon="{ui:SymbolIcon Timer24}">
+                    <ui:CardControl.Header>
+                        <StackPanel Margin="0,0,16,0">
+                            <TextBlock Text="Audio sync offset" Style="{StaticResource CardTitleStyle}" />
+                            <TextBlock Text="Delays audio relative to video. Takes effect immediately."
+                                       Style="{StaticResource CardDescriptionStyle}" />
+                            <TextBlock x:Name="AudioSyncOffsetOverrideTextBlock" Style="{StaticResource CardNoteStyle}" />
+                        </StackPanel>
+                    </ui:CardControl.Header>
+                    <StackPanel Orientation="Horizontal">
                         <Slider x:Name="AudioSyncOffsetSlider"
+                                Width="150"
+                                VerticalAlignment="Center"
                                 AutomationProperties.Name="Audio sync offset"
                                 Minimum="60"
                                 Maximum="220"
                                 TickFrequency="10"
                                 IsSnapToTickEnabled="True"
-                                ValueChanged="AudioSyncOffsetSlider_ValueChanged"
-                                Margin="0,6,0,0" />
-                        <TextBlock Text="Delays audio relative to video. Takes effect immediately."
-                                   Foreground="{StaticResource MutedTextBrush}"
-                                   FontSize="12"
-                                   TextWrapping="Wrap"
-                                   Margin="0,4,0,0" />
-                        <TextBlock x:Name="AudioSyncOffsetOverrideTextBlock"
-                                   Foreground="{StaticResource MutedTextBrush}"
-                                   FontSize="12"
-                                   TextWrapping="Wrap"
-                                   Visibility="Collapsed"
-                                   Margin="0,6,0,0"
-                                   LineHeight="17" />
+                                ValueChanged="AudioSyncOffsetSlider_ValueChanged" />
+                        <TextBlock x:Name="AudioSyncOffsetValueText"
+                                   Text="120 ms"
+                                   Width="52"
+                                   Margin="10,0,0,0"
+                                   TextAlignment="Right"
+                                   VerticalAlignment="Center"
+                                   Foreground="{StaticResource MutedTextBrush}" />
                     </StackPanel>
-                </ui:Card>
+                </ui:CardControl>
 
-                <ui:Card Padding="14"
-                         Margin="0,0,0,4">
+                <!-- Advanced ────────────────────────────────────────────── -->
+                <TextBlock Text="Advanced" Style="{StaticResource SectionHeaderStyle}" />
+                <ui:CardExpander Icon="{ui:SymbolIcon Bug24}"
+                                 IsExpanded="False"
+                                 Padding="16,12"
+                                 Margin="0,0,0,4">
+                    <ui:CardExpander.Header>
+                        <StackPanel>
+                            <TextBlock Text="Diagnostics" Style="{StaticResource CardTitleStyle}" />
+                            <TextBlock Text="Extra logs and stream captures for troubleshooting."
+                                       Style="{StaticResource CardDescriptionStyle}" />
+                        </StackPanel>
+                    </ui:CardExpander.Header>
                     <StackPanel>
-                        <TextBlock Text="Advanced"
-                                   FontWeight="SemiBold"
-                                   FontSize="12"
-                                   Foreground="{StaticResource MutedTextBrush}"
-                                   Margin="0,0,0,10" />
-                        <Expander Header="Diagnostics"
-                                  IsExpanded="False"
-                                  Foreground="{StaticResource MutedTextBrush}">
-                            <StackPanel Margin="0,8,0,0">
-                                <Border Background="{StaticResource WarnBannerBackBrush}"
-                                        BorderBrush="{StaticResource WarnBannerBorderBrush}"
-                                        BorderThickness="1"
-                                        CornerRadius="8"
-                                        Padding="10">
-                                    <TextBlock Text="Diagnostic files may contain screen content or session keys. Never share them."
-                                               Foreground="{StaticResource WarnBannerTextBrush}"
-                                               FontSize="12"
-                                               TextWrapping="Wrap"
-                                               LineHeight="17" />
-                                </Border>
-                                <ui:ToggleSwitch x:Name="WriteDiagnosticsCheckBox"
-                                                 Content="Write diagnostics"
-                                                 Checked="DiagnosticsCheckBox_Changed"
-                                                 Unchecked="DiagnosticsCheckBox_Changed"
-                                                 Margin="0,10,0,0" />
-                                <ui:ToggleSwitch x:Name="DumpH264CheckBox"
-                                                 Content="Dump H.264"
-                                                 Checked="DiagnosticsCheckBox_Changed"
-                                                 Unchecked="DiagnosticsCheckBox_Changed"
-                                                 Margin="0,8,0,0" />
-                                <ui:ToggleSwitch x:Name="DumpAudioCheckBox"
-                                                 Content="Dump audio"
-                                                 Checked="DiagnosticsCheckBox_Changed"
-                                                 Unchecked="DiagnosticsCheckBox_Changed"
-                                                 Margin="0,8,0,0" />
-                                <TextBlock x:Name="DiagnosticsOverrideTextBlock"
-                                           Text="An IMIRROR_DUMP_* or IMIRROR_WRITE_DIAGNOSTICS variable is overriding one or more of these."
-                                           Foreground="{StaticResource MutedTextBrush}"
-                                           FontSize="12"
-                                           TextWrapping="Wrap"
-                                           Visibility="Collapsed"
-                                           Margin="0,8,0,0"
-                                           LineHeight="17" />
-                            </StackPanel>
-                        </Expander>
+                        <Border Background="{StaticResource WarnBannerBackBrush}"
+                                BorderBrush="{StaticResource WarnBannerBorderBrush}"
+                                BorderThickness="1"
+                                CornerRadius="6"
+                                Padding="12,10">
+                            <TextBlock Text="Diagnostic files may contain screen content or session keys. Never share them."
+                                       Foreground="{StaticResource WarnBannerTextBrush}"
+                                       FontSize="12"
+                                       TextWrapping="Wrap"
+                                       LineHeight="17" />
+                        </Border>
+                        <Grid Margin="0,12,0,0">
+                            <TextBlock Text="Write diagnostics" VerticalAlignment="Center" />
+                            <ui:ToggleSwitch x:Name="WriteDiagnosticsCheckBox"
+                                             HorizontalAlignment="Right"
+                                             AutomationProperties.Name="Write diagnostics"
+                                             Checked="DiagnosticsCheckBox_Changed"
+                                             Unchecked="DiagnosticsCheckBox_Changed" />
+                        </Grid>
+                        <Grid Margin="0,10,0,0">
+                            <TextBlock Text="Dump H.264" VerticalAlignment="Center" />
+                            <ui:ToggleSwitch x:Name="DumpH264CheckBox"
+                                             HorizontalAlignment="Right"
+                                             AutomationProperties.Name="Dump H.264"
+                                             Checked="DiagnosticsCheckBox_Changed"
+                                             Unchecked="DiagnosticsCheckBox_Changed" />
+                        </Grid>
+                        <Grid Margin="0,10,0,0">
+                            <TextBlock Text="Dump audio" VerticalAlignment="Center" />
+                            <ui:ToggleSwitch x:Name="DumpAudioCheckBox"
+                                             HorizontalAlignment="Right"
+                                             AutomationProperties.Name="Dump audio"
+                                             Checked="DiagnosticsCheckBox_Changed"
+                                             Unchecked="DiagnosticsCheckBox_Changed" />
+                        </Grid>
+                        <TextBlock x:Name="DiagnosticsOverrideTextBlock"
+                                   Text="An IMIRROR_DUMP_* or IMIRROR_WRITE_DIAGNOSTICS variable is overriding one or more of these."
+                                   Style="{StaticResource CardNoteStyle}"
+                                   Margin="0,10,0,0" />
                     </StackPanel>
-                </ui:Card>
+                </ui:CardExpander>
+
+                <!-- About ───────────────────────────────────────────────── -->
+                <TextBlock Text="About" Style="{StaticResource SectionHeaderStyle}" />
+                <ui:CardControl Style="{StaticResource SettingCardStyle}"
+                                Icon="{ui:SymbolIcon Info24}">
+                    <ui:CardControl.Header>
+                        <StackPanel Margin="0,0,16,0">
+                            <TextBlock x:Name="VersionTextBlock" Style="{StaticResource CardTitleStyle}" />
+                            <TextBlock Style="{StaticResource CardDescriptionStyle}">
+                                <Run Text="© 2024-present Balragon Contributors · " /><Hyperlink x:Name="LicenseHyperlink" RequestNavigate="LicenseHyperlink_RequestNavigate">GPLv3</Hyperlink><Run Text=", no warranty · " /><Hyperlink x:Name="SourceHyperlink" RequestNavigate="SourceHyperlink_RequestNavigate">Source</Hyperlink><Run Text=" · " /><Hyperlink x:Name="ReleasesHyperlink" RequestNavigate="UpdatesHyperlink_RequestNavigate">Releases</Hyperlink>
+                            </TextBlock>
+                        </StackPanel>
+                    </ui:CardControl.Header>
+                    <ui:Button x:Name="SettingsUpdateButton"
+                               Content="Check for updates"
+                               Icon="{ui:SymbolIcon ArrowSync24}"
+                               AutomationProperties.Name="Check for iMirror updates"
+                               Click="SettingsUpdateButton_Click" />
+                </ui:CardControl>
+                <TextBlock x:Name="SettingsUpdatesStatusTextBlock"
+                           Style="{StaticResource CardNoteStyle}"
+                           Margin="4,6,4,0" />
+                <ui:Button x:Name="SettingsInstallUpdateButton"
+                           Content="Install update"
+                           AutomationProperties.Name="Install iMirror update"
+                           Click="SettingsInstallUpdateButton_Click"
+                           Appearance="Primary"
+                           HorizontalAlignment="Right"
+                           Visibility="Collapsed"
+                           Margin="0,8,0,0" />
             </StackPanel>
         </ScrollViewer>
 
-        <StackPanel Grid.Row="2"
-                    Margin="18,0,18,18">
-            <Border x:Name="SettingsRestartPanel"
-                    Background="{StaticResource WarnBannerBackBrush}"
-                    BorderBrush="{StaticResource WarnBannerBorderBrush}"
-                    BorderThickness="1"
-                    CornerRadius="8"
-                    Padding="12"
-                    Margin="0,12,0,0"
-                    Visibility="Collapsed">
-                <StackPanel>
-                    <TextBlock Text="Restart required to apply; active sessions will end."
-                               Foreground="{StaticResource WarnBannerTextBrush}"
-                               FontSize="12"
-                               TextWrapping="Wrap"
-                               VerticalAlignment="Center"
-                               LineHeight="17" />
-                    <ui:Button x:Name="SettingsRestartButton"
-                               Content="Restart now"
-                               AutomationProperties.Name="Restart iMirror now"
-                               Click="SettingsRestartButton_Click"
-                               Appearance="Primary"
-                               HorizontalAlignment="Stretch"
-                               Margin="0,10,0,0" />
-                </StackPanel>
-            </Border>
-
-            <Grid Margin="0,12,0,0">
+        <!-- Shown while a change waits for a restart. -->
+        <Border x:Name="SettingsRestartPanel"
+                Grid.Row="2"
+                Background="{StaticResource WarnBannerBackBrush}"
+                BorderBrush="{StaticResource WarnBannerBorderBrush}"
+                BorderThickness="1"
+                CornerRadius="8"
+                Padding="16,10"
+                Margin="20,0,20,16"
+                Visibility="Collapsed">
+            <Grid>
                 <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="*" />
                     <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
-                <TextBlock x:Name="VersionTextBlock"
-                           Foreground="{StaticResource MutedTextBrush}"
-                           FontSize="12"
-                           VerticalAlignment="Center" />
-                <StackPanel Grid.Column="1"
-                            Orientation="Horizontal"
-                            VerticalAlignment="Center">
-                    <ui:Button x:Name="SettingsUpdateButton"
-                               Content="Check"
-                               Appearance="Transparent"
-                               Foreground="{StaticResource AccentBrush}"
-                               FontSize="12"
-                               FontWeight="SemiBold"
-                               Padding="8,0"
-                               MinHeight="28"
-                               Click="SettingsUpdateButton_Click" />
-                    <TextBlock FontSize="12"
+                <ui:SymbolIcon Symbol="ArrowClockwise24"
+                               FontSize="18"
+                               Margin="0,0,12,0"
                                VerticalAlignment="Center"
-                               Margin="6,0,0,0">
-                        <Hyperlink x:Name="ReleasesHyperlink"
-                                   RequestNavigate="UpdatesHyperlink_RequestNavigate">
-                            Releases
-                        </Hyperlink>
-                    </TextBlock>
-                </StackPanel>
+                               Foreground="{StaticResource WarnBannerTextBrush}" />
+                <TextBlock Grid.Column="1"
+                           Text="Restart iMirror to apply. Active sessions will end."
+                           Foreground="{StaticResource WarnBannerTextBrush}"
+                           FontSize="13"
+                           TextWrapping="Wrap"
+                           VerticalAlignment="Center" />
+                <ui:Button x:Name="SettingsRestartButton"
+                           Grid.Column="2"
+                           Content="Restart now"
+                           AutomationProperties.Name="Restart iMirror now"
+                           Click="SettingsRestartButton_Click"
+                           Appearance="Primary"
+                           Margin="12,0,0,0"
+                           VerticalAlignment="Center" />
             </Grid>
-            <TextBlock Foreground="{StaticResource MutedTextBrush}"
-                       FontSize="12"
-                       TextWrapping="Wrap"
-                       Margin="0,8,0,0"
-                       LineHeight="17">
-                <Run Text="iMirror (C) 2024-present Balragon Contributors. Licensed under GPLv3; provided with no warranty. Source: " />
-                <Hyperlink x:Name="SourceHyperlink"
-                           RequestNavigate="SourceHyperlink_RequestNavigate">
-                    github.com/Balragon/iMirror
-                </Hyperlink>
-                <Run Text="; license: " />
-                <Hyperlink x:Name="LicenseHyperlink"
-                           RequestNavigate="LicenseHyperlink_RequestNavigate">
-                    GPLv3
-                </Hyperlink>
-                <Run Text="." />
-            </TextBlock>
-            <TextBlock x:Name="SettingsUpdatesStatusTextBlock"
-                       Foreground="{StaticResource MutedTextBrush}"
-                       FontSize="12"
-                       TextWrapping="Wrap"
-                       Visibility="Collapsed"
-                       Margin="0,8,0,0"
-                       LineHeight="17" />
-            <ui:Button x:Name="SettingsInstallUpdateButton"
-                       Content="Install update"
-                       AutomationProperties.Name="Install iMirror update"
-                       Click="SettingsInstallUpdateButton_Click"
-                       Appearance="Primary"
-                       HorizontalAlignment="Stretch"
-                       Visibility="Collapsed"
-                       Margin="0,8,0,0" />
-        </StackPanel>
+        </Border>
     </Grid>
 </ui:FluentWindow>
