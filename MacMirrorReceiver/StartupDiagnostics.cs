@@ -48,7 +48,9 @@ internal static class StartupDiagnostics
 	{
 		Task<PreflightCheck> ffmpegTask = Task.Run(CheckFfmpeg);
 		Task<PreflightCheck> networkTask = Task.Run(CheckNetwork);
-		PreflightCheck listeners = CheckListeners(StartupListenerState.FromProbe(probe));
+		StartupListenerState listenerState = StartupListenerState.FromProbe(probe);
+		FirewallInboundCoverage firewall = await WindowsFirewallRuleInstaller.GetInboundCoverageForCurrentExecutableAsync();
+		PreflightCheck listeners = CheckListeners(listenerState, firewall);
 
 		PreflightCheck ffmpeg = await ffmpegTask;
 		PreflightCheck network = await networkTask;
@@ -82,7 +84,9 @@ internal static class StartupDiagnostics
 			"Place ffmpeg.exe at tools\\ffmpeg\\bin\\ffmpeg.exe or add it to PATH.");
 	}
 
-	internal static PreflightCheck CheckListeners(StartupListenerState listeners)
+	internal static PreflightCheck CheckListeners(
+		StartupListenerState listeners,
+		FirewallInboundCoverage firewall = FirewallInboundCoverage.Unknown)
 	{
 		bool mdnsBound = listeners.IsMdnsBound;
 		bool airPlayBound = listeners.IsAirPlayListenerBound;
@@ -119,6 +123,19 @@ internal static class StartupDiagnostics
 				$"Blocked: {string.Join(", ", missing)}. Open Windows Security → " +
 				"Firewall & network protection → Allow an app through firewall, " +
 				"find iMirror, and check both Private and Public networks. Audio uses dynamic UDP ports, so allow the iMirror app rather than only fixed ports.");
+		}
+
+		// Binding succeeds even when the firewall drops every inbound packet, so the listeners
+		// alone said "ready" while no sender could connect.
+		if (firewall == FirewallInboundCoverage.NotAllowed)
+		{
+			return new PreflightCheck(
+				"listeners",
+				"Firewall / discovery",
+				PreflightStatus.Blocked,
+				"Windows Firewall does not allow iMirror on this network. Senders cannot connect.",
+				"No enabled inbound allow rule for this iMirror covers the current network type (or a block rule does). " +
+				"Press Allow in Firewall and accept the administrator prompt.");
 		}
 
 		if (!raopBound)

@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using System.IO;
 using System.Text;
 using MacMirrorReceiver;
@@ -21,7 +22,6 @@ public sealed class WindowsFirewallRuleInstallerTests
 		Assert.Contains(@"$program = 'C:\Tools\iMirror\iMirror.exe'", script);
 		Assert.Contains("dynamic audio RTP", script);
 	}
-
 	[Fact]
 	public void BuildFirewallRuleScript_EscapesPowerShellSingleQuotes()
 	{
@@ -76,5 +76,49 @@ public sealed class WindowsFirewallRuleInstallerTests
 		string script = WindowsFirewallRuleInstaller.BuildFirewallRuleCheckScript(@"C:\Users\John's PC\iMirror.exe");
 
 		Assert.Contains(@"$program = 'C:\Users\John''s PC\iMirror.exe'", script);
+	}
+
+	[Fact]
+	public void BuildInboundCoverageCheckScript_MatchesAnyRuleForTheProgramAndLetsBlockRulesWin()
+	{
+		string script = WindowsFirewallRuleInstaller.BuildInboundCoverageCheckScript(@"C:\Users\John's PC\iMirror.exe");
+
+		Assert.Contains(@"$program = 'C:\Users\John''s PC\iMirror.exe'", script);
+		// Rules Windows creates from its own prompt are named after the exe, so match on the program only.
+		Assert.Contains("Get-NetFirewallApplicationFilter -Program $program", script);
+		Assert.DoesNotContain("$displayName", script);
+		Assert.True(
+			script.IndexOf("-eq 'Block'", StringComparison.Ordinal) < script.IndexOf("-eq 'Allow'", StringComparison.Ordinal),
+			"a block rule must be checked before allow rules");
+		Assert.Contains("trap { exit 2 }", script);
+	}
+
+	[Fact]
+	public void BuildInboundCoverageCheckScript_IsValidPowerShell()
+	{
+		string scriptPath = Path.Combine(Path.GetTempPath(), "iMirror-coverage-" + Guid.NewGuid().ToString("N") + ".ps1");
+		File.WriteAllText(scriptPath, WindowsFirewallRuleInstaller.BuildInboundCoverageCheckScript(@"C:\Users\John's PC\iMirror.exe"));
+		try
+		{
+			string parse =
+				"$errors = $null; " +
+				$"[void][System.Management.Automation.Language.Parser]::ParseFile('{scriptPath.Replace("'", "''", StringComparison.Ordinal)}', [ref]$null, [ref]$errors); " +
+				"$errors | ForEach-Object { [Console]::Error.WriteLine($_.Message) }; exit $errors.Count";
+			using Process process = Process.Start(new ProcessStartInfo
+			{
+				FileName = WindowsFirewallRuleInstaller.PowerShellPath,
+				Arguments = WindowsFirewallRuleInstaller.BuildEncodedCommandArguments(parse),
+				UseShellExecute = false,
+				CreateNoWindow = true,
+				RedirectStandardError = true
+			})!;
+			string errors = process.StandardError.ReadToEnd();
+			Assert.True(process.WaitForExit(30_000), "PowerShell parser did not finish");
+			Assert.True(process.ExitCode == 0, "parse errors: " + errors);
+		}
+		finally
+		{
+			File.Delete(scriptPath);
+		}
 	}
 }

@@ -20,6 +20,13 @@ internal sealed record FirewallRuleInstallResult(
 	FirewallRuleInstallStatus Status,
 	string Message);
 
+internal enum FirewallInboundCoverage
+{
+	Allowed,
+	NotAllowed,
+	Unknown
+}
+
 internal static class WindowsFirewallRuleInstaller
 {
 	private const int UserCancelledElevationError = 1223;
@@ -50,6 +57,40 @@ internal static class WindowsFirewallRuleInstaller
 		}
 
 		return await HasAllowRuleForExecutableAsync(processPath, cancellationToken);
+	}
+
+	/// <summary>
+	/// Whether Windows Firewall lets inbound traffic reach this executable on the networks it is
+	/// on now. Unlike <see cref="HasAllowRuleForCurrentExecutableAsync"/> this also counts the
+	/// rules Windows creates from its own "allow access" prompt (named after the exe), honours
+	/// block rules and per-profile scope, and reports <see cref="FirewallInboundCoverage.Unknown"/>
+	/// when it cannot tell, so callers never warn on a guess.
+	/// </summary>
+	public static async Task<FirewallInboundCoverage> GetInboundCoverageForCurrentExecutableAsync(
+		CancellationToken cancellationToken = default)
+	{
+		string? processPath = Environment.ProcessPath;
+		if (string.IsNullOrWhiteSpace(processPath))
+		{
+			return FirewallInboundCoverage.Unknown;
+		}
+
+		string fullPath;
+		try
+		{
+			fullPath = Path.GetFullPath(processPath);
+		}
+		catch
+		{
+			return FirewallInboundCoverage.Unknown;
+		}
+
+		return await RunCheckScriptAsync(BuildInboundCoverageCheckScript(fullPath), cancellationToken) switch
+		{
+			0 => FirewallInboundCoverage.Allowed,
+			1 => FirewallInboundCoverage.NotAllowed,
+			_ => FirewallInboundCoverage.Unknown
+		};
 	}
 
 	internal static async Task<FirewallRuleInstallResult> AllowExecutableAsync(
@@ -204,12 +245,18 @@ if ($matchingRules.Count -gt 0) {
 			return false;
 		}
 
+		return await RunCheckScriptAsync(BuildFirewallRuleCheckScript(fullPath), cancellationToken) == 0;
+	}
+
+	/// <summary>Runs a read-only check script unelevated; returns its exit code, or null on failure or timeout.</summary>
+	private static async Task<int?> RunCheckScriptAsync(string script, CancellationToken cancellationToken)
+	{
 		try
 		{
 			using Process? process = Process.Start(new ProcessStartInfo
 			{
 				FileName = PowerShellPath,
-				Arguments = BuildEncodedCommandArguments(BuildFirewallRuleCheckScript(fullPath)),
+				Arguments = BuildEncodedCommandArguments(script),
 				UseShellExecute = false,
 				CreateNoWindow = true,
 				WindowStyle = ProcessWindowStyle.Hidden
@@ -217,7 +264,7 @@ if ($matchingRules.Count -gt 0) {
 
 			if (process == null)
 			{
-				return false;
+				return null;
 			}
 
 			Task waitTask = process.WaitForExitAsync(cancellationToken);
@@ -226,16 +273,62 @@ if ($matchingRules.Count -gt 0) {
 			if (completed == timeoutTask)
 			{
 				TryKillProcess(process);
-				return false;
+				return null;
 			}
 
 			await waitTask;
-			return process.ExitCode == 0;
+			return process.ExitCode;
 		}
 		catch
 		{
-			return false;
+			return null;
 		}
+	}
+
+	/// <summary>
+	/// Exit 0 when every active Private/Public network has an enabled inbound allow rule for the
+	/// program and no enabled inbound block rule (block wins in Windows Firewall), 1 when one does
+	/// not, 2 when there is nothing to judge. Domain networks are skipped: the allow button only
+	/// writes Private and Public rules, and domain policy is usually managed elsewhere.
+	/// </summary>
+	internal static string BuildInboundCoverageCheckScript(string executablePath)
+	{
+		string program = QuotePowerShellSingleQuotedString(Path.GetFullPath(executablePath));
+
+		// The trap keeps a failing cmdlet from exiting 1, which would read as "blocked".
+		return $$"""
+$ErrorActionPreference = 'Stop'
+trap { exit 2 }
+$program = {{program}}
+$networkProfiles = @(Get-NetConnectionProfile -ErrorAction SilentlyContinue | ForEach-Object {
+    switch ($_.NetworkCategory.ToString()) { 'Public' { 'Public' } 'Private' { 'Private' } }
+} | Sort-Object -Unique)
+if ($networkProfiles.Count -eq 0) {
+    exit 2
+}
+
+$firewallProfiles = @(Get-NetFirewallProfile -PolicyStore ActiveStore)
+$rules = @(Get-NetFirewallApplicationFilter -Program $program -PolicyStore ActiveStore -ErrorAction SilentlyContinue |
+    Get-NetFirewallRule -ErrorAction SilentlyContinue |
+    Where-Object { $_.Direction.ToString() -eq 'Inbound' -and $_.Enabled.ToString() -eq 'True' })
+
+foreach ($networkProfile in $networkProfiles) {
+    $firewallProfile = $firewallProfiles | Where-Object { $_.Name -eq $networkProfile } | Select-Object -First 1
+    if ($firewallProfile -and $firewallProfile.Enabled.ToString() -ne 'True') {
+        continue
+    }
+
+    $covering = @($rules | Where-Object { $_.Profile.ToString() -eq 'Any' -or (($_.Profile.ToString() -split ',\s*') -contains $networkProfile) })
+    if (@($covering | Where-Object { $_.Action.ToString() -eq 'Block' }).Count -gt 0) {
+        exit 1
+    }
+    if (@($covering | Where-Object { $_.Action.ToString() -eq 'Allow' }).Count -eq 0) {
+        exit 1
+    }
+}
+
+exit 0
+""";
 	}
 
 	internal static string BuildFirewallRuleCheckScript(string executablePath)
