@@ -97,6 +97,62 @@ public sealed class RollingFileLogTests : IDisposable
 	}
 
 	[Fact]
+	public void RotateIfNeeded_LeavesArchivesAlone_WhenTheActiveFileCannotBeMoved()
+	{
+		string path = Path.Combine(_directory, "app.log");
+		File.WriteAllText(path, new string('a', 200));
+		File.WriteAllText(RollingFileLog.ArchivePath(path, 1), "one");
+		File.WriteAllText(RollingFileLog.ArchivePath(path, 2), "two");
+		File.WriteAllText(RollingFileLog.ArchivePath(path, 3), "three");
+
+		// A reader that does not allow delete (e.g. File.ReadLines) blocks the rename.
+		using (new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+		{
+			for (int attempt = 0; attempt < 3; attempt++)
+			{
+				Assert.ThrowsAny<IOException>(() => RollingFileLog.RotateIfNeeded(path, maxBytes: 100, keepFiles: 3));
+			}
+		}
+
+		Assert.Equal(new string('a', 200), File.ReadAllText(path));
+		Assert.Equal("one", File.ReadAllText(RollingFileLog.ArchivePath(path, 1)));
+		Assert.Equal("two", File.ReadAllText(RollingFileLog.ArchivePath(path, 2)));
+		Assert.Equal("three", File.ReadAllText(RollingFileLog.ArchivePath(path, 3)));
+	}
+
+	[Fact]
+	public void RotateIfNeeded_FinishesARotationThatWasInterrupted()
+	{
+		string path = Path.Combine(_directory, "app.log");
+		File.WriteAllText(RollingFileLog.StagingPath(path), "staged");
+		File.WriteAllText(RollingFileLog.ArchivePath(path, 1), "one");
+		File.WriteAllText(path, "fresh");
+
+		RollingFileLog.RotateIfNeeded(path, maxBytes: 100, keepFiles: 3);
+
+		Assert.False(File.Exists(RollingFileLog.StagingPath(path)));
+		Assert.Equal("staged", File.ReadAllText(RollingFileLog.ArchivePath(path, 1)));
+		Assert.Equal("one", File.ReadAllText(RollingFileLog.ArchivePath(path, 2)));
+		Assert.Equal("fresh", File.ReadAllText(path));
+	}
+
+	[Fact]
+	public void Write_StillAppends_WhenRotationFails()
+	{
+		string path = Path.Combine(_directory, "app.log");
+		File.WriteAllText(path, new string('a', 70 * 1024) + Environment.NewLine);
+		using var log = new RollingFileLog(path, maxBytes: 64 * 1024, keepFiles: 2);
+
+		using (var reader = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+		{
+			log.Write("kept while rotation is blocked");
+			log.Flush();
+		}
+
+		Assert.Contains("kept while rotation is blocked", File.ReadAllText(path));
+	}
+
+	[Fact]
 	public void ArchivePath_InsertsTheIndexBeforeTheExtension()
 	{
 		Assert.Equal(Path.Combine("C:\\logs", "iMirror.2.log"), RollingFileLog.ArchivePath(Path.Combine("C:\\logs", "iMirror.log"), 2));

@@ -164,32 +164,60 @@ internal sealed class RollingFileLog : IDisposable
 			{
 				Directory.CreateDirectory(directory);
 			}
-
-			RotateIfNeeded(_path, MaxBytes, KeepFiles);
-			File.AppendAllText(_path, text);
 		}
 		catch
 		{
 			// Logging must never take the app down.
 		}
+
+		try
+		{
+			RotateIfNeeded(_path, MaxBytes, KeepFiles);
+		}
+		catch
+		{
+			// A reader without FileShare.Delete (or a second iMirror during a restart handoff) can
+			// block the rename. Keep appending to the active file; the next batch retries.
+		}
+
+		try
+		{
+			File.AppendAllText(_path, text);
+		}
+		catch
+		{
+		}
 	}
 
 	/// <summary>
-	/// When <paramref name="path"/> is at least <paramref name="maxBytes"/>, shifts
-	/// <c>name.(k).ext</c> to <c>name.(k+1).ext</c> for k = keep-1..1, moves the active file to
-	/// <c>name.1.ext</c>, and deletes anything beyond <paramref name="keepFiles"/>.
+	/// When <paramref name="path"/> is at least <paramref name="maxBytes"/>, moves the active file
+	/// aside first (the only step a reader can block, taken before anything else changes), then
+	/// shifts <c>name.(k).ext</c> to <c>name.(k+1).ext</c> for k = keep-1..1, drops anything
+	/// beyond <paramref name="keepFiles"/>, and makes the parked file <c>name.1.ext</c>.
+	/// A parked file left by an interrupted rotation is finished first.
 	/// </summary>
 	internal static void RotateIfNeeded(string path, long maxBytes, int keepFiles)
 	{
-		var info = new FileInfo(path);
-		if (!info.Exists || info.Length < maxBytes)
+		string staging = StagingPath(path);
+		if (!File.Exists(staging))
 		{
-			return;
-		}
+			var info = new FileInfo(path);
+			if (!info.Exists || info.Length < maxBytes)
+			{
+				return;
+			}
 
-		if (keepFiles <= 0)
+			if (keepFiles <= 0)
+			{
+				File.Delete(path);
+				return;
+			}
+
+			File.Move(path, staging);
+		}
+		else if (keepFiles <= 0)
 		{
-			File.Delete(path);
+			File.Delete(staging);
 			return;
 		}
 
@@ -206,7 +234,17 @@ internal sealed class RollingFileLog : IDisposable
 				File.Move(from, ArchivePath(path, k + 1), overwrite: true);
 			}
 		}
-		File.Move(path, ArchivePath(path, 1), overwrite: true);
+		File.Move(staging, ArchivePath(path, 1), overwrite: true);
+	}
+
+	// Where the active file is parked mid-rotation, before the archives shift.
+	internal static string StagingPath(string path)
+	{
+		string? directory = System.IO.Path.GetDirectoryName(path);
+		string name = System.IO.Path.GetFileNameWithoutExtension(path);
+		string extension = System.IO.Path.GetExtension(path);
+		string staging = name + ".rotating" + extension;
+		return string.IsNullOrEmpty(directory) ? staging : System.IO.Path.Combine(directory, staging);
 	}
 
 	internal static string ArchivePath(string path, int index)
