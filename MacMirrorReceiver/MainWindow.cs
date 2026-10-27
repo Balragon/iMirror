@@ -33,8 +33,6 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 	private enum RenderMode
 	{
 		Auto = 0,
-		Responsive = 1,
-		Native4K = 2,
 		Quality = 3
 	}
 
@@ -97,18 +95,12 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 
 	private const int MaxAudioSyncTargetMilliseconds = 220;
 
-	private const double RemoteCursorMinScale = 0.35;
-
-	private const double RemoteCursorMaxScale = 1.0;
-
 	private static readonly TimeSpan AutoReconnectDelay = TimeSpan.FromSeconds(2.0);
 
 	private static readonly TimeSpan AudioRtpStartupTimeout = TimeSpan.FromSeconds(8.0);
 
 	private const string AudioFirewallWarningMessage =
 		"Audio is blocked by Windows Firewall. Allow iMirror for Private and Public networks.";
-
-	private static readonly bool SyntheticCursorOverlayEnabled = false;
 
 	private static readonly ReceiverSettingsSnapshot StartupReceiverSettings = ReceiverSettings.Load();
 
@@ -147,7 +139,6 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 
 	private readonly object _frameGate = new object();
 
-	private readonly object _cursorGate = new object();
 
 	private readonly object _pendingVideoGate = new object();
 
@@ -187,17 +178,12 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 
 	private VideoFrame? _pendingFrame;
 
-	private CursorState? _pendingCursorState;
-
-	private CursorState? _lastPresentedCursorState;
-
 	private StreamConfig? _streamConfig;
 
 	private long _videoPackets;
 
 	private long _videoBytes;
 
-	private long _cursorMessages;
 
 	private long _decodedFrames;
 
@@ -260,7 +246,6 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 
 	private int _renderQueued;
 
-	private int _cursorQueued;
 
 	private int _diagnosticsQueued;
 
@@ -301,8 +286,6 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 	private bool _isConnecting;
 
 	private bool _manualDisconnectRequested = true;
-
-	private readonly WindowLifecycleState _lifecycle = new WindowLifecycleState();
 
 	private SettingsWindow? _settingsWindow;
 
@@ -374,8 +357,6 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 		_airPlayProbe.AudioFrameReceived += (frame, rtpTimestamp, sequence) =>
 			HandleAirPlayAudioFrame(frame, rtpTimestamp, sequence, Volatile.Read(ref _airPlaySessionGeneration));
 		InitializeTrayIcon();
-		RenderModeComboBox.SelectedIndex = 0;
-		UpdateRenderModeDetail();
 		UpdateRenderScalingMode();
 		UpdateDiagnostics();
 		UpdateReceiverChrome();
@@ -765,7 +746,6 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 		}
 
 		_shutdownStarted = true;
-		_lifecycle.MarkExplicitExit();
 		_updateController.CancelPendingOperations();
 		try
 		{
@@ -851,7 +831,6 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 
 	private void Window_SizeChanged(object sender, SizeChangedEventArgs e)
 	{
-		RefreshRemoteCursorPosition();
 		if (CurrentRenderMode != RenderMode.Auto || _streamConfig == null || _decoder == null)
 		{
 			return;
@@ -873,7 +852,6 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 	private void VideoStage_SizeChanged(object sender, SizeChangedEventArgs e)
 	{
 		UpdateHighResolutionD3DPresenterLayout();
-		RefreshRemoteCursorPosition();
 	}
 #endif
 
@@ -1446,18 +1424,6 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 
 				HandleVideoPayload(payload, sourceTimestampNanos, receivedTick);
 			};
-			if (SyntheticCursorOverlayEnabled)
-			{
-				_client.CursorReceived += delegate(CursorState cursorState, ulong sourceTimestampNanos, long receivedTick)
-				{
-					if (!ReferenceEquals(_client, client) || generation != Volatile.Read(ref _connectionGeneration))
-					{
-						return;
-					}
-
-					HandleCursorState(cursorState, sourceTimestampNanos, receivedTick);
-				};
-			}
 
 			await _client.ConnectAsync(endpoint, pin);
 			return true;
@@ -1483,7 +1449,6 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 			StopVideoWatchdog();
 				_videoPackets = 0L;
 				_videoBytes = 0L;
-				_cursorMessages = 0L;
 			_decodedFrames = 0L;
 			_renderedFrames = 0L;
 			_renderDroppedFrames = 0L;
@@ -1515,7 +1480,6 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 			_audioStartBackoff.Reset();
 			StopAudioPipeline();
 			_streamConfig = null;
-			ResetRemoteCursorState();
 			_decoderStatus = "waiting for stream config";
 			_videoSinkAcceptingInput = false;
 			ClearPendingVideoBeforeSink();
@@ -1712,29 +1676,6 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 		}
 	}
 
-	private void HandleCursorState(CursorState cursorState, ulong sourceTimestampNanos, long receivedTick)
-	{
-		if (!SyntheticCursorOverlayEnabled)
-		{
-			ResetRemoteCursorState();
-			return;
-		}
-
-		long count = Interlocked.Increment(ref _cursorMessages);
-		if (count == 1)
-		{
-			AppLog.Write("First cursor state received.");
-		}
-		lock (_cursorGate)
-		{
-			_pendingCursorState = cursorState;
-		}
-		if (Interlocked.Exchange(ref _cursorQueued, 1) == 0)
-		{
-			base.Dispatcher.BeginInvoke(new Action(DrainLatestCursorState), DispatcherPriority.Render);
-		}
-		QueueDiagnosticsUpdate();
-	}
 
 	private async Task ReconnectNowAsync()
 	{
@@ -2090,22 +2031,6 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 		int height,
 		uint flags);
 
-	private void RenderModeComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
-	{
-		UpdateRenderModeDetail();
-		UpdateRenderScalingMode();
-		if (_streamConfig != null && (_decoder != null
-#if HIGH_RESOLUTION_D3D
-			|| _mediaFoundationD3DDecoder != null
-#endif
-			))
-		{
-			Interlocked.Increment(ref _decoderRestarts);
-			RequireH264Keyframe();
-			StartFreshDecoder(_streamConfig, "render mode changed");
-		}
-		UpdateDiagnostics();
-	}
 
 	private IPEndPoint ResolveEndpoint()
 	{
@@ -2275,12 +2200,8 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 		int sourceWidth = Math.Clamp(config.Width, 2, RealtimeMaxRenderWidth);
 		switch (CurrentRenderMode)
 		{
-		case RenderMode.Responsive:
-			return Math.Min(sourceWidth, ResponsiveMaxRenderWidth);
 		case RenderMode.Quality:
 			return Math.Min(sourceWidth, QualityMaxRenderWidth);
-		case RenderMode.Native4K:
-			return Math.Min(sourceWidth, RealtimeMaxRenderWidth);
 		default:
 			return Math.Min(sourceWidth, ResponsiveMaxRenderWidth);
 		}
@@ -2301,26 +2222,6 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 		return sourceFps;
 	}
 
-	private void UpdateRenderModeDetail()
-	{
-		if (RenderModeDetailTextBlock == null)
-		{
-			return;
-		}
-		RenderModeDetailTextBlock.Text = CurrentRenderMode switch
-		{
-			RenderMode.Responsive => "Caps viewer output at 1080p for faster pointer motion.",
-#if HIGH_RESOLUTION_D3D
-			RenderMode.Quality => "Advertises the native GPU Media Foundation/D3D11 path.",
-#else
-			RenderMode.Quality => "GPU mode requires a HIGH_RESOLUTION_D3D build.",
-#endif
-			RenderMode.Native4K => "Uses the native GPU receiver path when available.",
-			_ => QualityRenderModeEnabled
-				? "GPU mode requested, but unavailable; using the 1080p compatibility path."
-				: "Uses the 1080p compatibility receiver path."
-		};
-	}
 
 	private void UpdateRenderScalingMode()
 	{
@@ -2358,8 +2259,6 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 		try
 		{
 			_autoReconnectAttempts = 0;
-			Interlocked.Exchange(ref _cursorMessages, 0L);
-			ResetRemoteCursorState();
 			_streamConfig = config;
 			AppLog.Write($"Stream config received: {config.Width}x{config.Height} @ {config.Fps} codec={config.Codec}.");
 			ResizeWindowToStream(config);
@@ -2919,37 +2818,6 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 		}
 	}
 
-	private void DrainLatestCursorState()
-	{
-		if (!SyntheticCursorOverlayEnabled)
-		{
-			ResetRemoteCursorState();
-			return;
-		}
-
-		CursorState? pendingCursorState;
-		lock (_cursorGate)
-		{
-			pendingCursorState = _pendingCursorState;
-			_pendingCursorState = null;
-		}
-		if (pendingCursorState != null)
-		{
-			PresentCursor(pendingCursorState);
-		}
-		Interlocked.Exchange(ref _cursorQueued, 0);
-		lock (_cursorGate)
-		{
-			if (_pendingCursorState == null)
-			{
-				return;
-			}
-		}
-		if (Interlocked.Exchange(ref _cursorQueued, 1) == 0)
-		{
-			base.Dispatcher.BeginInvoke(new Action(DrainLatestCursorState), DispatcherPriority.Render);
-		}
-	}
 
 	private void PresentFrame(VideoFrame frame)
 	{
@@ -3002,150 +2870,12 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 		}
 	}
 
-	private void PresentCursor(CursorState cursorState)
-	{
-		if (!SyntheticCursorOverlayEnabled)
-		{
-			_lastPresentedCursorState = null;
-			HideRemoteCursor();
-			return;
-		}
 
-		_lastPresentedCursorState = cursorState;
-		if (!cursorState.Visible || _streamConfig == null || !IsFinite(cursorState.X) || !IsFinite(cursorState.Y))
-		{
-			HideRemoteCursor();
-			return;
-		}
 
-		Rect rect = GetVideoContentRect();
-		if (rect.IsEmpty)
-		{
-			HideRemoteCursor();
-			return;
-		}
 
-		double x = rect.Left + rect.Width * Math.Clamp(cursorState.X, 0.0, 1.0);
-		double y = rect.Top + rect.Height * Math.Clamp(cursorState.Y, 0.0, 1.0);
-		double cursorScale = ResolveRemoteCursorScale(rect);
-		RemoteCursorScale.ScaleX = cursorScale;
-		RemoteCursorScale.ScaleY = cursorScale;
-		Canvas.SetLeft(RemoteCursor, Math.Round(x - cursorScale));
-		Canvas.SetTop(RemoteCursor, Math.Round(y - cursorScale));
-		RemoteCursorLayer.Visibility = Visibility.Visible;
-	}
 
-	private double ResolveRemoteCursorScale(Rect videoRect)
-	{
-		StreamConfig? config = _streamConfig;
-		if (config == null || config.Width <= 0 || videoRect.Width <= 0)
-		{
-			return 0.45;
-		}
 
-		double scale = videoRect.Width / config.Width;
-		return Math.Clamp(scale, RemoteCursorMinScale, RemoteCursorMaxScale);
-	}
 
-	private void RefreshRemoteCursorPosition()
-	{
-		if (!SyntheticCursorOverlayEnabled)
-		{
-			HideRemoteCursor();
-			return;
-		}
-
-		if (_lastPresentedCursorState != null)
-		{
-			PresentCursor(_lastPresentedCursorState);
-		}
-	}
-
-	private void ResetRemoteCursorState()
-	{
-		lock (_cursorGate)
-		{
-			_pendingCursorState = null;
-		}
-		_lastPresentedCursorState = null;
-		Interlocked.Exchange(ref _cursorQueued, 0);
-		HideRemoteCursor();
-	}
-
-	private void HideRemoteCursor()
-	{
-		if (RemoteCursorLayer != null)
-		{
-			RemoteCursorLayer.Visibility = Visibility.Collapsed;
-		}
-	}
-
-	private Rect GetVideoContentRect()
-	{
-		StreamConfig? config = _streamConfig;
-		if (config == null)
-		{
-			return Rect.Empty;
-		}
-
-#if HIGH_RESOLUTION_D3D
-		IHighResolutionD3DPresenter? d3dPresenter = _highResolutionD3DPresenter;
-		FrameworkElement? d3dPresenterView = d3dPresenter?.View;
-		if (d3dPresenterView != null && d3dPresenterView.ActualWidth > 0.0 && d3dPresenterView.ActualHeight > 0.0)
-		{
-			double d3dLeft = (VideoStage.ActualWidth - d3dPresenterView.ActualWidth) / 2.0;
-			double d3dTop = (VideoStage.ActualHeight - d3dPresenterView.ActualHeight) / 2.0;
-			if (!_isFullscreen)
-			{
-				d3dLeft = Math.Max(0.0, d3dLeft);
-				d3dTop = Math.Max(0.0, d3dTop);
-			}
-			return new Rect(d3dLeft, d3dTop, d3dPresenterView.ActualWidth, d3dPresenterView.ActualHeight);
-		}
-#endif
-
-		double hostWidth = VideoImage?.ActualWidth > 0 ? VideoImage.ActualWidth : VideoStage.ActualWidth;
-		double hostHeight = VideoImage?.ActualHeight > 0 ? VideoImage.ActualHeight : VideoStage.ActualHeight;
-		if (hostWidth <= 0.0 || hostHeight <= 0.0 || config.Width <= 0 || config.Height <= 0)
-		{
-			return Rect.Empty;
-		}
-
-		double sourceAspect = (double)config.Width / config.Height;
-		double hostAspect = hostWidth / hostHeight;
-		double width;
-		double height;
-		double left;
-		double top;
-		if (_isFullscreen)
-		{
-			double scale = Math.Max(hostWidth / config.Width, hostHeight / config.Height);
-			width = config.Width * scale;
-			height = config.Height * scale;
-			left = (hostWidth - width) / 2.0;
-			top = (hostHeight - height) / 2.0;
-		}
-		else if (hostAspect > sourceAspect)
-		{
-			height = hostHeight;
-			width = height * sourceAspect;
-			left = (hostWidth - width) / 2.0;
-			top = 0.0;
-		}
-		else
-		{
-			width = hostWidth;
-			height = width / sourceAspect;
-			left = 0.0;
-			top = (hostHeight - height) / 2.0;
-		}
-		return new Rect(left, top, width, height);
-	}
-
-	private static bool IsFinite(double value)
-	{
-		return !double.IsNaN(value) && !double.IsInfinity(value);
-	}
 
 	private void PresentFrameToActiveRenderer(VideoFrame frame)
 	{
@@ -3302,7 +3032,6 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 			_bitmap = null;
 			VideoImage.Source = null;
 			VideoImage.Visibility = Visibility.Visible;
-			ResetRemoteCursorState();
 			ShowEmptyStateSurface();
 			RestoreDefaultWindowSize();
 			CleanupGuards.RunStep("pending frame release", ReleasePendingFrame);
@@ -3543,8 +3272,6 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 		string value = ((_streamConfig == null) ? "stream: none" : $"stream: {_streamConfig.Width}x{_streamConfig.Height} @ {_streamConfig.Fps} fps");
 		string renderMode = CurrentRenderMode switch
 		{
-			RenderMode.Responsive => "responsive",
-			RenderMode.Native4K => "native 4K",
 			RenderMode.Quality => "quality",
 			_ => "auto"
 		};
@@ -3552,7 +3279,6 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 		string outputValue = ResolveOutputDiagnostics();
 			long value3 = Interlocked.Read(ref _videoPackets);
 			long num = Interlocked.Read(ref _videoBytes);
-				long cursorMessages = SyntheticCursorOverlayEnabled ? Interlocked.Read(ref _cursorMessages) : 0L;
 			long decodedFrames = Interlocked.Read(ref _decodedFrames);
 				long renderedFrames = Interlocked.Read(ref _renderedFrames);
 				int pendingRenderFrames = GetPendingRenderFrameCount();
@@ -3565,11 +3291,8 @@ public partial class MainWindow : FluentWindow, ISettingsHost, IUpdateNoticeView
 					pendingVideoBeforeSinkBytes = _pendingVideoBytesBeforeSink;
 				}
 					(long h264Forwarded, long h264Dropped) = GetH264GateCounts();
-					string cursorValue = SyntheticCursorOverlayEnabled
-						? (_lastPresentedCursorState == null ? "none" : (_lastPresentedCursorState.Visible ? $"visible {_lastPresentedCursorState.X:P1}, {_lastPresentedCursorState.Y:P1}" : "hidden"))
-						: "embedded in video";
 					string latencyWindow = FormatLatencyWindow(_receiveToPresentLatencyWindow.GetCurrentOrLastSnapshot(Stopwatch.GetTimestamp()));
-					DiagnosticsTextBlock.Text = $"{value}\nrealtime output: {value2}\n{outputValue}\n{ResolveAudioDiagnostics()}\nreceived video: {value3:N0} / {(double)num / 1024.0:N1} KB\npre-render queue/dropped: {pendingVideoBeforeSinkPackets:N0} ({(double)pendingVideoBeforeSinkBytes / 1024.0:N1} KB) / {Interlocked.Read(ref _pendingVideoDroppedBeforeSink):N0}\ncursor: {cursorMessages:N0} / {cursorValue}\nforwarded/dropped h264: {h264Forwarded:N0} / {h264Dropped:N0}\ndecoded/rendered: {decodedFrames:N0} / {renderedFrames:N0}\nrender dropped: {Interlocked.Read(ref _renderDroppedFrames):N0}\nlatest latency: recv->render {Interlocked.Read(ref _latestReceiveToRenderMs)} ms, decode->render {Interlocked.Read(ref _latestDecodeToRenderMs)} ms\nlatency window: {latencyWindow}\nrender queue: pending {pendingRenderFrames}, dispatcher {dispatcherQueued}\ndecoder input queued/dropped: {ActiveQueuedInputPackets:N0} ({(double)ActiveQueuedInputBytes / 1024.0:N1} KB) / {ActiveDroppedInputPackets:N0}\nh264 accepted/written: {ActiveAcceptedInputPackets:N0} / {ActiveWrittenInputPackets:N0}\nstdin write: {ActiveLatestWriteMilliseconds} ms, max {ActiveMaxWriteMilliseconds} ms, stalls {ActiveWriteStalls:N0}\ndecoder restarts: {Interlocked.Read(ref _decoderRestarts):N0}\ndecoder: {_decoderStatus}";
+					DiagnosticsTextBlock.Text = $"{value}\nrealtime output: {value2}\n{outputValue}\n{ResolveAudioDiagnostics()}\nreceived video: {value3:N0} / {(double)num / 1024.0:N1} KB\npre-render queue/dropped: {pendingVideoBeforeSinkPackets:N0} ({(double)pendingVideoBeforeSinkBytes / 1024.0:N1} KB) / {Interlocked.Read(ref _pendingVideoDroppedBeforeSink):N0}\nforwarded/dropped h264: {h264Forwarded:N0} / {h264Dropped:N0}\ndecoded/rendered: {decodedFrames:N0} / {renderedFrames:N0}\nrender dropped: {Interlocked.Read(ref _renderDroppedFrames):N0}\nlatest latency: recv->render {Interlocked.Read(ref _latestReceiveToRenderMs)} ms, decode->render {Interlocked.Read(ref _latestDecodeToRenderMs)} ms\nlatency window: {latencyWindow}\nrender queue: pending {pendingRenderFrames}, dispatcher {dispatcherQueued}\ndecoder input queued/dropped: {ActiveQueuedInputPackets:N0} ({(double)ActiveQueuedInputBytes / 1024.0:N1} KB) / {ActiveDroppedInputPackets:N0}\nh264 accepted/written: {ActiveAcceptedInputPackets:N0} / {ActiveWrittenInputPackets:N0}\nstdin write: {ActiveLatestWriteMilliseconds} ms, max {ActiveMaxWriteMilliseconds} ms, stalls {ActiveWriteStalls:N0}\ndecoder restarts: {Interlocked.Read(ref _decoderRestarts):N0}\ndecoder: {_decoderStatus}";
 		CompactStatusTextBlock.Text = ((renderedFrames > 0) ? $"Live: {renderedFrames:N0} frames" : CompactStatus(_statusText));
 	}
 

@@ -82,17 +82,6 @@ internal sealed class AirPlayFairPlayContext
 		return response;
 	}
 
-	public bool HasKeyMessage
-	{
-		get
-		{
-			lock (_gate)
-			{
-				return _keyMessage != null;
-			}
-		}
-	}
-
 	public byte[]? TryGetKeyMessage()
 	{
 		lock (_gate)
