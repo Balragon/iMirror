@@ -152,6 +152,10 @@ public sealed class AirPlayProbeService : IDisposable
 	private bool _announcedIdentitylessMirrorSession;
 	private AirPlayMirrorDecryptor? _mirrorDecryptor;
 	private int _decryptorSweepAttempts;
+	// Address of the host whose SETUP most recently established the session. Only this host may
+	// open the TCP data stream; any other LAN host could otherwise supersede (and so terminate)
+	// the active sender's video connection just by connecting to the data port.
+	private IPAddress? _mirrorSetupAddress;
 	private List<AirPlayMirrorDecryptor>? _mirrorDecryptorProbePool;
 	private bool _loggedWaitingForMirrorDecryptor;
 	private readonly HashSet<int> _loggedDecryptPayloadFailureTypes = new HashSet<int>();
@@ -484,8 +488,19 @@ public sealed class AirPlayProbeService : IDisposable
 
 	private async Task HandleDataClientAsync(TcpClient client)
 	{
-		SetStatus("AirPlay data stream connected.");
 		EndPoint? remote = client.Client.RemoteEndPoint;
+		IPAddress? setupAddress;
+		lock (_mirrorKeyGate)
+		{
+			setupAddress = _mirrorSetupAddress;
+		}
+		if (!PeerAddress.Matches(setupAddress, (remote as IPEndPoint)?.Address))
+		{
+			AppLog.Write($"AirPlay data stream from {remote} rejected: it is not the host that performed SETUP ({setupAddress?.ToString() ?? "none"}).");
+			return;
+		}
+
+		SetStatus("AirPlay data stream connected.");
 		AppLog.Write("AirPlay data stream connected from " + remote);
 
 		// Supersede any previous sender's data connection so only the newest one feeds the pipeline.
@@ -1801,6 +1816,7 @@ public sealed class AirPlayProbeService : IDisposable
 			_announcedMirrorRtspTargetSessionId = null;
 			_announcedMirrorStreamConnectionId = null;
 			_announcedIdentitylessMirrorSession = false;
+			_mirrorSetupAddress = null;
 		}
 
 		try
@@ -2069,6 +2085,10 @@ public sealed class AirPlayProbeService : IDisposable
 				LogPairBody("setup", request.Body);
 				ObserveSetupRequest(request.Body, request.Target);
 				IPAddress? remoteAddress = (remoteEndPoint as IPEndPoint)?.Address;
+				lock (_mirrorKeyGate)
+				{
+					_mirrorSetupAddress = remoteAddress;
+				}
 				byte[] body = _setup.BuildSetupResponse(request.Body, remoteAddress);
 				return BuildRtspResponse(request, 200, "OK", body, "application/x-apple-binary-plist", new Dictionary<string, string>
 				{
