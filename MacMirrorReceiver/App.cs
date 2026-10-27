@@ -59,6 +59,38 @@ public class App : Application
 		base.OnExit(e);
 	}
 
+	/// <summary>
+	/// Releases and closes the single-instance mutex ahead of normal exit. The silent update
+	/// installer checks this mutex (installer AppMutex) when it starts, which is before this
+	/// process has finished shutting down; while the mutex still exists the installer aborts
+	/// with /SUPPRESSMSGBOXES and the user is left with no app and no update. Must run on the
+	/// thread that acquired the mutex (the UI thread, which is where the update flow runs).
+	/// </summary>
+	internal static void ReleaseSingleInstanceMutex()
+	{
+		Mutex? mutex = (Current as App)?._applicationMutex;
+		if (mutex == null)
+		{
+			return;
+		}
+
+		try
+		{
+			mutex.ReleaseMutex();
+		}
+		catch (ApplicationException)
+		{
+			// Not owned by this thread; closing the handle below still removes our reference.
+		}
+		catch (ObjectDisposedException)
+		{
+			return;
+		}
+
+		mutex.Dispose();
+		AppLog.Write("Single-instance mutex released for update installer handoff.");
+	}
+
 	private static void OnDispatcherUnhandledException(object sender, DispatcherUnhandledExceptionEventArgs e)
 	{
 		AppLog.Write("Dispatcher exception: " + e.Exception);
