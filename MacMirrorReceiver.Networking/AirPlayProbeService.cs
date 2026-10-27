@@ -1834,7 +1834,7 @@ public sealed class AirPlayProbeService : IDisposable
 	{
 		ulong features = ((ulong)0x1E << 32) | 0x5A7FFFF7UL;
 		byte[] publicKey = Convert.FromHexString(_pairing.PublicKeyHex);
-		byte[] txtAirPlay = BuildTxtData(BuildAirPlayTxt());
+		byte[] txtAirPlay = AirPlayMdnsResponder.BuildTxtData(BuildAirPlayTxt());
 		int displayWidth = StableDisplayWidth;
 		int displayHeight = StableDisplayHeight;
 		int displayFps = StableDisplayFps;
