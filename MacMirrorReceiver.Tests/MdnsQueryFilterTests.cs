@@ -28,7 +28,7 @@ public sealed class MdnsQueryFilterTests
 	[InlineData("DESKTOP-1.local.")]
 	public void AnswersQueriesForItsOwnNames(string name)
 	{
-		Assert.True(AirPlayProbeService.PacketAsksForProbe(Query(name), AnsweredNames));
+		Assert.True(AirPlayMdnsResponder.PacketAsksForProbe(Query(name), AnsweredNames));
 	}
 
 	[Theory]
@@ -39,7 +39,7 @@ public sealed class MdnsQueryFilterTests
 	[InlineData("local")]
 	public void IgnoresQueriesForOtherNames(string name)
 	{
-		Assert.False(AirPlayProbeService.PacketAsksForProbe(Query(name), AnsweredNames));
+		Assert.False(AirPlayMdnsResponder.PacketAsksForProbe(Query(name), AnsweredNames));
 	}
 
 	[Fact]
@@ -47,7 +47,7 @@ public sealed class MdnsQueryFilterTests
 	{
 		byte[] response = Query("_airplay._tcp.local");
 		response[2] |= 0x80; // QR = response
-		Assert.False(AirPlayProbeService.PacketAsksForProbe(response, AnsweredNames));
+		Assert.False(AirPlayMdnsResponder.PacketAsksForProbe(response, AnsweredNames));
 	}
 
 	[Fact]
@@ -56,25 +56,25 @@ public sealed class MdnsQueryFilterTests
 		// A query for an unrelated name whose payload happens to contain "_airplay" text
 		// (e.g. in an additional record) used to trigger an announcement via substring search.
 		byte[] query = Query("_ipp._tcp.local", trailing: Encoding.ASCII.GetBytes("_airplay._tcp.local _raop"));
-		Assert.False(AirPlayProbeService.PacketAsksForProbe(query, AnsweredNames));
+		Assert.False(AirPlayMdnsResponder.PacketAsksForProbe(query, AnsweredNames));
 	}
 
 	[Fact]
 	public void AnswersWhenAnyQuestionMatches()
 	{
 		byte[] query = Query("_ipp._tcp.local", "_raop._tcp.local");
-		Assert.True(AirPlayProbeService.PacketAsksForProbe(query, AnsweredNames));
+		Assert.True(AirPlayMdnsResponder.PacketAsksForProbe(query, AnsweredNames));
 	}
 
 	[Fact]
 	public void IgnoresTruncatedAndTinyPackets()
 	{
-		Assert.False(AirPlayProbeService.PacketAsksForProbe(Array.Empty<byte>(), AnsweredNames));
-		Assert.False(AirPlayProbeService.PacketAsksForProbe(new byte[11], AnsweredNames));
+		Assert.False(AirPlayMdnsResponder.PacketAsksForProbe(Array.Empty<byte>(), AnsweredNames));
+		Assert.False(AirPlayMdnsResponder.PacketAsksForProbe(new byte[11], AnsweredNames));
 		byte[] query = Query("_airplay._tcp.local");
 		byte[] truncated = new byte[query.Length - 6];
 		Array.Copy(query, truncated, truncated.Length);
-		Assert.False(AirPlayProbeService.PacketAsksForProbe(truncated, AnsweredNames));
+		Assert.False(AirPlayMdnsResponder.PacketAsksForProbe(truncated, AnsweredNames));
 	}
 
 	private static byte[] Query(params string[] names) => Query(names, trailing: null);
