@@ -22,11 +22,11 @@ public sealed class AirPlayProbeServiceTests
 	[Fact]
 	public void IsMirrorTeardown_IsFalseOnlyForATeardownOfNonVideoStreams()
 	{
-		Assert.True(AirPlayProbeService.IsMirrorTeardown(Array.Empty<byte>()));
-		Assert.True(AirPlayProbeService.IsMirrorTeardown(new byte[] { 1, 2, 3 }));
-		Assert.True(AirPlayProbeService.IsMirrorTeardown(StreamsPlist(110)));
-		Assert.True(AirPlayProbeService.IsMirrorTeardown(StreamsPlist(96, 110)));
-		Assert.False(AirPlayProbeService.IsMirrorTeardown(StreamsPlist(96)));
+		Assert.True(AirPlaySetupPlist.IsMirrorTeardown(Array.Empty<byte>()));
+		Assert.True(AirPlaySetupPlist.IsMirrorTeardown(new byte[] { 1, 2, 3 }));
+		Assert.True(AirPlaySetupPlist.IsMirrorTeardown(StreamsPlist(110)));
+		Assert.True(AirPlaySetupPlist.IsMirrorTeardown(StreamsPlist(96, 110)));
+		Assert.False(AirPlaySetupPlist.IsMirrorTeardown(StreamsPlist(96)));
 	}
 
 	[Fact]
@@ -382,8 +382,8 @@ public sealed class AirPlayProbeServiceTests
 			shapes++;
 			byte[] prefix = payload.Take(AirPlayProbeService.ClearH264ProbeBytes).ToArray();
 			string description = $"length={payload.Length}, head={Convert.ToHexString(prefix)}";
-			Assert.True(AirPlayProbeService.TryNormalizeClearH264Payload(payload, out _, out _), description);
-			Assert.True(AirPlayProbeService.MayBeClearH264Payload(prefix, payload.Length), description);
+			Assert.True(MirrorH264Payloads.TryNormalizeClearH264Payload(payload, out _, out _), description);
+			Assert.True(MirrorH264Payloads.MayBeClearH264Payload(prefix, payload.Length), description);
 		}
 
 		Assert.True(shapes > 8_000, $"shapes={shapes}");
@@ -397,7 +397,7 @@ public sealed class AirPlayProbeServiceTests
 		for (int i = 0; i < 10_000; i++)
 		{
 			byte[] payload = RandomBytes(random, 4096);
-			if (AirPlayProbeService.MayBeClearH264Payload(payload, payload.Length))
+			if (MirrorH264Payloads.MayBeClearH264Payload(payload, payload.Length))
 			{
 				accepted++;
 			}
@@ -425,14 +425,14 @@ public sealed class AirPlayProbeServiceTests
 					preview = decryptor.Decrypt(payload);
 				}
 
-				if (AirPlayProbeService.TryNormalizeClearH264Payload(preview, out byte[] annexB, out string format))
+				if (MirrorH264Payloads.TryNormalizeClearH264Payload(preview, out byte[] annexB, out string format))
 				{
 					return new SweepResult(candidate.Name, annexB, format, tested, report);
 				}
 
 				if (report.Count < 32)
 				{
-					report.Add(candidate.Name + "/" + AirPlayProbeService.DescribeH264Probe(preview));
+					report.Add(candidate.Name + "/" + MirrorH264Payloads.DescribeH264Probe(preview));
 				}
 			}
 		}
